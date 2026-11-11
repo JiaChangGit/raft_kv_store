@@ -68,10 +68,18 @@ def require_rust_execution(output: str, full_name: str) -> dict[str, int]:
     return totals
 
 
-def validate_report(path: Path, schema: dict) -> dict:
+def validate_report(path: Path, schema: dict, fingerprint: str | None = None) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("Report must be an object")
+    if schema.get("source_fingerprint_must_match") and (fingerprint is None or data.get("source_fingerprint") != fingerprint):
+        raise ValueError(f"Report {path} was not produced from the source being accepted; rerun its command")
+    if "required_detected_cases" in schema:
+        cases = data.get("cases")
+        detected = {case.get("case") for case in cases if isinstance(case, dict) and case.get("detected") is True} if isinstance(cases, list) else set()
+        missing = sorted(set(schema["required_detected_cases"]) - detected)
+        if missing:
+            raise ValueError(f"Report {path}: required cases missing or not detected: {missing}")
     for key in schema.get("required_nonempty", []):
         expected = dict if key in {"metrics", "environment"} else str
         if not isinstance(data.get(key), expected) or not data[key] or (expected is str and not data[key].strip()):
@@ -192,7 +200,7 @@ def main() -> int:
                 result["pytest_nodes"].append({"node": node, "passed": 1, "junit": junit.relative_to(ROOT).as_posix(), "sha256": sha(junit)})
         for phase, schema in contract["reports"].items():
             if phase <= args.phase:
-                result["reports"].append(validate_report(ROOT / schema["path"], schema))
+                result["reports"].append(validate_report(ROOT / schema["path"], schema, fingerprint))
         _, after = snapshot(ROOT)
         if after != fingerprint:
             raise ValueError("Source changed during acceptance; preserve diagnostics and rerun after changes settle")

@@ -1,5 +1,6 @@
-//! Append-only, checksummed transactions. A successful save means sync_all completed.
-//! Storage restores persistent consensus data only; it never decides commitment.
+//! Append-only, checksummed transactions (WAL format 2). A successful save means
+//! sync_all completed. Storage restores persistent consensus data only; it never
+//! decides commitment. Byte layout and recovery rules: docs/STORAGE_FORMAT_V2.md.
 use raft_protocol::{CLUSTER, DurableState, LogEntry, NodeId, valid_node};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -7,11 +8,22 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-pub const HEADER_LEN: usize = 20;
+#[cfg(test)]
+mod tests;
+
+pub const FORMAT_VERSION: u16 = 2;
+/// Fixed file header at offset 0; records follow it.
+pub const FILE_HEADER_LEN: usize = 80;
+/// Fixed record header; the last four bytes are its own checksum.
+pub const HEADER_LEN: usize = 24;
 pub const MAX_RECORD_PAYLOAD: usize = 2 * 1024 * 1024;
-const MAGIC: &[u8; 4] = b"RFT1";
-const VERSION: u16 = 1;
+/// Preserved copies of removed tails kept under `torn/`.
+pub const MAX_TORN_COPIES: usize = 8;
+const FILE_MAGIC: &[u8; 4] = b"RFTW";
+const RECORD_MAGIC: &[u8; 4] = b"RFTR";
 const TRANSACTION: u16 = 1;
+const CLUSTER_FIELD: std::ops::Range<usize> = 12..36;
+const _: () = assert!(CLUSTER.len() <= CLUSTER_FIELD.end - CLUSTER_FIELD.start);
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +42,25 @@ struct Transaction {
     truncate_from: u64,
     append: Vec<LogEntry>,
 }
+
+/// Where a WAL file starts. Format 2 reserves these fields so that log
+/// compaction can later begin a file after a snapshot without another format
+/// change; this build writes and accepts only [`PRISTINE`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileStart {
+    base_index: u64,
+    base_term: u64,
+    start_term: u64,
+    first_sequence: u64,
+    start_voted_for: u32,
+}
+const PRISTINE: FileStart = FileStart {
+    base_index: 0,
+    base_term: 0,
+    start_term: 0,
+    first_sequence: 1,
+    start_voted_for: 0,
+};
 
 pub struct Wal {
     file: File,
@@ -65,6 +96,17 @@ fn create_directory(path: &Path) -> io::Result<()> {
     fs::create_dir(path)?;
     sync_directory(parent)?;
     sync_directory(path)
+}
+
+/// Write a whole small file so that a crash leaves either no file or all of it.
+fn write_atomically(directory: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    let temporary = directory.join(format!("{name}.tmp"));
+    let mut file = File::create(&temporary)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    failpoint(&format!("init_before_rename_{name}"));
+    fs::rename(&temporary, directory.join(name))?;
+    sync_directory(directory)
 }
 
 /// Reflected CRC32C/Castagnoli: polynomial 0x82F63B78, init/final xor 0xFFFFFFFF.
@@ -119,33 +161,189 @@ fn apply_transaction(
     Ok(next)
 }
 
-fn header(sequence: u64, payload_len: usize) -> [u8; HEADER_LEN] {
-    let mut out = [0; HEADER_LEN];
-    out[..4].copy_from_slice(MAGIC);
-    out[4..6].copy_from_slice(&VERSION.to_le_bytes());
-    out[6..8].copy_from_slice(&TRANSACTION.to_le_bytes());
-    out[8..12].copy_from_slice(&(payload_len as u32).to_le_bytes());
-    out[12..20].copy_from_slice(&sequence.to_le_bytes());
+fn file_header(node_id: NodeId, start: FileStart) -> [u8; FILE_HEADER_LEN] {
+    let mut out = [0; FILE_HEADER_LEN];
+    out[..4].copy_from_slice(FILE_MAGIC);
+    out[4..6].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+    out[6..8].copy_from_slice(&(FILE_HEADER_LEN as u16).to_le_bytes());
+    out[8..12].copy_from_slice(&u32::from(node_id).to_le_bytes());
+    out[CLUSTER_FIELD.start..CLUSTER_FIELD.start + CLUSTER.len()]
+        .copy_from_slice(CLUSTER.as_bytes());
+    // 36..40 is reserved and stays zero.
+    out[40..48].copy_from_slice(&start.base_index.to_le_bytes());
+    out[48..56].copy_from_slice(&start.base_term.to_le_bytes());
+    out[56..64].copy_from_slice(&start.start_term.to_le_bytes());
+    out[64..72].copy_from_slice(&start.first_sequence.to_le_bytes());
+    out[72..76].copy_from_slice(&start.start_voted_for.to_le_bytes());
+    let checksum = crc32c(&out[..76]);
+    out[76..80].copy_from_slice(&checksum.to_le_bytes());
     out
 }
 
-fn check_header(bytes: &[u8], sequence: u64) -> io::Result<Option<usize>> {
-    let expected = header(sequence, 1);
-    for index in 0..bytes.len().min(HEADER_LEN) {
-        if !(8..12).contains(&index) && bytes[index] != expected[index] {
-            return Err(invalid(
-                "WAL magic, version, record type or sequence mismatch",
-            ));
-        }
+fn check_file_header(bytes: &[u8; FILE_HEADER_LEN], node_id: NodeId) -> io::Result<()> {
+    if crc32c(&bytes[..76]) != u32::from_le_bytes(bytes[76..80].try_into().expect("four bytes")) {
+        return Err(invalid("WAL file header checksum mismatch"));
     }
-    if bytes.len() < 12 {
-        return Ok(None);
+    let expected = file_header(node_id, PRISTINE);
+    if bytes[..8] != expected[..8] {
+        return Err(invalid("not a format 2 WAL file header"));
     }
+    if bytes[8..CLUSTER_FIELD.end] != expected[8..CLUSTER_FIELD.end] {
+        return Err(invalid("WAL file header names another node or cluster"));
+    }
+    if bytes != &expected {
+        return Err(invalid(
+            "WAL file header declares a compacted start; unsupported by this build",
+        ));
+    }
+    Ok(())
+}
+
+fn record_header(sequence: u64, payload_len: usize) -> [u8; HEADER_LEN] {
+    let mut out = [0; HEADER_LEN];
+    out[..4].copy_from_slice(RECORD_MAGIC);
+    out[4..6].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+    out[6..8].copy_from_slice(&TRANSACTION.to_le_bytes());
+    out[8..12].copy_from_slice(&(payload_len as u32).to_le_bytes());
+    out[12..20].copy_from_slice(&sequence.to_le_bytes());
+    let checksum = crc32c(&out[..20]);
+    out[20..24].copy_from_slice(&checksum.to_le_bytes());
+    out
+}
+
+fn length_in_bounds(bytes: &[u8]) -> io::Result<usize> {
     let length = u32::from_le_bytes(bytes[8..12].try_into().expect("four length bytes")) as usize;
     if length == 0 || length > MAX_RECORD_PAYLOAD {
         return Err(invalid("WAL record length out of bounds"));
     }
-    Ok(Some(length))
+    Ok(length)
+}
+
+/// Validate a complete record header and return its payload length.
+///
+/// The length decides whether the rest of the file is "a record that was never
+/// finished" (safe to remove) or "a complete record" (must be kept), so it is
+/// trusted only after the header's own checksum has passed.
+fn check_header(bytes: &[u8; HEADER_LEN], sequence: u64) -> io::Result<usize> {
+    let stored = u32::from_le_bytes(bytes[20..24].try_into().expect("four checksum bytes"));
+    if crc32c(&bytes[..20]) != stored {
+        return Err(invalid(
+            "WAL record header checksum mismatch; refusing repair",
+        ));
+    }
+    let expected = record_header(sequence, 1);
+    if bytes[..8] != expected[..8] {
+        return Err(invalid("WAL record magic, version or type mismatch"));
+    }
+    let length = length_in_bounds(bytes)?;
+    if bytes[12..20] != expected[12..20] {
+        return Err(invalid("WAL record sequence is not the next one"));
+    }
+    Ok(length)
+}
+
+/// Accept fewer than HEADER_LEN trailing bytes only if every byte that can be
+/// checked is what the next record's header would begin with.
+fn check_partial_header(bytes: &[u8], sequence: u64) -> io::Result<()> {
+    let mismatch = || invalid("incomplete WAL tail is not the start of the next record");
+    let expected = record_header(sequence, 1);
+    for (index, byte) in bytes.iter().enumerate().take(20) {
+        // The length (8..12) is unknown in advance; everything else is predictable.
+        if !(8..12).contains(&index) && *byte != expected[index] {
+            return Err(mismatch());
+        }
+    }
+    if bytes.len() >= 12 {
+        length_in_bounds(bytes)?;
+    }
+    if bytes.len() > 20 {
+        let checksum = crc32c(&bytes[..20]).to_le_bytes();
+        if bytes[20..] != checksum[..bytes.len() - 20] {
+            return Err(mismatch());
+        }
+    }
+    Ok(())
+}
+
+fn torn_copy_name(name: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix("seq")
+        .and_then(|n| n.strip_suffix(".bin"))
+    else {
+        return false;
+    };
+    let Some((sequence, checksum)) = rest.split_once('-') else {
+        return false;
+    };
+    sequence.len() == 20
+        && sequence.bytes().all(|b| b.is_ascii_digit())
+        && checksum.len() == 8
+        && checksum
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Keep the bytes about to be removed. Identical tails map to one file name, so
+/// repeating an interrupted recovery does not multiply copies.
+fn preserve_torn_tail(directory: &Path, sequence: u64, tail: &[u8]) -> io::Result<()> {
+    let torn = directory.join("torn");
+    if !torn.is_dir() {
+        fs::create_dir(&torn)?;
+        sync_directory(directory)?;
+    }
+    let name = format!("seq{sequence:020}-{:08x}.bin", crc32c(tail));
+    let temporary = torn.join(format!("{name}.tmp"));
+    let mut file = File::create(&temporary)?;
+    file.write_all(tail)?;
+    file.sync_all()?;
+    fs::rename(&temporary, torn.join(&name))?;
+    let mut older = vec![];
+    for entry in fs::read_dir(&torn)? {
+        let found = entry?.file_name().to_string_lossy().into_owned();
+        if let Some(finished) = found.strip_suffix(".tmp")
+            && torn_copy_name(finished)
+        {
+            // Left by a recovery that was itself interrupted; never data.
+            fs::remove_file(torn.join(&found))?;
+        } else if torn_copy_name(&found) && found != name {
+            older.push(found);
+        }
+    }
+    older.sort();
+    while older.len() >= MAX_TORN_COPIES {
+        fs::remove_file(torn.join(older.remove(0)))?;
+    }
+    sync_directory(&torn)
+}
+
+fn check_identity(path: &Path, node_id: NodeId) -> io::Result<()> {
+    if fs::metadata(path)?.len() > 4096 {
+        return Err(invalid("identity metadata too large"));
+    }
+    let identity: Identity =
+        serde_json::from_slice(&fs::read(path)?).map_err(|e| invalid(e.to_string()))?;
+    if identity.format_version == 1 {
+        return Err(invalid(
+            "data directory uses WAL format 1; this build reads only format 2 and never converts data",
+        ));
+    }
+    if identity.cluster_id != CLUSTER
+        || identity.node_id != node_id
+        || identity.format_version != FORMAT_VERSION
+    {
+        return Err(invalid("node, cluster or storage format identity mismatch"));
+    }
+    Ok(())
+}
+
+fn create_identity(directory: &Path, node_id: NodeId) -> io::Result<()> {
+    let identity = Identity {
+        cluster_id: CLUSTER.into(),
+        node_id,
+        format_version: FORMAT_VERSION,
+    };
+    let bytes = serde_json::to_vec(&identity).map_err(io::Error::other)?;
+    write_atomically(directory, "node.meta", &bytes)
 }
 
 impl Wal {
@@ -165,56 +363,45 @@ impl Wal {
             .map_err(|error| io::Error::other(format!("node directory already owned: {error}")))?;
         let metadata_path = directory.join("node.meta");
         let wal_path = directory.join("raft.wal");
-        let existing_identity = metadata_path.exists();
-        if existing_identity {
-            if fs::metadata(&metadata_path)?.len() > 4096 {
-                return Err(invalid("identity metadata too large"));
+        // First initialization writes the WAL, then the identity. Identity is
+        // therefore the proof that initialization finished: with it, a missing
+        // WAL is data loss; without it, only an untouched header is acceptable.
+        match (metadata_path.exists(), wal_path.exists()) {
+            (false, false) => {
+                write_atomically(&directory, "raft.wal", &file_header(node_id, PRISTINE))?;
+                failpoint("init_after_wal_before_identity");
+                create_identity(&directory, node_id)?;
             }
-            let identity: Identity = serde_json::from_slice(&fs::read(&metadata_path)?)
-                .map_err(|e| invalid(e.to_string()))?;
-            if identity.cluster_id != CLUSTER
-                || identity.node_id != node_id
-                || identity.format_version != VERSION
-            {
-                return Err(invalid("node, cluster or storage format identity mismatch"));
+            (false, true) => {
+                let untouched = fs::metadata(&wal_path)?.len() == FILE_HEADER_LEN as u64
+                    && fs::read(&wal_path)? == file_header(node_id, PRISTINE);
+                if !untouched {
+                    return Err(invalid("WAL exists without identity metadata"));
+                }
+                create_identity(&directory, node_id)?;
             }
-        } else {
-            if wal_path.exists() {
-                return Err(invalid("WAL exists without identity metadata"));
+            (true, false) => {
+                check_identity(&metadata_path, node_id)?;
+                // Loss, not a fresh node: never recreate an empty WAL here.
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "identity exists but raft.wal is missing; refusing to assume an empty node",
+                ));
             }
-            let identity = Identity {
-                cluster_id: CLUSTER.into(),
-                node_id,
-                format_version: VERSION,
-            };
-            let bytes = serde_json::to_vec(&identity).map_err(io::Error::other)?;
-            let mut metadata = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&metadata_path)?;
-            metadata.write_all(&bytes)?;
-            metadata.sync_all()?;
-            sync_directory(&directory)?;
+            (true, true) => check_identity(&metadata_path, node_id)?,
         }
-        let file = if existing_identity {
-            // Missing WAL is ambiguous (loss or interrupted initialization),
-            // never evidence that an existing identity is a fresh node.
-            OpenOptions::new().read(true).write(true).open(&wal_path)?
-        } else {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&wal_path)?;
-            file.sync_all()?;
-            sync_directory(&directory)?;
-            file
-        };
+        let mut file = OpenOptions::new().read(true).write(true).open(&wal_path)?;
+        if file.metadata()?.len() < FILE_HEADER_LEN as u64 {
+            return Err(invalid("WAL is shorter than its file header"));
+        }
+        let mut header = [0_u8; FILE_HEADER_LEN];
+        file.read_exact(&mut header)?;
+        check_file_header(&header, node_id)?;
         let mut wal = Self {
             file,
             _lock: lock,
             state: DurableState::default(),
-            sequence: 0,
+            sequence: PRISTINE.first_sequence - 1,
             poisoned: false,
             fail_sync: false,
             directory,
@@ -230,25 +417,27 @@ impl Wal {
 
     fn recover_with_sync(&mut self, sync: impl FnOnce(&File) -> io::Result<()>) -> io::Result<()> {
         let length = self.file.metadata()?.len();
-        let mut offset = 0_u64;
+        let mut offset = FILE_HEADER_LEN as u64;
         while offset < length {
+            let remaining = length - offset;
+            let available = remaining.min(HEADER_LEN as u64) as usize;
+            let mut header = [0_u8; HEADER_LEN];
             self.file.seek(SeekFrom::Start(offset))?;
-            let available = (length - offset).min(HEADER_LEN as u64) as usize;
-            let mut record_header = [0_u8; HEADER_LEN];
-            self.file.read_exact(&mut record_header[..available])?;
+            self.file.read_exact(&mut header[..available])?;
             let next_sequence = self
                 .sequence
                 .checked_add(1)
                 .ok_or_else(|| invalid("WAL sequence exhausted"))?;
-            let payload_len = check_header(&record_header[..available], next_sequence)?;
             if available < HEADER_LEN {
-                self.truncate_tail(offset)?;
+                check_partial_header(&header[..available], next_sequence)?;
+                self.remove_torn_tail(offset, length, next_sequence)?;
                 break;
             }
-            let payload_len = payload_len.ok_or_else(|| invalid("missing WAL length"))?;
+            let payload_len = check_header(&header, next_sequence)?;
             let record_len = (HEADER_LEN + payload_len + 4) as u64;
-            if length - offset < record_len {
-                self.truncate_tail(offset)?;
+            if remaining < record_len {
+                // The header is authentic and says more bytes were coming.
+                self.remove_torn_tail(offset, length, next_sequence)?;
                 break;
             }
             let mut payload = vec![0; payload_len];
@@ -256,10 +445,10 @@ impl Wal {
             let mut checksum = [0; 4];
             self.file.read_exact(&mut checksum)?;
             let mut checksum_input = Vec::with_capacity(HEADER_LEN + payload_len);
-            checksum_input.extend_from_slice(&record_header);
+            checksum_input.extend_from_slice(&header);
             checksum_input.extend_from_slice(&payload);
             if crc32c(&checksum_input) != u32::from_le_bytes(checksum) {
-                return Err(invalid("WAL checksum mismatch; refusing repair"));
+                return Err(invalid("WAL record checksum mismatch; refusing repair"));
             }
             let transaction = serde_json::from_slice(&payload)
                 .map_err(|e| invalid(format!("invalid transaction: {e}")))?;
@@ -277,7 +466,13 @@ impl Wal {
         Ok(())
     }
 
-    fn truncate_tail(&mut self, offset: u64) -> io::Result<()> {
+    /// Remove an unfinished final record, after a copy of it is durable.
+    fn remove_torn_tail(&mut self, offset: u64, length: u64, sequence: u64) -> io::Result<()> {
+        // Bounded: shorter than one header plus one maximum payload and checksum.
+        let mut tail = vec![0; (length - offset) as usize];
+        self.file.seek(SeekFrom::Start(offset))?;
+        self.file.read_exact(&mut tail)?;
+        preserve_torn_tail(&self.directory, sequence, &tail)?;
         self.file.set_len(offset)?;
         self.file.sync_all()
     }
@@ -338,11 +533,12 @@ impl Wal {
             .checked_add(1)
             .ok_or_else(|| invalid("WAL sequence exhausted"))?;
         let mut record = Vec::with_capacity(HEADER_LEN + payload.len() + 4);
-        record.extend_from_slice(&header(next_sequence, payload.len()));
+        record.extend_from_slice(&record_header(next_sequence, payload.len()));
         record.extend_from_slice(&payload);
         record.extend_from_slice(&crc32c(&record).to_le_bytes());
         failpoint("before_write");
         let result = (|| {
+            partial_write_failpoint(&mut self.file, &record)?;
             self.file.write_all(&record)?;
             failpoint("after_write_before_sync");
             if self.fail_sync {
@@ -364,10 +560,14 @@ impl Wal {
     }
 }
 
+fn failpoint_selected(name: &str) -> bool {
+    std::env::var("RAFT_WAL_FAILPOINT").as_deref() == Ok(name)
+}
+
 /// Test-only opt-in environment hook: mark the reached boundary, wait for SIGKILL.
 /// Ordinary runtime does not set these variables. This intentionally never returns.
 fn failpoint(name: &str) {
-    if std::env::var("RAFT_WAL_FAILPOINT").as_deref() != Ok(name) {
+    if !failpoint_selected(name) {
         return;
     }
     if let Ok(marker) = std::env::var("RAFT_WAL_FAILPOINT_MARKER")
@@ -381,247 +581,22 @@ fn failpoint(name: &str) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use kv_state::StateMachine;
-    use raft_core::Core;
-    use raft_protocol::{ClientRequest, Command, Operation};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    struct TestDir(PathBuf);
-    impl TestDir {
-        fn new() -> Self {
-            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/storage-tests")
-                .join(format!(
-                    "{}-{}",
-                    std::process::id(),
-                    NEXT.fetch_add(1, Ordering::Relaxed)
-                ));
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
+/// Test-only: leave just the beginning of a record on disk, then wait to be
+/// killed, so that recovery of a torn tail is exercised by a real process.
+fn partial_write_failpoint(file: &mut File, record: &[u8]) -> io::Result<()> {
+    let cuts = [
+        ("after_partial_header", HEADER_LEN / 2 + 1),
+        (
+            "after_partial_payload",
+            HEADER_LEN + (record.len() - HEADER_LEN) / 2,
+        ),
+    ];
+    for (name, cut) in cuts {
+        if failpoint_selected(name) {
+            file.write_all(&record[..cut])?;
+            file.sync_all()?;
+            failpoint(name);
         }
     }
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-    fn state(term: u64, voted_for: Option<u8>) -> DurableState {
-        DurableState {
-            term,
-            voted_for,
-            log: vec![],
-        }
-    }
-    fn entry(index: u64, term: u64, value: &str) -> LogEntry {
-        LogEntry {
-            index,
-            term,
-            command: Command::Client(ClientRequest {
-                client_id: 1,
-                sequence: index,
-                operation: Operation::Put {
-                    key: "x".into(),
-                    value: value.into(),
-                },
-            }),
-        }
-    }
-
-    #[test]
-    fn crc32c_has_castagnoli_known_vector() {
-        assert_eq!(crc32c(b"123456789"), 0xe3069283);
-        assert_eq!(crc32c(b""), 0);
-    }
-
-    #[test]
-    fn existing_identity_without_wal_fails_closed() {
-        let dir = TestDir::new();
-        {
-            let mut wal = Wal::open(&dir.0, 1).unwrap();
-            wal.save(&state(5, Some(2))).unwrap();
-        }
-        fs::rename(dir.0.join("raft.wal"), dir.0.join("saved.wal")).unwrap();
-        assert!(
-            Wal::open(&dir.0, 1).is_err(),
-            "must not silently reset a used node"
-        );
-        assert!(!dir.0.join("raft.wal").exists());
-    }
-
-    #[test]
-    fn recovered_prefix_requires_successful_sync() {
-        let dir = TestDir::new();
-        let mut wal = Wal::open(&dir.0, 1).unwrap();
-        wal.save(&state(5, Some(2))).unwrap();
-        wal.state = DurableState::default();
-        wal.sequence = 0;
-        let called = std::cell::Cell::new(false);
-        let result = wal.recover_with_sync(|_| {
-            called.set(true);
-            Err(io::Error::other("recovery sync failure"))
-        });
-        assert!(called.get());
-        assert!(result.is_err());
-        assert!(wal.poisoned());
-        assert!(wal.save(&state(6, Some(1))).is_err());
-        drop(wal);
-        let recovered = Wal::open(&dir.0, 1).unwrap();
-        assert_eq!(recovered.state().term, 5);
-        assert_eq!(recovered.state().voted_for, Some(2));
-    }
-
-    #[test]
-    fn vote_after_restart_not_duplicated() {
-        let dir = TestDir::new();
-        {
-            let mut wal = Wal::open(&dir.0, 1).unwrap();
-            wal.save(&state(4, Some(2))).unwrap();
-            assert_eq!(wal.durable_sequence(), 1);
-        }
-        let mut recovered = Wal::open(&dir.0, 1).unwrap();
-        assert_eq!(recovered.state().voted_for, Some(2));
-        assert!(recovered.save(&state(4, Some(3))).is_err());
-        assert!(recovered.save(&state(4, None)).is_err());
-        recovered.save(&state(5, None)).unwrap();
-        recovered.save(&state(5, Some(3))).unwrap();
-        assert_eq!(recovered.state().voted_for, Some(3));
-    }
-
-    #[test]
-    fn append_ack_after_durable_sync() {
-        let dir = TestDir::new();
-        let mut wal = Wal::open(&dir.0, 1).unwrap();
-        let mut next = state(3, Some(1));
-        next.log.push(entry(1, 3, "A"));
-        wal.inject_sync_failure(true);
-        let mut acknowledgments = vec![];
-        if wal.save(&next).is_ok() {
-            acknowledgments.push(next.last_index());
-        }
-        assert!(acknowledgments.is_empty());
-        assert_eq!(wal.durable_sequence(), 0);
-        assert_eq!(wal.state().last_index(), 0);
-        assert!(wal.poisoned());
-        wal.inject_sync_failure(false);
-        assert!(
-            wal.save(&next).is_err(),
-            "I/O failure cannot silently resume service"
-        );
-        drop(wal);
-        let mut recovered = Wal::open(&dir.0, 1).unwrap();
-        // A complete, unacknowledged transaction is allowed to survive.
-        assert_eq!(recovered.state(), &next);
-        let mut later = next.clone();
-        later.log.push(entry(2, 3, "B"));
-        recovered.save(&later).unwrap();
-        acknowledgments.push(later.last_index());
-        assert_eq!(acknowledgments, vec![2]);
-        assert_eq!(recovered.durable_sequence(), 2);
-        drop(recovered);
-        assert_eq!(Wal::open(&dir.0, 1).unwrap().state(), &later);
-    }
-
-    #[test]
-    fn uncommitted_suffix_not_applied_after_recovery() {
-        let dir = TestDir::new();
-        let mut persistent = state(2, Some(1));
-        persistent.log.push(entry(1, 2, "uncommitted"));
-        {
-            let mut wal = Wal::open(&dir.0, 1).unwrap();
-            wal.save(&persistent).unwrap();
-        }
-        let recovered = Wal::open(&dir.0, 1).unwrap();
-        let core = Core::new(1, recovered.state().clone()).unwrap();
-        let kv = StateMachine::default();
-        assert_eq!(core.state.log.len(), 1);
-        assert_eq!(core.commit_index, 0);
-        assert_eq!(core.last_applied, 0);
-        assert_eq!(kv.get("x"), None);
-        assert_eq!(kv.session_count(), 0);
-    }
-
-    #[test]
-    fn truncated_wal_tail_safe() {
-        let dir = TestDir::new();
-        let mut first = state(2, Some(1));
-        first.log.push(entry(1, 2, "A"));
-        let second = {
-            let mut wal = Wal::open(&dir.0, 1).unwrap();
-            wal.save(&first).unwrap();
-            let mut next = first.clone();
-            next.log.push(entry(2, 2, "B"));
-            wal.save(&next).unwrap();
-            next
-        };
-        let path = dir.0.join("raft.wal");
-        let bytes = fs::read(&path).unwrap();
-        let first_len = {
-            let payload = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
-            HEADER_LEN + payload + 4
-        };
-        for cut in first_len + 1..bytes.len() {
-            fs::write(&path, &bytes[..cut]).unwrap();
-            let wal = Wal::open(&dir.0, 1).unwrap();
-            assert_eq!(wal.state(), &first, "cut={cut}");
-            assert_eq!(fs::metadata(&path).unwrap().len(), first_len as u64);
-            drop(wal);
-        }
-        fs::write(&path, &bytes).unwrap();
-        {
-            let wal = Wal::open(&dir.0, 1).unwrap();
-            assert_eq!(wal.state(), &second);
-        }
-        let mut corrupt = bytes.clone();
-        corrupt[HEADER_LEN + 1] ^= 1;
-        fs::write(&path, &corrupt).unwrap();
-        assert!(
-            Wal::open(&dir.0, 1).is_err(),
-            "middle corruption must fail closed"
-        );
-        let mut corrupt = bytes.clone();
-        *corrupt.last_mut().unwrap() ^= 1;
-        fs::write(&path, &corrupt).unwrap();
-        assert!(
-            Wal::open(&dir.0, 1).is_err(),
-            "complete final CRC mismatch must fail closed"
-        );
-        fs::write(&path, &bytes).unwrap();
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(b"garbage").unwrap();
-        drop(file);
-        assert!(
-            Wal::open(&dir.0, 1).is_err(),
-            "arbitrary garbage is not proven partial header"
-        );
-    }
-
-    #[test]
-    fn atomic_suffix_transaction_and_identity_are_checked() {
-        let dir = TestDir::new();
-        let mut initial = state(2, Some(1));
-        initial.log = vec![entry(1, 1, "A"), entry(2, 2, "B")];
-        let replacement = {
-            let mut wal = Wal::open(&dir.0, 1).unwrap();
-            assert!(Wal::open(&dir.0, 1).is_err());
-            wal.save(&initial).unwrap();
-            let mut next = initial.clone();
-            next.term = 3;
-            next.voted_for = None;
-            next.log[1] = entry(2, 3, "C");
-            next.log.push(entry(3, 3, "D"));
-            wal.save(&next).unwrap();
-            next
-        };
-        {
-            let mut wal = Wal::open(&dir.0, 1).unwrap();
-            assert_eq!(wal.state(), &replacement);
-            let mut wrong = replacement.clone();
-            wrong.log[1].command = entry(2, 3, "E").command;
-            assert!(wal.save(&wrong).is_err());
-        }
-        assert!(Wal::open(&dir.0, 2).is_err());
-    }
+    Ok(())
 }

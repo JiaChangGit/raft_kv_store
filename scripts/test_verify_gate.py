@@ -53,6 +53,27 @@ class EvidenceBoundaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gate.validate_report(report, contract["reports"]["07"])
 
+    def test_report_must_come_from_the_accepted_source_and_name_detected_cases(self):
+        report = self.directory / "mutations.json"
+        schema = {"required_nonempty": ["command"], "required_positive_integer": ["case_count", "detected_count"],
+                  "required_empty_array": ["undetected"], "source_fingerprint_must_match": True,
+                  "required_detected_cases": ["first", "second"]}
+        good = {"command": "run", "case_count": 2, "detected_count": 2, "undetected": [], "source_fingerprint": "abc",
+                "cases": [{"case": "first", "detected": True}, {"case": "second", "detected": True}]}
+        report.write_text(json.dumps(good))
+        self.assertTrue(gate.validate_report(report, schema, "abc")["schema_valid"])
+        for fingerprint in ("other", None):
+            with self.assertRaises(ValueError):
+                gate.validate_report(report, schema, fingerprint)
+        for broken in ({**good, "cases": [{"case": "first", "detected": True}]},
+                       {**good, "cases": [{"case": "first", "detected": True}, {"case": "second", "detected": False}]},
+                       {**good, "cases": "first second"},
+                       {**good, "undetected": ["second"]},
+                       {key: value for key, value in good.items() if key != "source_fingerprint"}):
+            report.write_text(json.dumps(broken))
+            with self.assertRaises(ValueError):
+                gate.validate_report(report, schema, "abc")
+
     def test_snapshot_rejects_file_and_directory_symlinks(self):
         target = self.directory / "target"
         target.mkdir()
