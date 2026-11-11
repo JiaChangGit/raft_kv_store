@@ -1,0 +1,15 @@
+[package]
+name = "raft-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+raft-protocol.workspace = true
+raft-core.workspace = true
+raft-storage = { path = "../raft-storage" }
+raft-transport = { path = "../raft-transport" }
+kv-state = { path = "../kv-state" }
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"

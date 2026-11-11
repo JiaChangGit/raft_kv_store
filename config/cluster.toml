@@ -1,0 +1,16 @@
+# Normal direct topology. Fault tests provide all six directional routes.
+cluster_id = "raft-kv-v1"
+[[nodes]]
+id = 1
+peer_addr = "127.0.0.1:7101"
+client_addr = "127.0.0.1:7201"
+
+[[nodes]]
+id = 2
+peer_addr = "127.0.0.1:7102"
+client_addr = "127.0.0.1:7202"
+
+[[nodes]]
+id = 3
+peer_addr = "127.0.0.1:7103"
+client_addr = "127.0.0.1:7203"

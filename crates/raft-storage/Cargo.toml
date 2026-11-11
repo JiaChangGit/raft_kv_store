@@ -1,0 +1,14 @@
+[package]
+name = "raft-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+raft-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+raft-core.workspace = true
+kv-state = { path = "../kv-state" }

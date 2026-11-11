@@ -1,0 +1,190 @@
+{
+  "identity": "alternative-acceptance-v1",
+  "version": 1,
+  "original_gate_available": false,
+  "source_manifest": "docs/SOURCE_MANIFEST.json",
+  "claims": "Finite engineering acceptance; not original gate equivalence or a formal protocol proof.",
+  "cumulative": true,
+  "require_previous_receipt": true,
+  "common_commands": [
+    [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "test",
+      "--workspace"
+    ]
+  ],
+  "phases": {
+    "00": {
+      "title": "Foundation and deterministic harness",
+      "rust_tests": [
+        "simulation_seed_is_replayable",
+        "quorum_is_two_of_three"
+      ],
+      "pytest_nodes": [],
+      "required_files": [
+        "Cargo.toml",
+        "crates/raft-protocol/Cargo.toml",
+        "crates/raft-core/Cargo.toml",
+        "crates/raft-sim/Cargo.toml",
+        "docs/API_CONTRACT.md"
+      ]
+    },
+    "01": {
+      "title": "Election term and vote safety",
+      "rust_tests": [
+        "single_leader_per_term",
+        "stale_candidate_rejected",
+        "vote_persist_intent_before_reply"
+      ],
+      "pytest_nodes": [],
+      "required_files": []
+    },
+    "02": {
+      "title": "Replication conflict repair and current-term commit",
+      "rust_tests": [
+        "previous_term_entry_requires_current_term_commit",
+        "conflicting_suffix_repaired",
+        "append_response_cannot_inflate_match_index"
+      ],
+      "pytest_nodes": [],
+      "required_files": [
+        "docs/COMMIT_RULE_REVIEW.md"
+      ]
+    },
+    "03": {
+      "title": "WAL durable barriers and recovery",
+      "rust_tests": [
+        "vote_after_restart_not_duplicated",
+        "append_ack_after_durable_sync",
+        "uncommitted_suffix_not_applied_after_recovery",
+        "truncated_wal_tail_safe"
+      ],
+      "pytest_nodes": [],
+      "required_files": [
+        "crates/raft-storage/Cargo.toml",
+        "docs/STORAGE_FORMAT_V1.md"
+      ]
+    },
+    "04": {
+      "title": "TCP and three actual processes",
+      "rust_tests": [
+        "tcp_framing_handles_partial_io",
+        "rpc_correlation_ignores_stale_reply"
+      ],
+      "pytest_nodes": [
+        "tests/integration/test_cluster_smoke.py::test_three_process_election_and_restart"
+      ],
+      "required_files": [
+        "crates/raft-transport/Cargo.toml",
+        "crates/raft-node/Cargo.toml",
+        "config/cluster.toml"
+      ]
+    },
+    "05": {
+      "title": "KV replicated GET and retry deduplication",
+      "rust_tests": [
+        "retry_same_request_has_single_effect",
+        "replicated_get_linearizable",
+        "same_id_different_command_rejected"
+      ],
+      "pytest_nodes": [
+        "tests/integration/test_client_retry.py::test_retry_after_leader_crash"
+      ],
+      "required_files": [
+        "crates/kv-state/Cargo.toml",
+        "tools/kv_client.py",
+        "docs/CLIENT_CONTRACT.md"
+      ]
+    },
+    "06": {
+      "title": "Directional frame faults",
+      "rust_tests": [],
+      "pytest_nodes": [
+        "tests/integration/test_faults.py::test_partitioned_leader_cannot_commit_or_read",
+        "tests/integration/test_faults.py::test_heal_recovers_and_converges",
+        "tests/integration/test_faults.py::test_fault_proxy_does_not_bypass_route"
+      ],
+      "required_files": [
+        "tools/fault_proxy.py",
+        "tools/cluster.py",
+        "docs/FAULT_SCHEDULE_FORMAT.md"
+      ]
+    },
+    "07": {
+      "title": "Independent checker and randomized verification",
+      "rust_tests": [
+        "simulation_randomized_invariants"
+      ],
+      "pytest_nodes": [
+        "tests/history/test_checker.py::test_linearizability_checker_rejects_stale_read",
+        "tests/history/test_checker.py::test_pending_operation_has_unknown_outcome",
+        "tests/integration/test_randomized.py::test_seeded_fault_history_is_linearizable"
+      ],
+      "required_files": [
+        "tools/linearizability.py",
+        "docs/VERIFICATION_FINDINGS.md",
+        "artifacts/reports/verification.json"
+      ]
+    },
+    "08": {
+      "title": "Benchmark and release evidence",
+      "rust_tests": [],
+      "pytest_nodes": [
+        "tests/integration/test_benchmark_smoke.py::test_benchmark_smoke"
+      ],
+      "required_files": [
+        "tools/benchmark.py",
+        "docs/IMPLEMENTATION_REPORT.md",
+        "artifacts/reports/benchmark.json"
+      ]
+    }
+  },
+  "reports": {
+    "07": {
+      "path": "artifacts/reports/verification.json",
+      "required_nonempty": [
+        "command"
+      ],
+      "required_positive_integer": [
+        "seed_count",
+        "event_count",
+        "pass_count"
+      ],
+      "required_empty_array": [
+        "failures"
+      ]
+    },
+    "08": {
+      "path": "artifacts/reports/benchmark.json",
+      "required_nonempty": [
+        "command",
+        "metrics",
+        "environment"
+      ],
+      "required_positive_integer": [
+        "run_count"
+      ]
+    }
+  },
+  "limits": [
+    "Original required-files, fingerprint and script semantics are unavailable.",
+    "Named test discovery and execution do not establish assertion quality; independent review required.",
+    "Subprocess tests cover process crashes, not arbitrary storage hardware power loss."
+  ]
+}

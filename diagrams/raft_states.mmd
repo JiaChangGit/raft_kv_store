@@ -1,0 +1,26 @@
+---
+config:
+  look: neo
+  theme: neutral
+  fontFamily: 'Noto Sans CJK TC, Microsoft JhengHei, PingFang TC, sans-serif'
+---
+%% Source: Core::new/begin_election/become_leader/step_down/storage_failed.
+%% Static role transitions. Persist barrier precedes vote-related sends; not a timing guarantee.
+%% Stopped is runtime termination, not a Core Role. Same-term valid AE defensively
+%% demotes even a Leader; a second legitimate leader in one term is unreachable
+%% under Raft Election Safety and the non-Byzantine assumptions.
+stateDiagram-v2
+    state "追隨者" as Follower
+    state "候選人" as Candidate
+    state "領導者" as Leader
+    state "執行器停止" as Stopped
+    [*] --> Follower: 重啟回復
+    Follower --> Candidate: 有效選舉逾時
+    Candidate --> Candidate: 有效選舉逾時
+    Candidate --> Leader: 兩個不同合法票
+    Candidate --> Follower: 有效AE或較高term
+    Leader --> Follower: 觀察到較高term
+    Leader --> Follower: 同term有效AE
+    Follower --> Stopped: 持久化失敗
+    Candidate --> Stopped: 持久化失敗
+    Leader --> Stopped: 持久化失敗

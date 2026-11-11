@@ -1,0 +1,155 @@
+{
+  "purpose": "Original supplied material identity; extracted files are convenience copies, not original package assets.",
+  "originals": {
+    "START_HERE_zh-TW.md": "0f643ae09cbf8af7fdc93f5bcfea8c74fa31b1fb24e8b4e126be85b210dfa8b4",
+    "01_FEASIBILITY_REVIEW.md": "ed9ade004507029a7a862876ad9d38f80d767a367e5d5cb018069199552794f8",
+    "ALL_IN_ONE_SPEC.md": "651de052a66dbc268a25195397b42d670c4503f113ddf45bd162820ca09a4f01"
+  },
+  "extracted": [
+    {
+      "source_label": "START_HERE_zh-TW.md",
+      "path": "docs/reference/START_HERE_zh-TW.md",
+      "sha256": "848baec60491e4890ac476e4c47677257c971a5db22234c736390b90dffd0b5e",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "README.md",
+      "path": "docs/reference/README.md",
+      "sha256": "ae00a5977db0d217362b19c7086327cbc15376380c8eeffd3788bcd3eee95b60",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "AGENTS.md",
+      "path": "docs/reference/AGENTS.md",
+      "sha256": "2bd548a2e603a7929baf73709b416552a3c04cbe7e236b238bb4dc35fb337160",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "docs/01_FEASIBILITY_REVIEW.md",
+      "path": "docs/reference/docs/01_FEASIBILITY_REVIEW.md",
+      "sha256": "e16b4f8ca2ac9d9c289061b2d9f74d9acf1f7dfe11d68d29dc2ba9f9d19a14ea",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "docs/02_ARCHITECTURE_RFC.md",
+      "path": "docs/reference/docs/02_ARCHITECTURE_RFC.md",
+      "sha256": "296a2555fb03976d9315438bd2cc9fe5a8c301a06d469eec6caf83b5ec6708e1",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "docs/03_PROTOCOL_STORAGE.md",
+      "path": "docs/reference/docs/03_PROTOCOL_STORAGE.md",
+      "sha256": "f716dcaedb3078ce2d5a552cb183a7182a46722db580e8ca1d71628c6b1d0b1d",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "docs/04_INVARIANTS_TEST_PLAN.md",
+      "path": "docs/reference/docs/04_INVARIANTS_TEST_PLAN.md",
+      "sha256": "2f845c46677fcdb10b80b85ffd3b237801a88a436ef1dfd81ba5ea6d9f780cf5",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "docs/05_RECOVERY_CLIENT_SEMANTICS.md",
+      "path": "docs/reference/docs/05_RECOVERY_CLIENT_SEMANTICS.md",
+      "sha256": "26e64c7d747794b2db99d660b58b2b972a80919d06720d0ff872c4799927d1f0",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "docs/06_ENVIRONMENT_OPERATIONS.md",
+      "path": "docs/reference/docs/06_ENVIRONMENT_OPERATIONS.md",
+      "sha256": "b52ef194f553d9d1629a9b4653ceb289e52b4c9c0a6bd0c43b1b6e85eb978537",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "docs/07_IMPLEMENTATION_ROADMAP.md",
+      "path": "docs/reference/docs/07_IMPLEMENTATION_ROADMAP.md",
+      "sha256": "2f7ce847745c747aaa37984febbcb81465720fb286247e87dd079f6619fc369d",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "docs/08_RAFT_PAPER_TRACEABILITY.md",
+      "path": "docs/reference/docs/08_RAFT_PAPER_TRACEABILITY.md",
+      "sha256": "26cedb2ef02e0e9ff1b8fe280bac295f222995d85fa8677ca41815a26fe5e1a0",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "docs/09_DECISIONS_ADR.md",
+      "path": "docs/reference/docs/09_DECISIONS_ADR.md",
+      "sha256": "812fecbd87963524bada6ebffc2463e6fb0858e7d8adf35226dc822cb819f27a",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "docs/10_RELEASE_ACCEPTANCE.md",
+      "path": "docs/reference/docs/10_RELEASE_ACCEPTANCE.md",
+      "sha256": "22f3d70dd360dfb3a6a22ec0b9afa62bd99e1c41763c5b34c37592490d09d186",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "codex/HOW_TO_RUN.md",
+      "path": "docs/reference/codex/HOW_TO_RUN.md",
+      "sha256": "b15a20b4c18beb056d326f1052b8421d20f682f4d81d667d5bd101ed23638cdf",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "codex/PHASE_00_foundation_and_deterministic_harness.md",
+      "path": "docs/reference/codex/PHASE_00_foundation_and_deterministic_harness.md",
+      "sha256": "7eb433f418d8834ccaa74923cde3f5c304377f44ab74f0609256188af8e7fb6f",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "codex/PHASE_01_election_term_and_vote_safety.md",
+      "path": "docs/reference/codex/PHASE_01_election_term_and_vote_safety.md",
+      "sha256": "12f41435312a582e093e931789503c7f95fda703babe8bf79a6ae341b3be5922",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "codex/PHASE_02_log_replication_conflict_repair_and_commit.md",
+      "path": "docs/reference/codex/PHASE_02_log_replication_conflict_repair_and_commit.md",
+      "sha256": "bb0c94d0d332d16e7e4acd774ab413bdea784c796ed0c2ef75ec65c3379f5baa",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "codex/PHASE_03_wal_durable_barriers_and_crash_recovery.md",
+      "path": "docs/reference/codex/PHASE_03_wal_durable_barriers_and_crash_recovery.md",
+      "sha256": "cbdf3c82c2e2d597150848b7a086f0c44d39cdfefebf744d2bf1f1a4cf0c9f0a",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "codex/PHASE_04_linux_tcp_transport_and_three_processes.md",
+      "path": "docs/reference/codex/PHASE_04_linux_tcp_transport_and_three_processes.md",
+      "sha256": "f8a4a2262b17ae862c1e0a53dfdee866c750f2eb5934a75cd0e65c0f0aba066e",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "codex/PHASE_05_kv_linearizable_get_and_client_deduplication.md",
+      "path": "docs/reference/codex/PHASE_05_kv_linearizable_get_and_client_deduplication.md",
+      "sha256": "24e584bcbcbc1d0b0b0d28948e06fd78cf32ef793fc28797ee943a8be1ccb276",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "codex/PHASE_06_directional_fault_injection_and_multi-process_failures.md",
+      "path": "docs/reference/codex/PHASE_06_directional_fault_injection_and_multi-process_failures.md",
+      "sha256": "a37250ab2396448a871b1e4eff92633a28a056996909bab6dad1f3e5226db072",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "codex/PHASE_07_independent_history_checker_and_randomized_verification.md",
+      "path": "docs/reference/codex/PHASE_07_independent_history_checker_and_randomized_verification.md",
+      "sha256": "42af563ccbffb433351ba48e77011e1a430b20f9ba6a9a4bb834e37281d2a099",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    },
+    {
+      "source_label": "codex/PHASE_08_benchmark_debug_evidence_and_final_review.md",
+      "path": "docs/reference/codex/PHASE_08_benchmark_debug_evidence_and_final_review.md",
+      "sha256": "8036d60ad899eded6d8a1433b1f937c68da0a6f1951034a0e378a75afa93dda9",
+      "derived_from": "ALL_IN_ONE_SPEC.md"
+    }
+  ],
+  "missing_original_assets": [
+    "raft_codex_implementation_kit.zip",
+    "gates.json",
+    "scripts/preflight.sh",
+    "scripts/run_phase.sh",
+    "scripts/verify_gate.py"
+  ]
+}

@@ -1,0 +1,30 @@
+---
+config:
+  look: neo
+  theme: neutral
+  fontFamily: 'Noto Sans CJK TC, Microsoft JhengHei, PingFang TC, sans-serif'
+---
+%% Source: raft-node Actor::run/execute/reply_request, Core::step/message/advance_commit,
+%% Wal::save, StateMachine::apply. Static normal path, not an observed runtime trace.
+%% Core and Exec share one actor thread. Omits node3, retries, faults and later commit notice.
+sequenceDiagram
+    participant C as 客戶端
+    participant E as 執行器
+    participant R as 共識核心
+    participant W as 本地WAL
+    participant F as 追隨者
+    participant K as 本地KV
+    C->>E: frame輸入
+    E->>R: Propose事件
+    R-->>E: Persist與Send
+    E->>W: save與sync
+    W-->>E: 同步成功
+    E->>R: persisted通知
+    E->>F: AppendEntries
+    Note over F: 核對與同步後ACK
+    F-->>E: durable ACK
+    E->>R: 回覆事件
+    R-->>E: 多數合法提交
+    E->>K: Apply
+    K-->>E: 保存結果
+    E-->>C: 成功回覆

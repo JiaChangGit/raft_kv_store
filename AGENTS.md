@@ -1,0 +1,20 @@
+# Rust Raft KV Store
+
+Work only in this project. The sibling ai-general-framework checkout is read-only.
+Preserve the three original specification Markdown files. Original ZIP/gates/scripts
+were not supplied; acceptance/v1.json is an explicitly different acceptance contract.
+
+Implement P00 through P08 in dependency order, with tests and independent review.
+Use one actual raft-core in simulator and runtime, fixed IDs 1/2/3 and quorum 2.
+No existing Raft library, unsafe Rust, snapshot, membership changes, leases or ReadIndex.
+One actor owns consensus state. Persist term/vote/log before dependent messages;
+storage failures fail closed. Only durable matches and current-term entries advance
+leader commit. Recovery restores only durable term/vote/log, never applies all WAL.
+All new GETs replicate; success follows commit and local apply. Deduplicate using
+replicated (client_id, sequence, canonical command, original result) records.
+All fault-test peer traffic, including reconnects, uses complete-frame proxies.
+Never weaken tests or acceptance to make an implementation pass. Record actual
+commands, counts, failures, limits and pending work; no formal-correctness claim.
+No push, PR or deployment. User authorized local implementation and required tools.
+
+Read .agf/managed/project-rules.md and relevant deployed skills when applicable.

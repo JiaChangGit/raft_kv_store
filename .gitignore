@@ -1,0 +1,9 @@
+/target/
+/.venv/
+/.agf/
+/data/
+__pycache__/
+.pytest_cache/
+*.pyc
+*Zone.Identifier
+/artifacts/
