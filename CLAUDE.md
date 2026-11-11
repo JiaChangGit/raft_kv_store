@@ -8,10 +8,14 @@
   `ai-general-framework` 保持唯讀。不可覆寫三份原始規格，亦不可為了通過 gate 降低要求。
 - P00～P08 與工程強化已有歷史通過紀錄；新增本交接文件使來源指紋改變。執行
   `.venv/bin/python scripts/status.py` 查看當前狀態，勿將舊 receipt 當成目前來源的通過證據。
-- V2 的範圍已定為 **WAL header integrity**（2026-11-12 使用者確認：header CRC＋檔頭、
-  離線遷移工具、殘尾截斷前保留副本）。規格草稿在 [STORAGE_FORMAT_V2.md](docs/STORAGE_FORMAT_V2.md)，
-  驗收草稿在 `acceptance/v2.json`；**兩者待使用者審閱，其中 D1～D4 未定案前不要開始實作。**
-  snapshot、compaction 等其他方向仍未獲採納。
+- 專案目的是**學習與面試展示**。整體計畫、已確認的決定、階段順序與刪減方案見
+  [最終版路線圖](docs/ROADMAP.md)：只做一個最後版本（不做新舊格式並存與遷移），範圍含 WAL header
+  integrity、snapshot 與壓縮、ReadIndex、membership change、效能優化；開發中遇到的 bug 寫成
+  新手導向教學。**路線圖待使用者確認後才開始 S0。**
+- `docs/STORAGE_FORMAT_V2.md` 與 `acceptance/v2.json` 是依舊前提（保留 v1、雙向遷移）寫的草稿，
+  其中 §7、§8 與遷移相關驗收已不適用，將在 S1 重寫；格式與回復的設計（§4～§6）仍可沿用。
+- 下方 `AGENTS.md` 仍記載 V1 的禁止事項（snapshot、membership change、ReadIndex、固定三節點）；
+  依路線圖，各階段開始時才改寫對應條目，未到的階段仍須遵守。
 - 框架的增刪修候選與驗證方式另見 [框架改進建議](docs/FRAMEWORK_IMPROVEMENT_PROPOSALS.md)；
   那是供討論的建議，不代表已授權修改相鄰框架。
 - 框架資源（2026-11-12 以 `agf project update --host claude` 配置）：skills 在 `.claude/skills/`
