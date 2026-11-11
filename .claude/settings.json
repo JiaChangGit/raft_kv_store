@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(//home/user/src/ai-general-framework/**)",
+      "Bash(git push:*)",
+      "Bash(rtk git push:*)",
+      "Bash(gh pr create:*)"
+    ]
+  }
+}

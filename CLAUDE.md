@@ -12,5 +12,15 @@
   V2 或假設 snapshot、compaction 已獲採納。WAL header integrity 是有實際反例的優先候選。
 - 框架的增刪修候選與驗證方式另見 [框架改進建議](docs/FRAMEWORK_IMPROVEMENT_PROPOSALS.md)；
   那是供討論的建議，不代表已授權修改相鄰框架。
+- 框架資源（2026-11-12 以 `agf project update --host claude` 配置）：skills 在 `.claude/skills/`
+  （debug-root-cause、guide-learning、read-research、review-change、trace-code），與
+  `.agents/skills/` 內容相同，皆由框架管理，不要直接修改副本。協作約定在
+  `.agf/managed/project-rules.md`，按需指引在 `.agf/managed/guides/`；CLI 為
+  `python3 -B /home/user/src/ai-general-framework/scripts/agf.py`（加 `-B` 避免在唯讀框架寫入快取）。
+- 使用者想藉本專案的開發過程改進框架：凡是與框架、skill、宿主載入、交接或驗收工具有關的
+  實際經驗（含順利與卡住的），當下追記到 [框架經驗紀錄](docs/FRAMEWORK_EXPERIENCE_LOG.md)，
+  依該檔的欄位寫明證據與可歸因範圍；不要事後憑印象補寫，也不要因此修改框架。
+- `.claude/`、`.agents/` 與 `docs/` 都計入來源指紋；改動後舊 receipt 即不適用於目前來源。
+  `.claude/settings.json` 以 deny 規則擋下框架目錄的寫入與 push／建立 PR。
 - 保留使用者資料、現有未追蹤檔案及本機證據；不自行 push、建立 PR 或部署。
   測試、工具、框架配置的實際狀態與適用權限請依交接文件和當前環境確認。
