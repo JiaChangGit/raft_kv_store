@@ -11,7 +11,12 @@
 - 專案目的是**學習與面試展示**。整體計畫、已確認的決定、階段順序與刪減方案見
   [最終版路線圖](docs/ROADMAP.md)：只做一個最後版本（不做新舊格式並存與遷移），範圍含 WAL header
   integrity、snapshot 與壓縮、ReadIndex、membership change、效能優化；開發中遇到的 bug 寫成
-  新手導向教學。**路線圖待使用者確認後才開始 S0。**
+  新手導向教學。路線圖已於 2026-11-12 獲使用者確認；進度以 Git tag 與 `scripts/status.py` 為準。
+- 有效的驗收契約是 `acceptance/final.json`（說明見 `docs/ACCEPTANCE_FINAL.md`），receipt 在
+  `artifacts/acceptance-final/`；`acceptance/v1.json` 與 `artifacts/acceptance-v1/` 是歷史紀錄。
+  下方較早的條目若提到「P00～P08 的舊 receipt」，指的是 v1 時期。
+- 寫 bug 教學用專案自有的 `write-bug-lesson` skill（`.claude/skills/`），樣板與規則在 `docs/lessons/`；
+  Raft 論文出處查 `docs/reference/raft-notes.md`，引用前回原文核對。
 - `docs/STORAGE_FORMAT_V2.md` 與 `acceptance/v2.json` 是依舊前提（保留 v1、雙向遷移）寫的草稿，
   其中 §7、§8 與遷移相關驗收已不適用，將在 S1 重寫；格式與回復的設計（§4～§6）仍可沿用。
 - 下方 `AGENTS.md` 仍記載 V1 的禁止事項（snapshot、membership change、ReadIndex、固定三節點）；
@@ -26,7 +31,8 @@
 - 使用者想藉本專案的開發過程改進框架：凡是與框架、skill、宿主載入、交接或驗收工具有關的
   實際經驗（含順利與卡住的），當下追記到 [框架經驗紀錄](docs/FRAMEWORK_EXPERIENCE_LOG.md)，
   依該檔的欄位寫明證據與可歸因範圍；不要事後憑印象補寫，也不要因此修改框架。
-- `.claude/`、`.agents/` 與 `docs/` 都計入來源指紋；改動後舊 receipt 即不適用於目前來源。
+- `docs/`、`scripts/`、`acceptance/` 與程式都計入來源指紋，改動後既有 receipt 即不適用於目前來源；
+  `.claude/` 與 `.agents/` 自 2026-11-12 起排除在指紋外。
   `.claude/settings.json` 以 deny 規則擋下框架目錄的寫入與 push／建立 PR。
 - 保留使用者資料、現有未追蹤檔案及本機證據；不自行 push、建立 PR 或部署。
   測試、工具、框架配置的實際狀態與適用權限請依交接文件和當前環境確認。

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Alternative acceptance wrapper only. This does not invoke an AI or generate code.
+# Final acceptance wrapper only. This does not invoke an AI or generate code.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/.."
-if [[ $# != 1 || ! "$1" =~ ^0[0-8]$ ]]; then
-  printf 'Usage: bash scripts/run_phase.sh 00..08\n' >&2
+if [[ $# != 1 ]]; then
+  printf 'Usage: bash scripts/run_phase.sh PHASE (a phase key in acceptance/final.json)\n' >&2
   exit 2
 fi
 if [[ -x .venv/bin/python ]]; then

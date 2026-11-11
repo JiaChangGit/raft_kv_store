@@ -74,7 +74,7 @@ def main():
         run(["cargo","clippy","--locked","--workspace","--all-targets","--","-D","warnings"],"clippy")
         run(["cargo","test","--locked","--workspace"],"Rust tests")
         run(["cargo","build","--locked","--workspace","--bins"],"real process executables")
-        run([python,"-m","pytest","-q","tests","scripts/test_verify_gate.py",f"--junitxml={output/'pytest.xml'}"],"Python tests")
+        run([python,"-m","pytest","-q","tests","scripts/test_verify_gate.py","scripts/test_check_lessons.py",f"--junitxml={output/'pytest.xml'}"],"Python tests")
         run([python,"-m","tools.learning_demo","--output-dir",source/"artifacts/runs/clean-demo"],"client CLI and crash/restart")
         demo=json.loads((source/"artifacts/runs/clean-demo/result.json").read_text())
         if demo["status"]!="PASS": raise RuntimeError("clean demo did not pass")

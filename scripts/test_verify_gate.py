@@ -72,10 +72,10 @@ class EvidenceBoundaryTests(unittest.TestCase):
         root = self.directory / "workspace"
         (root / "scripts").mkdir(parents=True)
         (root / "acceptance").mkdir()
-        (root / "artifacts/acceptance-v1").mkdir(parents=True)
+        (root / gate.RECEIPTS).mkdir(parents=True)
         shutil.copy2(Path(gate.__file__), root / "scripts/verify_gate.py")
-        shutil.copy2(gate.CONTRACT, root / "acceptance/v1.json")
-        previous = root / "artifacts/acceptance-v1/phase-00.last-attempt.json"
+        shutil.copy2(gate.CONTRACT, root / "acceptance" / gate.CONTRACT.name)
+        previous = root / gate.RECEIPTS / "phase-00.last-attempt.json"
         previous.write_text(json.dumps({"status": "PASS"}))
         payload = self.directory / "payload.rs"
         payload.write_text("outside workspace snapshot")
@@ -90,6 +90,39 @@ class EvidenceBoundaryTests(unittest.TestCase):
         self.assertEqual(latest["status"], "FAIL")
         self.assertIn("symlink", latest["error"])
         self.assertTrue((root / latest["evidence_directory"] / "result.json").exists())
+
+
+class ContractContinuityTests(unittest.TestCase):
+    """Every property accepted by the historical v1 contract must stay named in the final one."""
+
+    def setUp(self):
+        self.final = json.loads(gate.CONTRACT.read_text())
+        self.v1 = json.loads((gate.ROOT / "acceptance/v1.json").read_text())
+
+    def test_every_v1_test_is_mapped_to_existing_final_tests(self):
+        final_tests = {name: phase for phase, body in self.final["phases"].items()
+                       for name in body["rust_tests"] + body["pytest_nodes"]}
+        for body in self.v1["phases"].values():
+            for name in body["rust_tests"] + body["pytest_nodes"]:
+                entry = self.final["v1_mapping"].get(name)
+                self.assertIsNotNone(entry, f"v1 test dropped without mapping: {name}")
+                self.assertTrue(entry["final_tests"], name)
+                self.assertTrue(entry["note"].strip(), name)
+                for target in entry["final_tests"]:
+                    self.assertIn(target, final_tests, f"{name} maps to a test not in any final phase")
+
+    def test_v1_reports_and_required_files_are_not_dropped(self):
+        final_files = {name for body in self.final["phases"].values() for name in body["required_files"]}
+        waived = self.final.get("v1_required_files_replaced", {})
+        for body in self.v1["phases"].values():
+            for name in body["required_files"]:
+                self.assertTrue(name in final_files or waived.get(name, "").strip(), name)
+        for phase, schema in self.v1["reports"].items():
+            self.assertEqual(self.final["reports"].get(phase), schema)
+
+    def test_host_configuration_is_outside_fingerprint_but_sources_are_not(self):
+        self.assertTrue({".claude", ".agents"} <= gate.EXCLUDED)
+        self.assertFalse({"docs", "scripts", "crates", "tests", "tools", "acceptance"} & gate.EXCLUDED)
 
 
 if __name__ == "__main__":

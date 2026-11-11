@@ -4,9 +4,11 @@
 三個獨立 Linux process；同一份 `raft-core` 用於虛擬模擬器與 TCP runtime。
 
 原始套件、gates.json、runner/checker 未提供。三份原始 Markdown 完整保留，
-本專案採用另行定義的 [替代驗收 v1](docs/ACCEPTANCE_V1.md)，不宣稱等同原 gate 或形式化證明。
-目前結果以 `artifacts/acceptance-v1/phase-XX.last-attempt.json` 與
-[驗證紀錄](docs/VERIFICATION_FINDINGS.md)為準；程式存在不代表所有驗收已完成。
+本專案採用另行定義的驗收契約，不宣稱等同原 gate 或形式化證明。目前有效的是
+[最終驗收契約](docs/ACCEPTANCE_FINAL.md)（`acceptance/final.json`）；較早的
+[替代驗收 v1](docs/ACCEPTANCE_V1.md) 保留為歷史紀錄。目前結果請執行
+`.venv/bin/python scripts/status.py`，並以 `artifacts/acceptance-final/` 內的 receipt 為準；
+程式存在不代表所有驗收已完成。後續規劃見 [路線圖](docs/ROADMAP.md)，開發中遇到的 bug 見 [Bug 教學](docs/lessons/README.md)。
 
 ## 環境與建置
 

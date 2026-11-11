@@ -1,5 +1,8 @@
 # 替代驗收 v1
 
+> **2026-11-12 起為歷史紀錄。** 目前有效的契約是 [最終驗收契約](ACCEPTANCE_FINAL.md)；本文件與 `acceptance/v1.json`、
+> `artifacts/acceptance-v1/` 內的 receipt 保留原樣，供對照當時的條件與證據。下文的命令對應當時的 checker，現在的腳本已改讀最終契約。
+
 本專案只收到三份 Markdown，未收到原始 ZIP、`gates.json`、runner 或 checker。`docs/reference/` 是從 `ALL_IN_ONE_SPEC.md` 抽出的便利閱讀副本，不是找回的原始套件；來源標示、SHA-256 與缺少資產見 [SOURCE_MANIFEST.json](SOURCE_MANIFEST.json)。根目錄三份原始材料保留。
 
 使用者已同意建立完整 V1、自行準備環境並採用另訂的替代驗收。正式的本地驗收契約是 [acceptance/v1.json](../acceptance/v1.json)，名稱固定為 `alternative-acceptance-v1`。它取用彙整規格的具名測試、階段順序與報告要求，但不能宣稱與未取得的原版等價。

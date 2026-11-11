@@ -18,3 +18,23 @@ commands, counts, failures, limits and pending work; no formal-correctness claim
 No push, PR or deployment. User authorized local implementation and required tools.
 
 Read .agf/managed/project-rules.md and relevant deployed skills when applicable.
+
+## Final-version roadmap (2026-11-12, user-approved)
+
+The purpose is learning and interview demonstration. docs/ROADMAP.md is the plan;
+acceptance/final.json is the active contract and acceptance/v1.json is history.
+The V1 rules above stay in force until the stage that changes them begins:
+
+| Rule above | Changes at | Until then |
+|---|---|---|
+| "No ... snapshot" | S2 | forbidden |
+| "No ... ReadIndex", "All new GETs replicate" | S3 | in force |
+| "fixed IDs 1/2/3 and quorum 2", "No ... membership changes" | S4 | in force |
+| No existing Raft library, no unsafe Rust, no leases | never | in force |
+
+When a stage starts: write its specification first, get the user's approval, then
+edit only that row and the matching sentence above, in the same commit as the
+specification. Every other rule (persist before dependent effects, fail closed on
+storage errors, current-term commit, recovery never applies the whole WAL,
+deduplication, complete-frame proxies, never weaken tests) carries over unchanged.
+Bugs met along the way become lessons under docs/lessons (see its README).

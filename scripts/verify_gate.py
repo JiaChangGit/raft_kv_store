@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Alternative acceptance v1, not a reconstruction of the missing original gate."""
+"""Final acceptance contract runner; not a reconstruction of the missing original gate."""
 from __future__ import annotations
 
 import argparse
@@ -14,8 +14,11 @@ import time
 from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT = ROOT / "acceptance/v1.json"
-EXCLUDED = {".git", ".agf", ".venv", "target", "artifacts", "__pycache__", ".pytest_cache"}
+CONTRACT = ROOT / "acceptance/final.json"
+RECEIPTS = "artifacts/acceptance-final"
+# .claude and .agents hold framework-managed host copies (checked by `agf project status`),
+# not program behaviour; they are outside the source fingerprint by user decision 2026-11-12.
+EXCLUDED = {".git", ".agf", ".claude", ".agents", ".venv", "target", "artifacts", "__pycache__", ".pytest_cache"}
 
 
 def sha(path: Path) -> str:
@@ -92,15 +95,17 @@ def atomic_json(path: Path, value: dict) -> None:
 
 
 def main() -> int:
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    order = sorted(contract["phases"])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=[f"{n:02}" for n in range(9)])
+    parser.add_argument("phase", choices=order)
     parser.add_argument("--timeout", type=int, default=1200, help="Per-command timeout in seconds")
     args = parser.parse_args()
-    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    position = order.index(args.phase)
     contract_hash, checker_hash = sha(CONTRACT), sha(Path(__file__))
     started = datetime.now(timezone.utc).isoformat()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-    out = ROOT / "artifacts/acceptance-v1" / f"P{args.phase}-{run_id}"
+    out = ROOT / RECEIPTS / f"P{args.phase}-{run_id}"
     out.mkdir(parents=True, exist_ok=False)
     receipts = out.parent
     result = {"acceptance": contract["identity"], "phase": args.phase,
@@ -149,14 +154,14 @@ def main() -> int:
             if sha(ROOT / name) != expected:
                 raise ValueError(f"Original supplied material changed: {name}")
         result["original_materials_verified"] = len(manifest["originals"])
-        if args.phase != "00":
-            previous = f"{int(args.phase)-1:02}"
+        if position > 0:
+            previous = order[position - 1]
             previous_path = receipts / f"phase-{previous}.last-attempt.json"
             previous_data = json.loads(previous_path.read_text(encoding="utf-8"))
             if previous_data.get("status") != "PASS" or previous_data.get("contract_sha256") != contract_hash or previous_data.get("checker_sha256") != checker_hash:
                 raise ValueError(f"Previous phase {previous} lacks a passing receipt for this acceptance/checker version")
             result["previous_receipt"] = {"path": previous_path.relative_to(ROOT).as_posix(), "sha256": sha(previous_path)}
-        phases = [contract["phases"][f"{n:02}"] for n in range(int(args.phase) + 1)]
+        phases = [contract["phases"][name] for name in order[:position + 1]]
         rust_tests = [name for phase in phases for name in phase["rust_tests"]]
         pytest_nodes = [name for phase in phases for name in phase["pytest_nodes"]]
         for phase in phases:
@@ -186,13 +191,13 @@ def main() -> int:
                     raise ValueError(f"pytest node must execute exactly one unskipped passing case: {node}")
                 result["pytest_nodes"].append({"node": node, "passed": 1, "junit": junit.relative_to(ROOT).as_posix(), "sha256": sha(junit)})
         for phase, schema in contract["reports"].items():
-            if int(phase) <= int(args.phase):
+            if phase <= args.phase:
                 result["reports"].append(validate_report(ROOT / schema["path"], schema))
         _, after = snapshot(ROOT)
         if after != fingerprint:
             raise ValueError("Source changed during acceptance; preserve diagnostics and rerun after changes settle")
         result["status"] = "PASS"
-        result["meaning"] = "Alternative acceptance v1 passed on this source; human assertion/protocol review remains separate."
+        result["meaning"] = "Final acceptance contract passed through this phase on this source; human assertion/protocol review remains separate."
     except (ValueError, OSError, KeyError, json.JSONDecodeError) as exc:
         result["error"] = str(exc)
     finally:
