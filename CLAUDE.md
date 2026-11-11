@@ -8,8 +8,10 @@
   `ai-general-framework` 保持唯讀。不可覆寫三份原始規格，亦不可為了通過 gate 降低要求。
 - P00～P08 與工程強化已有歷史通過紀錄；新增本交接文件使來源指紋改變。執行
   `.venv/bin/python scripts/status.py` 查看當前狀態，勿將舊 receipt 當成目前來源的通過證據。
-- 下一個已約定的方向是**先提出 V2 範圍與驗收設計，和使用者討論**；不要直接實作
-  V2 或假設 snapshot、compaction 已獲採納。WAL header integrity 是有實際反例的優先候選。
+- V2 的範圍已定為 **WAL header integrity**（2026-11-12 使用者確認：header CRC＋檔頭、
+  離線遷移工具、殘尾截斷前保留副本）。規格草稿在 [STORAGE_FORMAT_V2.md](docs/STORAGE_FORMAT_V2.md)，
+  驗收草稿在 `acceptance/v2.json`；**兩者待使用者審閱，其中 D1～D4 未定案前不要開始實作。**
+  snapshot、compaction 等其他方向仍未獲採納。
 - 框架的增刪修候選與驗證方式另見 [框架改進建議](docs/FRAMEWORK_IMPROVEMENT_PROPOSALS.md)；
   那是供討論的建議，不代表已授權修改相鄰框架。
 - 框架資源（2026-11-12 以 `agf project update --host claude` 配置）：skills 在 `.claude/skills/`

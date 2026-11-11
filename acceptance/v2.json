@@ -1,0 +1,121 @@
+{
+  "identity": "acceptance-v2-wal-header-integrity",
+  "version": 1,
+  "status": "DRAFT: awaiting user review. Nothing listed here has been implemented or executed, and scripts/verify_gate.py cannot run this contract yet.",
+  "specification": "docs/STORAGE_FORMAT_V2.md",
+  "claims": "Finite engineering acceptance for WAL format v2 and v1/v2 migration; not a formal proof, not a power-loss or device-failure guarantee.",
+  "relation_to_v1": "acceptance/v1.json stays unchanged and remains a regression gate. V2 is accepted only when P00-P08 and every phase below pass on the same source fingerprint.",
+  "cumulative": true,
+  "require_previous_receipt": true,
+  "common_commands": [
+    ["cargo", "fmt", "--all", "--", "--check"],
+    ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
+    ["cargo", "test", "--workspace"]
+  ],
+  "phases": {
+    "V0": {
+      "title": "Specification and preserved first failure",
+      "required_files": [
+        "docs/STORAGE_FORMAT_V2.md",
+        "docs/STORAGE_FORMAT_V1.md",
+        "crates/raft-storage/tests/fixtures/v1-two-records.wal"
+      ],
+      "required_evidence": [
+        {
+          "path": "artifacts/audit/wal-v2-red/results.json",
+          "must_show": "Cases A and B from the specification reproduced against the v1 reader: exit code 0 and a shortened or rewritten file, with before/after bytes saved."
+        },
+        {
+          "path": "artifacts/audit/wal-v2-red/first-failure.txt",
+          "must_show": "The V2 corruption tests failing before the v2 reader exists or is corrected; never overwritten by later passes."
+        }
+      ],
+      "rust_tests": [],
+      "pytest_nodes": []
+    },
+    "V1": {
+      "title": "v2 layout, durable barriers and recovery",
+      "rust_tests": [
+        {"name": "v2_new_directory_has_file_header_and_version_two_identity", "property": "Fresh directory: node.meta format_version 2, raft.v2.wal is exactly the 40-byte header with valid CRC and matching identity; no raft.wal is created."},
+        {"name": "v2_vote_after_restart_not_duplicated", "property": "Counterpart of P03 vote_after_restart_not_duplicated on the v2 path."},
+        {"name": "v2_append_ack_after_durable_sync", "property": "Counterpart of P03 append_ack_after_durable_sync on the v2 path, including poison after sync failure."},
+        {"name": "v2_uncommitted_suffix_not_applied_after_recovery", "property": "Counterpart of P03 uncommitted_suffix_not_applied_after_recovery on the v2 path."},
+        {"name": "v2_torn_tail_every_cut_is_preserved_then_truncated", "property": "Counterpart of P03 truncated_wal_tail_safe: for every cut point inside the last record, open succeeds with the previous state, the file ends at the previous record, and torn/ holds a file whose bytes equal the removed tail."},
+        {"name": "v2_recovered_prefix_requires_successful_sync", "property": "Recovery sync failure poisons the instance and returns an error."},
+        {"name": "v2_existing_identity_without_wal_fails_closed", "property": "format_version 2 without raft.v2.wal is rejected and no file is created."},
+        {"name": "v2_identity_or_file_header_mismatch_rejected", "property": "Wrong node id, wrong cluster id, file header disagreeing with node.meta, short or CRC-invalid file header: rejected, files unchanged."},
+        {"name": "v2_rejects_v1_directory_without_modifying_it", "property": "Opening a v1 directory fails with a message naming wal_migrate; every file is byte-identical afterwards and no new file other than node.lock exists."},
+        {"name": "v2_leftover_v1_file_warns_and_starts", "property": "Shape 3 of the specification: open succeeds from raft.v2.wal and raft.wal is untouched. Depends on decision D2."}
+      ],
+      "pytest_nodes": []
+    },
+    "V2": {
+      "title": "Corruption matrix",
+      "invariant": "Every case in this phase must end in an open error with all files byte-identical to the corrupted input, unless the property says otherwise.",
+      "rust_tests": [
+        {"name": "v2_reproduced_length_corruption_fails_closed_unchanged", "property": "Cases A (first record length raised past EOF) and B (last record length raised by one) on a v2 file."},
+        {"name": "v2_every_single_bit_flip_fails_closed_unchanged", "property": "For a file with at least three records, flip each bit of each byte in turn, covering the file header, every record header field, payloads and both CRC fields. The test asserts the number of cases equals 8 times the file length."},
+        {"name": "v2_header_field_boundaries_rejected", "property": "With header_crc recomputed so that only the field rule is tested: length 0 and 2 MiB + 1 are rejected; a length past EOF under a valid header_crc is the torn-tail case (preserved, then truncated) and is asserted as such; sequence 0, repeated, skipped; unknown version and type; a v1 record inside a v2 file."},
+        {"name": "v2_seeded_multibyte_corruption_never_accepts_or_shortens", "property": "10000 fixed-seed cases, each overwriting 1 to 64 bytes at a random offset with different bytes. No case may open successfully and no case may change the file length."},
+        {"name": "v2_zero_or_garbage_tail_rejected", "property": "Appended zero blocks and appended random bytes of lengths below and above the header size."},
+        {"name": "v2_torn_sidecar_failure_blocks_truncation", "property": "When the torn-tail copy cannot be written, open fails and the WAL length is unchanged."},
+        {"name": "v2_torn_sidecar_is_idempotent_and_bounded", "property": "Repeating recovery of the same tail yields one file; after more than 8 distinct tails only 8 remain. Depends on decision D3."},
+        {"name": "v2_boundary_truncation_is_documented_as_undetected", "property": "Cutting the file exactly at a record boundary opens successfully with the shorter state. This pins the documented non-guarantee N1 so a future change cannot silently alter it."}
+      ],
+      "pytest_nodes": []
+    },
+    "V3": {
+      "title": "Real process crashes and injected sync failures",
+      "rust_tests": [
+        {"name": "real_process_crash_boundaries_restore_only_complete_transactions", "property": "Existing test, unmodified, now exercising the v2 path through Wal::open."},
+        {"name": "v2_real_process_partial_write_recovers_with_sidecar", "property": "SIGKILL at the after_partial_write failpoint: the next open succeeds with the previous state, no acknowledgement was printed, and torn/ holds the partial bytes."}
+      ],
+      "pytest_nodes": []
+    },
+    "V4": {
+      "title": "Migration tool",
+      "invariant": "After every case, each non-.tmp file that existed before still exists byte-for-byte somewhere under the data directory.",
+      "rust_tests": [
+        {"name": "migrate_v1_fixture_to_v2_preserves_every_payload", "property": "The checked-in v1 fixture converts; record count, sequences, payload bytes and final term/vote/log are equal; the v2 node opens it."},
+        {"name": "migrate_roundtrip_is_byte_identical", "property": "v1 to v2 to v1 reproduces the original raft.wal exactly; v2 to v1 to v2 reproduces raft.v2.wal exactly."},
+        {"name": "migrate_refuses_corrupt_source_unchanged", "property": "CRC error, sequence gap, identity mismatch or invalid transaction in the source: exit code 2, directory unchanged apart from node.lock."},
+        {"name": "migrate_torn_v1_tail_requires_explicit_flag", "property": "Without --accept-torn-tail: exit code 2 and no change. With it: conversion succeeds, the tail is absent from v2 and the original file is archived intact."},
+        {"name": "migrate_later_header_in_v1_tail_is_corruption", "property": "Case A on a v1 file is refused even with --accept-torn-tail."},
+        {"name": "migrate_real_process_crash_at_each_step_converges", "property": "SIGKILL after backup, after draft sync, after draft rename, after the node.meta rename and after archiving, for both directions. The directory is always one of the four shapes; rerunning the same command reaches the target shape with equal state."},
+        {"name": "migrate_sync_failure_never_switches", "property": "Injected sync failure at each step before the switch leaves format_version unchanged."},
+        {"name": "migrate_is_idempotent_from_every_shape", "property": "to-v2 and to-v1 each run twice from shapes 1 to 4; the second run reports already complete and changes nothing."},
+        {"name": "migrate_refuses_locked_directory", "property": "While another process holds node.lock the tool exits non-zero without changes."},
+        {"name": "migrate_down_conversion_keeps_records_written_after_switch", "property": "Convert to v2, append new votes and entries with the v2 writer, convert to v1: the v1 reader returns the newer state."},
+        {"name": "migrate_check_is_read_only", "property": "check creates no file and reports format, shape, counts, last sequence and tail status for v1, v2 and corrupted inputs."}
+      ],
+      "pytest_nodes": []
+    },
+    "V5": {
+      "title": "Cluster behaviour, mutation resistance and full regression",
+      "rust_tests": [],
+      "pytest_nodes": [
+        {"name": "tests/integration/test_wal_v2.py::test_corrupt_header_node_refuses_start_and_cluster_continues", "property": "Three real processes. Stop one node, corrupt a header length in its WAL, restart: it exits non-zero and its file is unchanged; the other two keep committing; the recorded history is linearizable and contains no acknowledgement from the refused node."},
+        {"name": "tests/integration/test_wal_v2.py::test_node_by_node_conversion_preserves_history", "property": "With the cluster serving requests, each node in turn is stopped, converted to v1, shown to be refused by the node binary, converted back to v2 and restarted. Quorum is kept throughout and the history is linearizable. This uses one binary version only."}
+      ],
+      "mutations": [
+        {"name": "skip_header_crc_check", "must_be_killed_by": "v2_every_single_bit_flip_fails_closed_unchanged"},
+        {"name": "truncate_on_header_crc_failure", "must_be_killed_by": "v2_reproduced_length_corruption_fails_closed_unchanged"},
+        {"name": "compare_eof_before_header_crc", "must_be_killed_by": "v2_reproduced_length_corruption_fails_closed_unchanged"},
+        {"name": "truncate_before_sidecar_is_durable", "must_be_killed_by": "v2_torn_sidecar_failure_blocks_truncation"}
+      ],
+      "final_regression": [
+        "acceptance/v1.json P00-P08 pass on the final source fingerprint",
+        "scripts/clean_rebuild.py passes in a new output directory"
+      ]
+    }
+  },
+  "limits": [
+    "Process SIGKILL and injected failures only; no host power loss or storage device fault was exercised.",
+    "Truncation at or inside a record, a missing file and replacement by an older complete file are outside per-record checksum detection.",
+    "CRC32C is an accidental-corruption check, not authentication.",
+    "Old and new node binaries were not run together in one cluster.",
+    "A passing v1 scan before migration does not certify that the v1 file was never wrongly truncated in the past.",
+    "Named test discovery and execution do not establish assertion quality; independent review is required."
+  ],
+  "open_decisions": ["D1", "D2", "D3", "D4"]
+}
