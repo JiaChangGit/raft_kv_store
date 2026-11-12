@@ -77,15 +77,15 @@ fn single_leader_per_term() {
 }
 #[test]
 fn stale_candidate_rejected() {
-    let state = DurableState {
-        term: 4,
-        voted_for: None,
-        log: vec![LogEntry {
+    let state = DurableState::new(
+        4,
+        None,
+        vec![LogEntry {
             index: 1,
             term: 3,
             command: Command::NoOp,
         }],
-    };
+    );
     let mut n = Core::new(1, state).unwrap();
     let fx = n.step(Event::Message(envelope(
         2,

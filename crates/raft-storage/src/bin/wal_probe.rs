@@ -12,7 +12,7 @@ fn main() -> std::io::Result<()> {
     let mut state = wal.state().clone();
     state.term = args[2].parse().map_err(std::io::Error::other)?;
     state.voted_for = Some(1);
-    state.log.push(LogEntry {
+    state.push(LogEntry {
         index: state.last_index() + 1,
         term: state.term,
         command: Command::NoOp,

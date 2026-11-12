@@ -73,12 +73,14 @@ impl Core {
             return Err("invalid identity or durable state".into());
         }
         let durable_index = state.last_index();
+        // Entries up to the base are inside a durable snapshot, hence committed and applied.
+        let snapshot_index = state.base().index;
         Ok(Self {
             id,
             state,
             role: Role::Follower,
-            commit_index: 0,
-            last_applied: 0,
+            commit_index: snapshot_index,
+            last_applied: snapshot_index,
             election_generation: 0,
             heartbeat_generation: 0,
             leader_hint: None,
@@ -163,7 +165,7 @@ impl Core {
                 } else if self.role != Role::Leader {
                     effects.push(Effect::Reject(request, "NOT_LEADER"));
                 } else {
-                    self.state.log.push(LogEntry {
+                    self.state.push(LogEntry {
                         index: self.state.last_index() + 1,
                         term: self.state.term,
                         command: Command::Client(request),
@@ -269,7 +271,7 @@ impl Core {
         self.matches = [0; 4];
         self.matches[self.id as usize] = self.durable_index;
         self.inflight = std::array::from_fn(|_| None);
-        self.state.log.push(LogEntry {
+        self.state.push(LogEntry {
             index: self.state.last_index() + 1,
             term: self.state.term,
             command: Command::NoOp,
@@ -293,11 +295,14 @@ impl Core {
         }
         let next = self.next[p].clamp(1, self.state.last_index() + 1);
         let prev = next - 1;
+        let Some(prev_log_term) = self.state.term_at(prev) else {
+            unreachable!("log compaction is not enabled yet; entry {prev} was discarded")
+        };
         let entries: Vec<_> = self
             .state
-            .log
+            .entries_from(next)
+            .expect("next lies after the base")
             .iter()
-            .skip(prev as usize)
             .take(32)
             .cloned()
             .collect();
@@ -308,7 +313,7 @@ impl Core {
                 term: self.state.term,
                 leader_id: self.id,
                 prev_log_index: prev,
-                prev_log_term: self.state.term_at(prev).unwrap(),
+                prev_log_term,
                 entries,
                 leader_commit: self.commit_index,
             },
@@ -340,9 +345,11 @@ impl Core {
     fn apply_committed(&mut self, effects: &mut Vec<Effect>) {
         while self.last_applied < self.commit_index {
             self.last_applied += 1;
-            effects.push(Effect::Apply(
-                self.state.log[(self.last_applied - 1) as usize].clone(),
-            ));
+            let entry = self
+                .state
+                .entry(self.last_applied)
+                .expect("a committed entry after the base is held in the log");
+            effects.push(Effect::Apply(entry.clone()));
         }
     }
     fn message(&mut self, message: Envelope, effects: &mut Vec<Effect>) {
@@ -435,7 +442,7 @@ impl Core {
                 let mut success = self.state.term_at(prev_log_index) == Some(prev_log_term);
                 if success {
                     for entry in &entries {
-                        if let Some(existing) = self.state.log.get((entry.index - 1) as usize) {
+                        if let Some(existing) = self.state.entry(entry.index) {
                             if existing.term == entry.term {
                                 if existing != entry {
                                     success = false;
@@ -447,9 +454,9 @@ impl Core {
                                 success = false;
                                 break;
                             }
-                            self.state.log.truncate((entry.index - 1) as usize);
+                            self.state.truncate_from(entry.index);
                         }
-                        self.state.log.push(entry.clone());
+                        self.state.push(entry.clone());
                     }
                 }
                 let matched = if success {

@@ -54,11 +54,7 @@ fn elected() -> (Core, Vec<Effect>) {
 }
 #[test]
 fn previous_term_entry_requires_current_term_commit() {
-    let state = DurableState {
-        term: 2,
-        voted_for: Some(1),
-        log: vec![entry(1, 1), entry(2, 2)],
-    };
+    let state = DurableState::new(2, Some(1), vec![entry(1, 1), entry(2, 2)]);
     let mut n = Core::new(1, state).unwrap();
     n.role = Role::Leader;
     n.matches[1] = 2;
@@ -81,17 +77,9 @@ fn previous_term_entry_requires_current_term_commit() {
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
-    let mut before_sync = Core::new(
-        1,
-        DurableState {
-            term: 1,
-            voted_for: Some(1),
-            log: vec![],
-        },
-    )
-    .unwrap();
+    let mut before_sync = Core::new(1, DurableState::new(1, Some(1), vec![])).unwrap();
     before_sync.role = Role::Leader;
-    before_sync.state.log.push(entry(1, 1));
+    before_sync.state.push(entry(1, 1));
     before_sync.matches[2] = 1;
     before_sync.advance_commit(&mut vec![]);
     assert_eq!(
@@ -103,11 +91,7 @@ fn previous_term_entry_requires_current_term_commit() {
 fn conflicting_suffix_repaired() {
     let mut n = Core::new(
         2,
-        DurableState {
-            term: 3,
-            voted_for: None,
-            log: vec![entry(1, 1), entry(2, 2), entry(3, 2)],
-        },
+        DurableState::new(3, None, vec![entry(1, 1), entry(2, 2), entry(3, 2)]),
     )
     .unwrap();
     n.commit_index = 1;
@@ -127,7 +111,7 @@ fn conflicting_suffix_repaired() {
     )));
     assert!(matches!(fx.first(), Some(Effect::Persist { .. })));
     let fx = complete(&mut n, fx);
-    assert_eq!(n.state.log, vec![entry(1, 1), entry(2, 3), entry(3, 3)]);
+    assert_eq!(n.state.entries(), [entry(1, 1), entry(2, 3), entry(3, 3)]);
     assert_eq!(n.commit_index, 3);
     assert_eq!(n.last_applied, 3);
     assert!(fx.iter().any(|e| matches!(
@@ -141,7 +125,7 @@ fn conflicting_suffix_repaired() {
             ..
         })
     )));
-    let original = n.state.log.clone();
+    let original = n.state.entries().to_vec();
     let fx = n.step(Event::Message(env(
         1,
         2,
@@ -155,7 +139,11 @@ fn conflicting_suffix_repaired() {
             leader_commit: 3,
         },
     )));
-    assert_eq!(n.state.log, original, "committed prefix cannot be deleted");
+    assert_eq!(
+        n.state.entries(),
+        original,
+        "committed prefix cannot be deleted"
+    );
     assert!(fx.iter().any(|e| matches!(
         e,
         Effect::Send(Envelope {
@@ -165,11 +153,7 @@ fn conflicting_suffix_repaired() {
     )));
     let mut n = Core::new(
         2,
-        DurableState {
-            term: 3,
-            voted_for: None,
-            log: vec![entry(1, 1), entry(2, 2), entry(3, 2)],
-        },
+        DurableState::new(3, None, vec![entry(1, 1), entry(2, 2), entry(3, 2)]),
     )
     .unwrap();
     let fx = n.step(Event::Message(env(
@@ -295,7 +279,10 @@ fn replicated_get_linearizable() {
     };
     let fx = n.step(Event::Propose(req.clone()));
     let fx = complete(&mut n, fx);
-    assert_eq!(n.state.log.last().unwrap().command, Command::Client(req));
+    assert_eq!(
+        n.state.entry(n.state.last_index()).unwrap().command,
+        Command::Client(req)
+    );
     assert!(
         fx.iter().all(|e| !matches!(e, Effect::Apply(_))),
         "isolated leader cannot apply new GET"

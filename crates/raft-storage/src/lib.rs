@@ -133,7 +133,9 @@ fn validate_change(previous: &DurableState, next: &DurableState) -> io::Result<(
             "cannot clear or change a durable vote in the same term",
         ));
     }
-    for (old, new) in previous.log.iter().zip(&next.log) {
+    let start = previous.base().index.max(next.base().index) + 1;
+    let end = previous.last_index().min(next.last_index());
+    for (old, new) in (start..=end).filter_map(|i| Some((previous.entry(i)?, next.entry(i)?))) {
         if old.term == new.term && old != new {
             return Err(invalid(
                 "same index and term cannot identify different commands",
@@ -147,16 +149,18 @@ fn apply_transaction(
     previous: &DurableState,
     transaction: Transaction,
 ) -> io::Result<DurableState> {
-    if transaction.truncate_from == 0 || transaction.truncate_from > previous.last_index() + 1 {
+    if transaction.truncate_from <= previous.base().index
+        || transaction.truncate_from > previous.last_index() + 1
+    {
         return Err(invalid("transaction truncation index outside current log"));
     }
-    let mut next = DurableState {
-        term: transaction.term,
-        voted_for: transaction.voted_for,
-        log: previous.log.clone(),
-    };
-    next.log.truncate((transaction.truncate_from - 1) as usize);
-    next.log.extend(transaction.append);
+    let mut next = previous.clone();
+    next.term = transaction.term;
+    next.voted_for = transaction.voted_for;
+    next.truncate_from(transaction.truncate_from);
+    for entry in transaction.append {
+        next.push(entry);
+    }
     validate_change(previous, &next)?;
     Ok(next)
 }
@@ -508,18 +512,24 @@ impl Wal {
         if next == &self.state {
             return Ok(());
         }
+        if next.base() != self.state.base() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a new log base must be installed with its snapshot, not saved",
+            ));
+        }
         let common = self
             .state
-            .log
+            .entries()
             .iter()
-            .zip(&next.log)
+            .zip(next.entries())
             .take_while(|(left, right)| left == right)
             .count();
         let transaction = Transaction {
             term: next.term,
             voted_for: next.voted_for,
-            truncate_from: common as u64 + 1,
-            append: next.log[common..].to_vec(),
+            truncate_from: self.state.base().index + common as u64 + 1,
+            append: next.entries()[common..].to_vec(),
         };
         let payload = serde_json::to_vec(&transaction).map_err(io::Error::other)?;
         if payload.len() > MAX_RECORD_PAYLOAD {

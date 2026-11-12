@@ -28,6 +28,19 @@ pub struct TraceRow {
     pub durable: u64,
 }
 
+/// Both logs hold indexes up to `end` and agree on every index both still hold.
+fn agree_through(a: &DurableState, b: &DurableState, end: u64) -> bool {
+    let start = a.base().index.max(b.base().index) + 1;
+    a.last_index() >= end
+        && b.last_index() >= end
+        && (start..=end).all(|i| a.entry(i) == b.entry(i))
+}
+
+/// `new` keeps every entry of `old` that it still holds (it may have compacted some).
+fn extends(new: &DurableState, old: &DurableState) -> bool {
+    agree_through(new, old, old.last_index())
+}
+
 #[derive(Default)]
 pub struct Oracle {
     votes: BTreeMap<(u8, u64), u8>,
@@ -60,8 +73,10 @@ impl Oracle {
             self.election_count += 1;
         }
         for (index, (entry, commit_term)) in &self.committed {
+            // Indexes the leader compacted are checked through its snapshot (I6).
             if *commit_term < core.state.term
-                && core.state.log.get((*index - 1) as usize) != Some(entry)
+                && *index > core.state.base().index
+                && core.state.entry(*index) != Some(entry)
             {
                 return Err(format!(
                     "I4 Leader Completeness transition node={} index={index}",
@@ -114,8 +129,17 @@ impl Oracle {
         // I3 is checked against independently stored durable logs, even for stopped nodes.
         for a in 0..3 {
             for b in a + 1..3 {
+                // Compare the indexes both disks still hold; compacted prefixes are
+                // covered by the snapshot check (I6).
+                let (left_log, right_log) = (&disks[a].durable, &disks[b].durable);
+                let start = left_log.base().index.max(right_log.base().index) + 1;
+                let end = left_log.last_index().min(right_log.last_index());
                 let mut prefix_equal = true;
-                for (left, right) in disks[a].durable.log.iter().zip(&disks[b].durable.log) {
+                for index in start..=end {
+                    let (left, right) = (
+                        left_log.entry(index).expect("held"),
+                        right_log.entry(index).expect("held"),
+                    );
                     prefix_equal &= left == right;
                     if left.term == right.term && !prefix_equal {
                         return Err(format!(
@@ -162,7 +186,8 @@ impl Oracle {
                     }
                     for (index, (entry, commit_term)) in &self.committed {
                         if *commit_term < n.state.term
-                            && n.state.log.get((*index - 1) as usize) != Some(entry)
+                            && *index > n.state.base().index
+                            && n.state.entry(*index) != Some(entry)
                         {
                             return Err(format!(
                                 "I4 Leader Completeness node={} term={} index={index}",
@@ -171,7 +196,12 @@ impl Oracle {
                         }
                     }
                 }
-                for entry in n.state.log.iter().take(n.commit_index as usize) {
+                for entry in n
+                    .state
+                    .entries()
+                    .iter()
+                    .take_while(|entry| entry.index <= n.commit_index)
+                {
                     if let Some((old, _)) = self.committed.get(&entry.index) {
                         if old != entry {
                             return Err(format!("committed conflict index={}", entry.index));
@@ -320,10 +350,13 @@ impl Cluster {
                             ..
                         } => {
                             let durable = &self.disks[node].durable;
-                            let end = *matched_through as usize;
                             if *matched_through > durable.last_index()
                                 || durable.term != self.nodes[node].state.term
-                                || durable.log.get(..end) != self.nodes[node].state.log.get(..end)
+                                || !agree_through(
+                                    durable,
+                                    &self.nodes[node].state,
+                                    *matched_through,
+                                )
                             {
                                 return Err("append ACK before durability".into());
                             }
@@ -371,7 +404,7 @@ impl Cluster {
         }
         let was_leader = self.nodes[node].role == Role::Leader;
         let old_term = self.nodes[node].state.term;
-        let old_log = self.nodes[node].state.log.clone();
+        let old_log = self.nodes[node].state.clone();
         let kind = match &event {
             Event::ElectionTimeout { .. } => "election-timer",
             Event::Heartbeat { .. } => "heartbeat",
@@ -387,7 +420,7 @@ impl Cluster {
         if was_leader
             && self.nodes[node].role == Role::Leader
             && self.nodes[node].state.term == old_term
-            && !self.nodes[node].state.log.starts_with(&old_log)
+            && !extends(&self.nodes[node].state, &old_log)
         {
             return Err(format!("I2 Leader Append-Only node={}", node + 1));
         }

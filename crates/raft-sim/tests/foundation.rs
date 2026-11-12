@@ -48,23 +48,14 @@ impl CoreIdCheck {
 #[test]
 fn mock_disk_distinguishes_durable_and_volatile() {
     let mut d = MockDisk::default();
-    d.write(DurableState {
-        term: 2,
-        ..Default::default()
-    });
+    d.write(DurableState::new(2, None, vec![]));
     d.crash(false);
     assert_eq!(d.durable.term, 0);
-    d.write(DurableState {
-        term: 2,
-        ..Default::default()
-    });
+    d.write(DurableState::new(2, None, vec![]));
     d.crash(true);
     assert_eq!(d.durable.term, 2);
     d.fail_sync = true;
-    d.write(DurableState {
-        term: 3,
-        ..Default::default()
-    });
+    d.write(DurableState::new(3, None, vec![]));
     assert!(d.sync().is_err());
     assert_eq!(d.durable.term, 2);
 }

@@ -309,7 +309,7 @@ impl Actor {
         while let Some(effect) = queue.pop_front() {
             match effect {
                 Effect::Persist { barrier_id, state } => {
-                    let previous_len = self.wal.state().log.len();
+                    let previous_last = self.wal.state().last_index();
                     let started = Instant::now();
                     if let Err(error) = self.wal.save(&state) {
                         self.core.storage_failed();
@@ -323,9 +323,9 @@ impl Actor {
                     self.trace("persist",json!({"barrier_id":barrier_id,"sync_us":started.elapsed().as_micros() as u64,
                         "fsync_us":self.wal.last_sync_us(),
                         "measurement":"WAL save includes encoding/write/sync"}));
-                    if state.log.len() > previous_len
+                    if state.last_index() > previous_last
                         && matches!(
-                            state.log.last().map(|entry| &entry.command),
+                            state.entry(state.last_index()).map(|entry| &entry.command),
                             Some(Command::Client(_))
                         )
                     {
@@ -640,15 +640,15 @@ mod tests {
         let wal = Wal::open(&dir, 1).unwrap();
         let mut core = Core::new(
             1,
-            DurableState {
-                term: 1,
-                voted_for: Some(1),
-                log: vec![LogEntry {
+            DurableState::new(
+                1,
+                Some(1),
+                vec![LogEntry {
                     index: 1,
                     term: 1,
                     command: Command::NoOp,
                 }],
-            },
+            ),
         )
         .unwrap();
         core.role = Role::Leader;

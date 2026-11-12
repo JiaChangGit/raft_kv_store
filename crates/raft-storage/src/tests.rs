@@ -45,11 +45,7 @@ impl Drop for TestDir {
     }
 }
 fn state(term: u64, voted_for: Option<u8>) -> DurableState {
-    DurableState {
-        term,
-        voted_for,
-        log: vec![],
-    }
+    DurableState::new(term, voted_for, vec![])
 }
 fn entry(index: u64, term: u64, value: &str) -> LogEntry {
     LogEntry {
@@ -80,7 +76,7 @@ fn sample(dir: &TestDir) -> Sample {
         let mut wal = Wal::open(&dir.0, 1).unwrap();
         let mut next = state(2, Some(1));
         for (index, value) in ["A", "B", "C"].into_iter().enumerate() {
-            next.log.push(entry(index as u64 + 1, 2, value));
+            next.push(entry(index as u64 + 1, 2, value));
             wal.save(&next).unwrap();
             states.push(next.clone());
         }
@@ -362,7 +358,7 @@ fn append_ack_after_durable_sync() {
     let dir = TestDir::new();
     let mut wal = Wal::open(&dir.0, 1).unwrap();
     let mut next = state(3, Some(1));
-    next.log.push(entry(1, 3, "A"));
+    next.push(entry(1, 3, "A"));
     wal.inject_sync_failure(true);
     let mut acknowledgments = vec![];
     if wal.save(&next).is_ok() {
@@ -382,7 +378,7 @@ fn append_ack_after_durable_sync() {
     // A complete, unacknowledged transaction is allowed to survive.
     assert_eq!(recovered.state(), &next);
     let mut later = next.clone();
-    later.log.push(entry(2, 3, "B"));
+    later.push(entry(2, 3, "B"));
     recovered.save(&later).unwrap();
     acknowledgments.push(later.last_index());
     assert_eq!(acknowledgments, vec![2]);
@@ -395,7 +391,7 @@ fn append_ack_after_durable_sync() {
 fn uncommitted_suffix_not_applied_after_recovery() {
     let dir = TestDir::new();
     let mut persistent = state(2, Some(1));
-    persistent.log.push(entry(1, 2, "uncommitted"));
+    persistent.push(entry(1, 2, "uncommitted"));
     {
         let mut wal = Wal::open(&dir.0, 1).unwrap();
         wal.save(&persistent).unwrap();
@@ -403,7 +399,7 @@ fn uncommitted_suffix_not_applied_after_recovery() {
     let recovered = Wal::open(&dir.0, 1).unwrap();
     let core = Core::new(1, recovered.state().clone()).unwrap();
     let kv = StateMachine::default();
-    assert_eq!(core.state.log.len(), 1);
+    assert_eq!(core.state.last_index(), 1);
     assert_eq!(core.commit_index, 0);
     assert_eq!(core.last_applied, 0);
     assert_eq!(kv.get("x"), None);
@@ -414,12 +410,12 @@ fn uncommitted_suffix_not_applied_after_recovery() {
 fn truncated_wal_tail_safe() {
     let dir = TestDir::new();
     let mut first = state(2, Some(1));
-    first.log.push(entry(1, 2, "A"));
+    first.push(entry(1, 2, "A"));
     let second = {
         let mut wal = Wal::open(&dir.0, 1).unwrap();
         wal.save(&first).unwrap();
         let mut next = first.clone();
-        next.log.push(entry(2, 2, "B"));
+        next.push(entry(2, 2, "B"));
         wal.save(&next).unwrap();
         next
     };
@@ -475,8 +471,7 @@ fn truncated_wal_tail_safe() {
 #[test]
 fn atomic_suffix_transaction_and_identity_are_checked() {
     let dir = TestDir::new();
-    let mut initial = state(2, Some(1));
-    initial.log = vec![entry(1, 1, "A"), entry(2, 2, "B")];
+    let initial = DurableState::new(2, Some(1), vec![entry(1, 1, "A"), entry(2, 2, "B")]);
     let replacement = {
         let mut wal = Wal::open(&dir.0, 1).unwrap();
         assert!(Wal::open(&dir.0, 1).is_err());
@@ -484,8 +479,9 @@ fn atomic_suffix_transaction_and_identity_are_checked() {
         let mut next = initial.clone();
         next.term = 3;
         next.voted_for = None;
-        next.log[1] = entry(2, 3, "C");
-        next.log.push(entry(3, 3, "D"));
+        next.truncate_from(2);
+        next.push(entry(2, 3, "C"));
+        next.push(entry(3, 3, "D"));
         wal.save(&next).unwrap();
         next
     };
@@ -493,7 +489,10 @@ fn atomic_suffix_transaction_and_identity_are_checked() {
         let mut wal = Wal::open(&dir.0, 1).unwrap();
         assert_eq!(wal.state(), &replacement);
         let mut wrong = replacement.clone();
-        wrong.log[1].command = entry(2, 3, "E").command;
+        // Same index and term as the durable entry 2, different command.
+        wrong.truncate_from(2);
+        wrong.push(entry(2, 3, "E"));
+        wrong.push(entry(3, 3, "D"));
         assert!(wal.save(&wrong).is_err());
     }
     assert!(Wal::open(&dir.0, 2).is_err());
