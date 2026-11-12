@@ -6,12 +6,15 @@ were not supplied; acceptance/v1.json is an explicitly different acceptance cont
 
 Implement P00 through P08 in dependency order, with tests and independent review.
 Use one actual raft-core in simulator and runtime, fixed IDs 1/2/3 and quorum 2.
-No existing Raft library, unsafe Rust, snapshot, membership changes, leases or ReadIndex.
+No existing Raft library, unsafe Rust, membership changes, leases or ReadIndex.
+Snapshots follow docs/SNAPSHOT_COMPACTION.md (S2).
 One actor owns consensus state. Persist term/vote/log before dependent messages;
 storage failures fail closed. Only durable matches and current-term entries advance
-leader commit. Recovery restores only durable term/vote/log, never applies all WAL.
+leader commit. Recovery restores only durable term/vote/log plus the durable snapshot
+(committed entries only) and never applies WAL entries beyond it until relearned.
 All new GETs replicate; success follows commit and local apply. Deduplicate using
-replicated (client_id, sequence, canonical command, original result) records.
+replicated per-client latest (client_id, sequence, canonical command, original
+result) records; an older sequence is rejected without effect (S2, D1).
 All fault-test peer traffic, including reconnects, uses complete-frame proxies.
 Never weaken tests or acceptance to make an implementation pass. Record actual
 commands, counts, failures, limits and pending work; no formal-correctness claim.
@@ -27,7 +30,7 @@ The V1 rules above stay in force until the stage that changes them begins:
 
 | Rule above | Changes at | Until then |
 |---|---|---|
-| "No ... snapshot" | S2 | forbidden |
+| "No ... snapshot", recovery and deduplication sentences | S2 (approved 2026-11-13) | changed above |
 | "No ... ReadIndex", "All new GETs replicate" | S3 | in force |
 | "fixed IDs 1/2/3 and quorum 2", "No ... membership changes" | S4 | in force |
 | No existing Raft library, no unsafe Rust, no leases | never | in force |

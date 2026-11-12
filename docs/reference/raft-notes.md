@@ -11,9 +11,8 @@
 | 博論 | Ongaro, *Consensus: Bridging Theory and Practice*（博士論文），<https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf> | 同上 | 只讀了下列引到的段落，其餘章節未讀。章節編號取自 PDF 的目錄與內文標題 |
 | 郵件 | Ongaro, "bug in single-server membership changes"，raft-dev 郵件群組，2015-07-10，<https://groups.google.com/g/raft-dev/c/t4xj6dJTP6E> | 由子代理讀取網頁後摘要 | **我沒有親自讀原頁**；S4 開始前必須重讀原文確認 |
 
-尚未讀：論文 §6 joint consensus 的完整規則（本專案不採用，只讀了開頭）；博論第 5 章各節
-（5.1 記憶體型快照、5.2 磁碟型、5.3 漸進式、InstallSnapshot 圖）；博論 §4.2.1 的完整演算法；
-博論 §6.4.1 lease。對應階段開始前補讀。
+尚未讀：論文 §6 joint consensus 的完整規則（本專案不採用，只讀了開頭）；博論 §5.2 磁碟型、§5.3 漸進式；
+博論 §4.2.1 的完整演算法；博論 §6.4.1 lease。對應階段開始前補讀。博論 §5.1 已於 2026-11-13 讀過（見下）。
 
 ## 持久化狀態（S1）
 
@@ -51,8 +50,21 @@ Figure 3 的 Election Safety："at most one leader can be elected in a given ter
   快照只是自己 log 的前綴 → 刪除被涵蓋的部分，**保留後面的 entry**。
 - 何時做快照：論文建議的簡單策略是 log 達到固定大小時。寫快照不應阻塞正常運作，論文提到 copy-on-write。
 
-去重 session 是否必須放進快照：論文與已讀的博論段落**沒有明文**。這是本專案的推論：session 屬於狀態機狀態，
-而快照必須足以重建狀態機，所以要放。S2 規格需把它列為設計決定並以測試驗證（快照後重試不會重複執行）。
+去重 session 必須放進快照：博論 §5.1 明文寫道 "State machines must also serialize the information they keep for
+providing linearizability to clients (see Chapter 6)"。（2026-11-12 的筆記曾把這點標為推論，2026-11-13 讀到原文後更正。）
+
+博論 §5.1 *Snapshotting memory-based state machines* 的其他要點：
+
+- 做完快照後 "Raft first stores the state it needs for a restart: the index and term of the last entry included in the snapshot
+  and the latest configuration as of that index. Then it discards the prefix of its log up through that index."
+- §5.1.1 與正常處理同時做快照：copy-on-write 或 fork；記憶體不足時寧可暫停接受新 entry，也不要中止快照再重試。
+- §5.1.2 何時做快照：簡單做法是 log 達固定大小；較好的做法是 log 超過「上次快照大小 × 可設定的倍數」，
+  "an expansion factor of 4 results in about 20% of the disk's bandwidth being used towards snapshotting"。
+- §5.1.3 實作注意事項：快照先寫暫存檔、flush 後 rename，避免啟動時讀到寫一半的快照；建議對快照加 checksum；
+  程式原本假設 "if entry i was present in the log, entries 1 through i − 1 would also be present"，壓縮後不成立，
+  "This would have been easier with help from a more powerful type system"；
+  "We recommend taking snapshots after applying every log entry during development, since that can help catch bugs quickly"；
+  在 log 真的能丟棄之前，很多新路徑無法被系統測試執行到，實作順序要事先規劃。
 
 ## 唯讀請求（S3）
 
