@@ -20,6 +20,10 @@ const QUEUE: usize = 1024;
 const CONNECTIONS: usize = 128;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(3);
 const PEER_TIMEOUT: Duration = Duration::from_millis(350);
+/// Snapshot policy (dissertation section 5.1.2): compact once the WAL is larger
+/// than this many times the previous snapshot, and at least this large.
+const SNAPSHOT_EXPANSION: u64 = 4;
+const SNAPSHOT_MIN_WAL_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,7 +158,8 @@ fn peer_listener(listener: TcpListener, tx: SyncSender<Input>, id: NodeId) {
                     };
                     let sender_matches = match &envelope.body {
                         Rpc::RequestVote { candidate_id, .. } => *candidate_id == envelope.from,
-                        Rpc::AppendEntries { leader_id, .. } => *leader_id == envelope.from,
+                        Rpc::AppendEntries { leader_id, .. }
+                        | Rpc::InstallSnapshot { leader_id, .. } => *leader_id == envelope.from,
                         _ => false,
                     };
                     if !envelope.valid_for(id) || !sender_matches {
@@ -249,6 +254,11 @@ struct Actor {
     election: Option<(Instant, u64)>,
     heartbeat: Option<(Instant, u64)>,
     random: u64,
+    /// Test mode: compact every N applied entries instead of by WAL size.
+    snapshot_every: Option<u64>,
+    snapshots_taken: u64,
+    snapshots_installed: u64,
+    snapshot_too_large: bool,
 }
 impl Actor {
     fn trace(&self, kind: &str, details: Value) {
@@ -279,6 +289,10 @@ impl Actor {
             "durable_index":self.core.durable_index,"durable_sequence":self.wal.durable_sequence(),
             "leader_hint":self.core.leader_hint,"kv":self.kv.values(),
             "session_count":self.kv.session_count(),"effect_count":self.kv.effect_count(),
+            "snapshot_index":self.core.state.base().index,"snapshot_term":self.core.state.base().term,
+            "snapshot_bytes":self.core.snapshot().map_or(0,|s|s.data.len()),
+            "wal_bytes":self.wal.wal_bytes().unwrap_or(0),
+            "snapshots_taken":self.snapshots_taken,"snapshots_installed":self.snapshots_installed,
             "debug_only":true})
     }
     fn reject_pending(&mut self, status: &str) {
@@ -335,11 +349,59 @@ impl Actor {
                         queue.push_front(effect);
                     }
                 }
+                Effect::PersistSnapshot {
+                    barrier_id,
+                    state,
+                    snapshot,
+                    restore,
+                } => {
+                    let started = Instant::now();
+                    // Check the content can be loaded before anything is replaced.
+                    let restored = if restore {
+                        match StateMachine::restore(&snapshot.data, snapshot.base.index) {
+                            Ok(kv) => Some(kv),
+                            Err(error) => {
+                                self.core.storage_failed();
+                                self.trace("snapshot_rejected", json!({"error":error}));
+                                self.reject_pending("STORAGE_ERROR");
+                                return Err(io::Error::new(io::ErrorKind::InvalidData, error));
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    if let Err(error) = self.wal.install(&state, &snapshot) {
+                        self.core.storage_failed();
+                        self.trace(
+                            "storage_failure",
+                            json!({"error":error.to_string(),"barrier_id":barrier_id}),
+                        );
+                        self.reject_pending("STORAGE_ERROR");
+                        return Err(error);
+                    }
+                    if let Some(kv) = restored {
+                        self.kv = kv;
+                        self.snapshots_installed += 1;
+                    } else {
+                        self.snapshots_taken += 1;
+                    }
+                    self.trace(
+                        "snapshot_persisted",
+                        json!({"barrier_id":barrier_id,"index":snapshot.base.index,
+                        "term":snapshot.base.term,"bytes":snapshot.data.len(),"restore":restore,
+                        "install_us":started.elapsed().as_micros() as u64}),
+                    );
+                    for effect in self.core.persisted(barrier_id).into_iter().rev() {
+                        queue.push_front(effect);
+                    }
+                }
                 Effect::Send(envelope) => {
                     self.trace("rpc_send",json!({"to":envelope.to,"rpc_id":envelope.rpc_id,"rpc_term":envelope.body.term()}));
                     if matches!(
                         envelope.body,
-                        Rpc::VoteResponse { .. } | Rpc::AppendResponse { .. }
+                        Rpc::VoteResponse { .. }
+                            | Rpc::AppendResponse { .. }
+                            | Rpc::InstallSnapshotResponse { .. }
                     ) {
                         if let Some(waiters) = self.incoming.remove(&(envelope.to, envelope.rpc_id))
                         {
@@ -435,10 +497,14 @@ impl Actor {
             Event::RpcTimeout { peer, rpc_id } => {
                 json!({"event":"rpc_timeout","peer":peer,"rpc_id":rpc_id})
             }
+            Event::Compact { index, data } => {
+                json!({"event":"compact","index":index,"bytes":data.len()})
+            }
         };
         self.trace("event", details);
         let effects = self.core.step(event);
         self.execute(effects)?;
+        self.maybe_compact()?;
         if role == Role::Leader && self.core.role != Role::Leader {
             self.reject_pending("TIMEOUT_UNKNOWN");
         }
@@ -453,6 +519,52 @@ impl Actor {
             }
         }
         Ok(())
+    }
+    /// docs/SNAPSHOT_COMPACTION.md §8. Runs between events, so no durability
+    /// barrier is pending and the state machine is exactly at `last_applied`.
+    fn maybe_compact(&mut self) -> io::Result<()> {
+        let applied = self.core.last_applied;
+        let base = self.core.state.base().index;
+        if applied <= base || self.core.failed() {
+            return Ok(());
+        }
+        let due = match self.snapshot_every {
+            Some(every) => applied - base >= every,
+            None => {
+                let previous = self.core.snapshot().map_or(0, |s| s.data.len() as u64);
+                self.wal.wal_bytes()? >= SNAPSHOT_MIN_WAL_BYTES.max(SNAPSHOT_EXPANSION * previous)
+            }
+        };
+        if !due {
+            return Ok(());
+        }
+        assert_eq!(
+            self.kv.applied_index(),
+            applied,
+            "state machine and Raft disagree"
+        );
+        let started = Instant::now();
+        let data = self.kv.snapshot();
+        if data.len() > MAX_SNAPSHOT {
+            if !self.snapshot_too_large {
+                self.snapshot_too_large = true;
+                self.trace(
+                    "snapshot_too_large",
+                    json!({"bytes":data.len(),"limit":MAX_SNAPSHOT}),
+                );
+            }
+            return Ok(());
+        }
+        self.trace(
+            "snapshot_serialized",
+            json!({"index":applied,"bytes":data.len(),
+            "serialize_us":started.elapsed().as_micros() as u64}),
+        );
+        let effects = self.core.step(Event::Compact {
+            index: applied,
+            data,
+        });
+        self.execute(effects)
     }
     fn run(&mut self) -> io::Result<()> {
         self.reset_election(self.core.election_generation);
@@ -560,13 +672,14 @@ fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Usage: raft-node --id 1|2|3 --config FILE --data-dir PATH\nDebug status: framed JSON {{\"status\":true}}; no local client GET."
+            "Usage: raft-node --id 1|2|3 --config FILE --data-dir PATH [--snapshot-every N]\n--snapshot-every N: test mode, compact after every N applied entries.\nDebug status: framed JSON {{\"status\":true}}; no local client GET."
         );
         return Ok(());
     }
     let mut id = None;
     let mut config_path = None;
     let mut data_dir = None;
+    let mut snapshot_every = None;
     for pair in args.chunks(2) {
         if pair.len() != 2 {
             return Err(io::Error::other("missing CLI argument value; see --help"));
@@ -575,6 +688,13 @@ fn main() -> io::Result<()> {
             "--id" => id = Some(pair[1].parse::<u8>().map_err(io::Error::other)?),
             "--config" => config_path = Some(PathBuf::from(&pair[1])),
             "--data-dir" => data_dir = Some(PathBuf::from(&pair[1])),
+            "--snapshot-every" => {
+                let every = pair[1].parse::<u64>().map_err(io::Error::other)?;
+                if every == 0 {
+                    return Err(io::Error::other("--snapshot-every must be at least 1"));
+                }
+                snapshot_every = Some(every);
+            }
             _ => return Err(io::Error::other("unknown CLI argument; see --help")),
         }
     }
@@ -601,7 +721,8 @@ fn main() -> io::Result<()> {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
         None => StateMachine::default(),
     };
-    let core = Core::new(id, wal.state().clone()).map_err(io::Error::other)?;
+    let core = Core::restore(id, wal.state().clone(), wal.snapshot().cloned())
+        .map_err(io::Error::other)?;
     let (tx, rx) = mpsc::sync_channel(QUEUE);
     peer_listener(peer, tx.clone(), id);
     client_listener(client, tx.clone());
@@ -624,6 +745,10 @@ fn main() -> io::Result<()> {
         election: None,
         heartbeat: None,
         random,
+        snapshot_every,
+        snapshots_taken: 0,
+        snapshots_installed: 0,
+        snapshot_too_large: false,
     }
     .run()
 }
@@ -674,6 +799,10 @@ mod tests {
             election: None,
             heartbeat: None,
             random: 1,
+            snapshot_every: None,
+            snapshots_taken: 0,
+            snapshots_installed: 0,
+            snapshot_too_large: false,
         };
         let (client_tx, _client_rx) = mpsc::sync_channel(1);
         tx.send(Input::Client(

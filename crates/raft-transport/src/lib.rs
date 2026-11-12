@@ -82,6 +82,10 @@ pub fn correlated_response(request: &Envelope, response: &Envelope) -> bool {
             (&request.body, &response.body),
             (Rpc::RequestVote { .. }, Rpc::VoteResponse { .. })
                 | (Rpc::AppendEntries { .. }, Rpc::AppendResponse { .. })
+                | (
+                    Rpc::InstallSnapshot { .. },
+                    Rpc::InstallSnapshotResponse { .. }
+                )
         )
 }
 

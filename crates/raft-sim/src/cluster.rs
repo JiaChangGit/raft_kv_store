@@ -2,8 +2,46 @@
 use crate::{MockDisk, Random, Scheduler};
 use raft_core::{Core, Effect, Event, Role};
 use raft_protocol::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// Tiny chunks force every snapshot transfer to span several InstallSnapshot RPCs.
+const SIM_CHUNK: usize = 7;
+
+/// Stand-in state machine: the applied index and a CRC chained over every
+/// applied entry. Two nodes agree on it exactly when they applied the same
+/// prefix, so a snapshot of it can be checked against the observer's record.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Model {
+    pub index: u64,
+    pub digest: u32,
+}
+impl Model {
+    fn fold(digest: u32, entry: &LogEntry) -> u32 {
+        let mut bytes = digest.to_le_bytes().to_vec();
+        bytes.extend(serde_json::to_vec(entry).expect("entry serializes"));
+        crc32c(&bytes)
+    }
+    fn apply(&mut self, entry: &LogEntry) -> Result<(), String> {
+        if entry.index != self.index + 1 {
+            return Err(format!("model apply gap at index {}", entry.index));
+        }
+        self.index = entry.index;
+        self.digest = Self::fold(self.digest, entry);
+        Ok(())
+    }
+    fn bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("model serializes")
+    }
+    fn decode(snapshot: &Snapshot) -> Result<Self, String> {
+        let model: Self = serde_json::from_slice(&snapshot.data)
+            .map_err(|e| format!("I6 snapshot payload undecodable: {e}"))?;
+        if model.index != snapshot.base.index {
+            return Err("I6 snapshot payload index differs from its base".into());
+        }
+        Ok(model)
+    }
+}
 
 #[derive(Clone)]
 enum Scheduled {
@@ -51,8 +89,35 @@ pub struct Oracle {
     observed_commit: [u64; 3],
     pub apply_count: u64,
     pub election_count: u64,
+    pub snapshots_taken: u64,
+    pub snapshots_installed: u64,
 }
 impl Oracle {
+    /// I6 Snapshot Safety: a snapshot at S must equal the committed prefix 1..=S.
+    fn snapshot(&self, node: usize, snapshot: &Snapshot) -> Result<Model, String> {
+        let model = Model::decode(snapshot)?;
+        let mut digest = 0;
+        for index in 1..=snapshot.base.index {
+            let Some((entry, _)) = self.committed.get(&index) else {
+                return Err(format!(
+                    "I6 snapshot node={} covers index {index} never observed committed",
+                    node + 1
+                ));
+            };
+            digest = Model::fold(digest, entry);
+            if index == snapshot.base.index && entry.term != snapshot.base.term {
+                return Err(format!("I6 snapshot node={} base term mismatch", node + 1));
+            }
+        }
+        if digest != model.digest {
+            return Err(format!(
+                "I6 snapshot node={} index={} differs from the committed prefix",
+                node + 1,
+                snapshot.base.index
+            ));
+        }
+        Ok(model)
+    }
     fn leader_transition(&mut self, core: &Core) -> Result<(), String> {
         if core.role != Role::Leader {
             return Ok(());
@@ -126,6 +191,12 @@ impl Oracle {
         disks: &[MockDisk; 3],
         online: &[bool; 3],
     ) -> Result<(), String> {
+        for (i, n) in nodes.iter().enumerate() {
+            // I7: only applied entries may be compacted.
+            if online[i] && n.state.base().index > n.last_applied {
+                return Err(format!("I7 compaction beyond applied node={}", i + 1));
+            }
+        }
         // I3 is checked against independently stored durable logs, even for stopped nodes.
         for a in 0..3 {
             for b in a + 1..3 {
@@ -230,12 +301,17 @@ pub struct Cluster {
     next_client: u64,
     pub seed: u64,
     pub processed: u64,
+    pub models: [Model; 3],
+    /// Compact after this many applied entries; `None` never compacts (control group).
+    pub snapshot_every: Option<u64>,
 }
 impl Cluster {
     pub fn new(seed: u64) -> Self {
         let mut s = Self {
             nodes: std::array::from_fn(|i| {
-                Core::new(i as u8 + 1, DurableState::default()).unwrap()
+                let mut core = Core::new(i as u8 + 1, DurableState::default()).unwrap();
+                core.set_chunk_size(SIM_CHUNK);
+                core
             }),
             disks: std::array::from_fn(|_| MockDisk::default()),
             online: [true; 3],
@@ -248,6 +324,11 @@ impl Cluster {
             next_client: 0,
             seed,
             processed: 0,
+            models: [Model::default(); 3],
+            // Dissertation 5.1.3 recommends snapshotting after every entry while
+            // developing; include that, a few small intervals and a control group.
+            snapshot_every: [None, Some(1), Some(2), Some(3), Some(5), Some(8)]
+                [(seed % 6) as usize],
         };
         for i in 0..3 {
             let duration = 400 + s.random.next_u64() % 401;
@@ -297,6 +378,7 @@ impl Cluster {
         self.incarnation[node] += 1;
         self.oracle.actual_applied[node] = 0;
         self.oracle.observed_commit[node] = 0;
+        self.models[node] = Model::default();
         self.record(
             node,
             if survives {
@@ -361,7 +443,20 @@ impl Cluster {
                                 return Err("append ACK before durability".into());
                             }
                         }
-                        Rpc::AppendEntries { .. } => self.timer(
+                        Rpc::InstallSnapshotResponse {
+                            success: true,
+                            done: true,
+                            last_included_index,
+                            ..
+                        } => {
+                            let durable = &self.disks[node].durable;
+                            if durable.last_index() < *last_included_index
+                                || durable.term != self.nodes[node].state.term
+                            {
+                                return Err("snapshot ACK before durability".into());
+                            }
+                        }
+                        Rpc::AppendEntries { .. } | Rpc::InstallSnapshot { .. } => self.timer(
                             node,
                             350,
                             Event::RpcTimeout {
@@ -385,7 +480,35 @@ impl Cluster {
                         }
                     }
                 }
-                Effect::Apply(entry) => self.oracle.apply(node, &self.nodes[node], &entry)?,
+                Effect::PersistSnapshot {
+                    barrier_id,
+                    state,
+                    snapshot,
+                    restore,
+                } => {
+                    let model = self.oracle.snapshot(node, &snapshot)?;
+                    let stop_between = faults && self.random.next_u64().is_multiple_of(100);
+                    self.disks[node].install(state, snapshot, stop_between);
+                    if stop_between {
+                        self.crash(node, false)?;
+                        break;
+                    }
+                    self.oracle
+                        .durable(node as u8 + 1, &self.disks[node].durable)?;
+                    if restore {
+                        self.models[node] = model;
+                        self.oracle.actual_applied[node] = model.index;
+                        self.oracle.snapshots_installed += 1;
+                    } else {
+                        self.oracle.snapshots_taken += 1;
+                    }
+                    let completion = self.nodes[node].persisted(barrier_id);
+                    self.execute(node, completion, faults)?;
+                }
+                Effect::Apply(entry) => {
+                    self.oracle.apply(node, &self.nodes[node], &entry)?;
+                    self.models[node].apply(&entry)?;
+                }
                 Effect::ResetElection { generation } => {
                     let duration = 400 + self.random.next_u64() % 401;
                     self.timer(node, duration, Event::ElectionTimeout { generation });
@@ -411,6 +534,7 @@ impl Cluster {
             Event::Message(_) => "message",
             Event::Propose(_) => "propose",
             Event::RpcTimeout { .. } => "rpc-timeout",
+            Event::Compact { .. } => "compact",
         };
         let effects = self.nodes[node].step(event);
         // Observe election before a crash-prone NoOp persist can hide the transition.
@@ -431,7 +555,26 @@ impl Cluster {
             self.timer(node, delay, Event::ElectionTimeout { generation });
         }
         self.record(node, kind);
-        Ok(())
+        self.maybe_compact(node, faults)
+    }
+    fn maybe_compact(&mut self, node: usize, faults: bool) -> Result<(), String> {
+        let Some(every) = self.snapshot_every else {
+            return Ok(());
+        };
+        let n = &self.nodes[node];
+        if !self.online[node] || n.last_applied < n.state.base().index + every {
+            return Ok(());
+        }
+        if self.models[node].index != n.last_applied {
+            return Err(format!(
+                "model and Raft disagree on applied node={}",
+                node + 1
+            ));
+        }
+        let index = n.last_applied;
+        let data = self.models[node].bytes();
+        let effects = self.nodes[node].step(Event::Compact { index, data });
+        self.execute(node, effects, faults)
     }
     pub fn advance(&mut self, faults: bool) -> Result<bool, String> {
         let Some((_, scheduled)) = self.queue.pop() else {
@@ -452,7 +595,15 @@ impl Cluster {
                 }
             }
             Scheduled::Restart(node) if !self.online[node] => {
-                self.nodes[node] = Core::new(node as u8 + 1, self.disks[node].durable.clone())?;
+                let state = self.disks[node].recover()?;
+                let snapshot = self.disks[node].snapshot.clone();
+                self.models[node] = match &snapshot {
+                    Some(snapshot) => self.oracle.snapshot(node, snapshot)?,
+                    None => Model::default(),
+                };
+                self.oracle.actual_applied[node] = state.base().index;
+                self.nodes[node] = Core::restore(node as u8 + 1, state, snapshot)?;
+                self.nodes[node].set_chunk_size(SIM_CHUNK);
                 self.online[node] = true;
                 let duration = 400 + self.random.next_u64() % 401;
                 self.timer(node, duration, Event::ElectionTimeout { generation: 0 });
@@ -535,6 +686,8 @@ pub struct Campaign {
     pub invariants: Vec<&'static str>,
     pub elections: u64,
     pub applies: u64,
+    pub snapshots_taken: u64,
+    pub snapshots_installed: u64,
 }
 pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
     let mut report = Campaign {
@@ -550,9 +703,13 @@ pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
             "I3 Log Matching",
             "I4 Leader Completeness",
             "I5 State Machine Safety",
+            "I6 Snapshot Safety",
+            "I7 Compaction Only Covers Applied Entries",
         ],
         elections: 0,
         applies: 0,
+        snapshots_taken: 0,
+        snapshots_installed: 0,
     };
     for seed in 0..seeds {
         let mut cluster = Cluster::new(seed);
@@ -568,6 +725,8 @@ pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
         report.event_count += cluster.processed;
         report.elections += cluster.oracle.election_count;
         report.applies += cluster.oracle.apply_count;
+        report.snapshots_taken += cluster.oracle.snapshots_taken;
+        report.snapshots_installed += cluster.oracle.snapshots_installed;
         if !report.failures.is_empty() {
             break;
         }

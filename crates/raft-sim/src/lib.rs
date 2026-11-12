@@ -1,5 +1,5 @@
 //! Virtual time is ordered by (time, sequence); never consults the host clock.
-use raft_protocol::DurableState;
+use raft_protocol::{DurableState, Snapshot, adopt_snapshot};
 use std::collections::BTreeMap;
 
 mod cluster;
@@ -86,6 +86,7 @@ impl<T> Scheduler<T> {
 pub struct MockDisk {
     pub volatile: DurableState,
     pub durable: DurableState,
+    pub snapshot: Option<Snapshot>,
     pub fail_sync: bool,
 }
 impl MockDisk {
@@ -98,6 +99,34 @@ impl MockDisk {
         } else {
             self.durable = self.volatile.clone();
             Ok(())
+        }
+    }
+    /// docs/SNAPSHOT_COMPACTION.md §7.4: the snapshot becomes durable first, then
+    /// the rewritten WAL. `stop_between` models a crash between the two steps.
+    pub fn install(&mut self, state: DurableState, snapshot: Snapshot, stop_between: bool) {
+        self.snapshot = Some(snapshot);
+        if !stop_between {
+            self.durable = state.clone();
+            self.volatile = state;
+        }
+    }
+    /// What storage recovery would hand to Core (§7.3), finishing an interrupted install.
+    pub fn recover(&mut self) -> Result<DurableState, String> {
+        let base = self.durable.base();
+        match &self.snapshot {
+            None if base.index > 0 => Err("disk: WAL base without a snapshot".into()),
+            None => Ok(self.durable.clone()),
+            Some(s) if base.index > s.base.index => Err("disk: WAL base after snapshot".into()),
+            Some(s) if base.index == s.base.index && base.term != s.base.term => {
+                Err("disk: WAL base term differs from snapshot".into())
+            }
+            Some(s) => {
+                if base.index < s.base.index {
+                    self.durable = adopt_snapshot(&self.durable, s.base);
+                    self.volatile = self.durable.clone();
+                }
+                Ok(self.durable.clone())
+            }
         }
     }
     pub fn crash(&mut self, unsynced_survives: bool) {

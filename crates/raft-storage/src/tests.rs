@@ -883,7 +883,11 @@ fn install_then_reopen_keeps_base_suffix_and_sequence() {
             2,
             "one record carries entries 4 and 5"
         );
-        let core = Core::new(1, wal.state().clone()).unwrap();
+        assert!(
+            Core::new(1, wal.state().clone()).is_err(),
+            "a compacted log cannot start without its snapshot"
+        );
+        let core = Core::restore(1, wal.state().clone(), wal.snapshot().cloned()).unwrap();
         assert_eq!((core.commit_index, core.last_applied), (3, 3));
         let mut later = next.clone();
         later.term = 3;

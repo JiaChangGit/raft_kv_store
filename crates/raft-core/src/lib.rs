@@ -3,6 +3,8 @@ use raft_protocol::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
+mod snapshot_tests;
+#[cfg(test)]
 mod tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,17 +15,40 @@ pub enum Role {
 }
 #[derive(Clone, Debug)]
 pub enum Event {
-    ElectionTimeout { generation: u64 },
-    Heartbeat { generation: u64 },
+    ElectionTimeout {
+        generation: u64,
+    },
+    Heartbeat {
+        generation: u64,
+    },
     Message(Envelope),
     Propose(ClientRequest),
-    RpcTimeout { peer: NodeId, rpc_id: u64 },
+    RpcTimeout {
+        peer: NodeId,
+        rpc_id: u64,
+    },
+    /// The host serialized its state machine at `index` (which must equal
+    /// `last_applied`); replace the log up to there with this snapshot.
+    Compact {
+        index: LogIndex,
+        data: Vec<u8>,
+    },
 }
 #[derive(Clone, Debug)]
 pub enum Effect {
     Persist {
         barrier_id: u64,
         state: DurableState,
+    },
+    /// Durably store `snapshot` and replace the WAL with `state`, which starts
+    /// right after it (docs/SNAPSHOT_COMPACTION.md §7.4). When `restore` is set
+    /// the host must also replace its state machine with the snapshot's content.
+    /// Like `Persist`, it is a barrier: call `persisted` once it is durable.
+    PersistSnapshot {
+        barrier_id: u64,
+        state: DurableState,
+        snapshot: Snapshot,
+        restore: bool,
     },
     Send(Envelope),
     Apply(LogEntry),
@@ -44,6 +69,18 @@ struct Inflight {
     prev: u64,
     count: u64,
     commit: u64,
+    /// Set when this request is an InstallSnapshot chunk: which snapshot.
+    chunk: Option<LogBase>,
+}
+
+/// A snapshot a follower is receiving chunk by chunk (Figure 13 steps 2-5).
+#[derive(Clone, Debug)]
+struct Receiving {
+    term: Term,
+    base: LogBase,
+    total_len: u64,
+    total_crc: u32,
+    data: Vec<u8>,
 }
 #[derive(Clone, Debug)]
 pub struct Core {
@@ -65,12 +102,35 @@ pub struct Core {
     serial: u64,
     barrier_serial: u64,
     pending_barrier: Option<u64>,
+    /// The latest durable snapshot; leaders send it to followers that need
+    /// entries already compacted away.
+    snapshot: Option<Snapshot>,
+    pending_snapshot: Option<Snapshot>,
+    /// Requested during this step; becomes a PersistSnapshot barrier at its end.
+    requested_snapshot: Option<(Snapshot, bool)>,
+    /// Leader: snapshot being sent to each follower, and the next offset.
+    transfer: [Option<(LogBase, u64)>; 4],
+    receiving: Option<Receiving>,
+    chunk_size: usize,
     failed: bool,
 }
 impl Core {
+    /// A node whose log starts at index 1 (no snapshot).
     pub fn new(id: NodeId, state: DurableState) -> Result<Self, String> {
+        Self::restore(id, state, None)
+    }
+    /// A node recovered from storage: the log base must be the snapshot's position.
+    pub fn restore(
+        id: NodeId,
+        state: DurableState,
+        snapshot: Option<Snapshot>,
+    ) -> Result<Self, String> {
         if !valid_node(id) || !state.valid() {
             return Err("invalid identity or durable state".into());
+        }
+        let snapshot_base = snapshot.as_ref().map(|s| s.base).unwrap_or_default();
+        if state.base() != snapshot_base || snapshot.as_ref().is_some_and(|s| !s.valid()) {
+            return Err("log base must equal the durable snapshot's position".into());
         }
         let durable_index = state.last_index();
         // Entries up to the base are inside a durable snapshot, hence committed and applied.
@@ -94,8 +154,22 @@ impl Core {
             serial: 0,
             barrier_serial: 0,
             pending_barrier: None,
+            snapshot,
+            pending_snapshot: None,
+            requested_snapshot: None,
+            transfer: [None; 4],
+            receiving: None,
+            chunk_size: MAX_CHUNK,
             failed: false,
         })
+    }
+    /// Snapshot chunk size in bytes, at most [`MAX_CHUNK`]. The simulator uses
+    /// tiny chunks so that multi-chunk transfers are exercised.
+    pub fn set_chunk_size(&mut self, bytes: usize) {
+        self.chunk_size = bytes.clamp(1, MAX_CHUNK);
+    }
+    pub fn snapshot(&self) -> Option<&Snapshot> {
+        self.snapshot.as_ref()
     }
     pub fn failed(&self) -> bool {
         self.failed
@@ -115,6 +189,9 @@ impl Core {
             return vec![];
         }
         self.pending_barrier = None;
+        if let Some(snapshot) = self.pending_snapshot.take() {
+            self.snapshot = Some(snapshot);
+        }
         self.durable_index = self.state.last_index();
         if self.role == Role::Candidate && self.state.voted_for == Some(self.id) {
             self.votes.insert(self.id);
@@ -150,6 +227,7 @@ impl Core {
             Event::Message(message) if message.valid_for(self.id) => {
                 self.message(message, &mut effects)
             }
+            Event::Compact { index, data } => self.compact(index, data),
             Event::RpcTimeout { peer, rpc_id } if valid_node(peer) && self.role == Role::Leader => {
                 if self.inflight[peer as usize]
                     .as_ref()
@@ -175,7 +253,22 @@ impl Core {
             }
             _ => {}
         }
-        if self.state != old {
+        if let Some((snapshot, restore)) = self.requested_snapshot.take() {
+            // One barrier writes the snapshot and the new WAL, which also carries
+            // any term or vote change made in this step.
+            self.barrier_serial += 1;
+            self.pending_barrier = Some(self.barrier_serial);
+            self.pending_snapshot = Some(snapshot.clone());
+            effects.insert(
+                0,
+                Effect::PersistSnapshot {
+                    barrier_id: self.barrier_serial,
+                    state: self.state.clone(),
+                    snapshot,
+                    restore,
+                },
+            );
+        } else if self.state != old {
             self.barrier_serial += 1;
             self.pending_barrier = Some(self.barrier_serial);
             effects.insert(
@@ -187,6 +280,22 @@ impl Core {
             );
         }
         effects
+    }
+    /// Local compaction (docs/SNAPSHOT_COMPACTION.md §8). Only applied entries
+    /// may be covered; anything else is ignored and the host simply keeps its log.
+    fn compact(&mut self, index: LogIndex, data: Vec<u8>) {
+        let Some(term) = self.state.term_at(index) else {
+            return;
+        };
+        if index != self.last_applied || index <= self.state.base().index {
+            return;
+        }
+        let snapshot = Snapshot::new(LogBase { index, term }, data);
+        if !snapshot.valid() {
+            return;
+        }
+        self.state = adopt_snapshot(&self.state, snapshot.base);
+        self.requested_snapshot = Some((snapshot, false));
     }
     fn reset_election(&mut self, effects: &mut Vec<Effect>) {
         self.election_generation += 1;
@@ -221,6 +330,7 @@ impl Core {
         self.votes.clear();
         self.vote_requests.clear();
         self.inflight = std::array::from_fn(|_| None);
+        self.transfer = [None; 4];
         self.heartbeat_generation += 1;
         // A former leader has no active election timer; this starts one without
         // resetting an already running follower timer on arbitrary higher terms.
@@ -242,6 +352,7 @@ impl Core {
         self.votes.clear();
         self.vote_requests.clear();
         self.inflight = std::array::from_fn(|_| None);
+        self.transfer = [None; 4];
         self.reset_election(effects);
         for peer in NODES
             .into_iter()
@@ -271,6 +382,7 @@ impl Core {
         self.matches = [0; 4];
         self.matches[self.id as usize] = self.durable_index;
         self.inflight = std::array::from_fn(|_| None);
+        self.transfer = [None; 4];
         self.state.push(LogEntry {
             index: self.state.last_index() + 1,
             term: self.state.term,
@@ -296,7 +408,8 @@ impl Core {
         let next = self.next[p].clamp(1, self.state.last_index() + 1);
         let prev = next - 1;
         let Some(prev_log_term) = self.state.term_at(prev) else {
-            unreachable!("log compaction is not enabled yet; entry {prev} was discarded")
+            // The entry before `next` was compacted: only the snapshot can help.
+            return self.send_snapshot_chunk(peer, effects);
         };
         let entries: Vec<_> = self
             .state
@@ -326,6 +439,49 @@ impl Core {
             prev,
             count,
             commit: self.commit_index,
+            chunk: None,
+        });
+    }
+    /// docs/SNAPSHOT_COMPACTION.md §9.2: send the next chunk of the current snapshot.
+    fn send_snapshot_chunk(&mut self, peer: NodeId, effects: &mut Vec<Effect>) {
+        let p = peer as usize;
+        let snapshot = self
+            .snapshot
+            .clone()
+            .expect("a leader with a compacted log holds the snapshot it came from");
+        // A newer snapshot restarts the transfer from the beginning.
+        let offset = match self.transfer[p] {
+            Some((base, offset)) if base == snapshot.base => offset,
+            _ => 0,
+        };
+        self.transfer[p] = Some((snapshot.base, offset));
+        let total = snapshot.data.len() as u64;
+        let start = offset.min(total) as usize;
+        let end = (start + self.chunk_size).min(snapshot.data.len());
+        let rpc_id = self.send(
+            peer,
+            Rpc::InstallSnapshot {
+                term: self.state.term,
+                leader_id: self.id,
+                last_included_index: snapshot.base.index,
+                last_included_term: snapshot.base.term,
+                voters: snapshot.voters,
+                total_len: total,
+                total_crc: snapshot.crc(),
+                offset: start as u64,
+                data: to_hex(&snapshot.data[start..end]),
+                done: end == snapshot.data.len(),
+            },
+            effects,
+        );
+        self.inflight[p] = Some(Inflight {
+            rpc_id,
+            term: self.state.term,
+            epoch: self.epoch,
+            prev: 0,
+            count: 0,
+            commit: self.commit_index,
+            chunk: Some(snapshot.base),
         });
     }
     fn advance_commit(&mut self, effects: &mut Vec<Effect>) {
@@ -439,9 +595,20 @@ impl Core {
                 self.step_down(term, effects);
                 self.leader_hint = Some(from);
                 self.reset_election(effects);
-                let mut success = self.state.term_at(prev_log_index) == Some(prev_log_term);
+                // §9.4: entries up to our snapshot are committed, and a legitimate
+                // leader holds the same ones, so they count as matching. Only the
+                // entry at the base itself is checked, by term.
+                let base = self.state.base();
+                let (check_index, check_term, skip) = if prev_log_index < base.index {
+                    let skip = (base.index - prev_log_index) as usize;
+                    let at_base = entries.get(skip - 1).map_or(base.term, |e| e.term);
+                    (base.index, at_base, skip.min(entries.len()))
+                } else {
+                    (prev_log_index, prev_log_term, 0)
+                };
+                let mut success = self.state.term_at(check_index) == Some(check_term);
                 if success {
-                    for entry in &entries {
+                    for entry in &entries[skip..] {
                         if let Some(existing) = self.state.entry(entry.index) {
                             if existing.term == entry.term {
                                 if existing != entry {
@@ -479,6 +646,132 @@ impl Core {
                     effects,
                 );
             }
+            Rpc::InstallSnapshot {
+                term,
+                last_included_index,
+                last_included_term,
+                voters,
+                total_len,
+                total_crc,
+                offset,
+                data,
+                done,
+                ..
+            } => {
+                let base = LogBase {
+                    index: last_included_index,
+                    term: last_included_term,
+                };
+                let reply = |core: &Core, effects: &mut Vec<Effect>, success, next, done| {
+                    core.reply(
+                        from,
+                        rpc_id,
+                        Rpc::InstallSnapshotResponse {
+                            term: core.state.term,
+                            success,
+                            last_included_index,
+                            next_offset: next,
+                            done,
+                        },
+                        effects,
+                    )
+                };
+                // Figure 13 step 1.
+                if term != self.state.term {
+                    return reply(self, effects, false, 0, false);
+                }
+                self.step_down(term, effects);
+                self.leader_hint = Some(from);
+                self.reset_election(effects);
+                // §9.3 step 2: we already hold and have committed everything it covers.
+                if last_included_index <= self.commit_index {
+                    self.receiving = None;
+                    return reply(self, effects, true, total_len, true);
+                }
+                let chunk = from_hex(&data).expect("validated by Envelope::valid_for");
+                if offset == 0 {
+                    self.receiving = Some(Receiving {
+                        term,
+                        base,
+                        total_len,
+                        total_crc,
+                        data: Vec::with_capacity(total_len as usize),
+                    });
+                }
+                let Some(receiving) = self.receiving.as_mut().filter(|r| {
+                    r.term == term
+                        && r.base == base
+                        && r.total_len == total_len
+                        && r.total_crc == total_crc
+                }) else {
+                    // Some other snapshot, or nothing started: begin again.
+                    self.receiving = None;
+                    return reply(self, effects, false, 0, false);
+                };
+                if receiving.data.len() as u64 != offset {
+                    let have = receiving.data.len() as u64;
+                    return reply(self, effects, false, have, false);
+                }
+                receiving.data.extend_from_slice(&chunk);
+                let have = receiving.data.len() as u64;
+                if !done {
+                    return reply(self, effects, true, have, false);
+                }
+                let received = self.receiving.take().expect("present");
+                if have != total_len || crc32c(&received.data) != total_crc {
+                    return reply(self, effects, false, 0, false);
+                }
+                let snapshot = Snapshot {
+                    base,
+                    voters,
+                    data: received.data.into(),
+                };
+                if !snapshot.valid() {
+                    return reply(self, effects, false, 0, false);
+                }
+                // Figure 13 steps 6-8. Commit and apply jump to the snapshot; the
+                // reply below is executed only after the PersistSnapshot barrier.
+                self.state = adopt_snapshot(&self.state, base);
+                self.commit_index = last_included_index;
+                self.last_applied = last_included_index;
+                self.requested_snapshot = Some((snapshot, true));
+                reply(self, effects, true, total_len, true);
+            }
+            Rpc::InstallSnapshotResponse {
+                term,
+                success,
+                last_included_index,
+                next_offset,
+                done,
+            } => {
+                if term != self.state.term || self.role != Role::Leader {
+                    return;
+                }
+                let p = from as usize;
+                let Some(request) = self.inflight[p].clone() else {
+                    return;
+                };
+                let Some(chunk_base) = request.chunk else {
+                    return;
+                };
+                if request.rpc_id != rpc_id
+                    || request.term != term
+                    || request.epoch != self.epoch
+                    || chunk_base.index != last_included_index
+                {
+                    return;
+                }
+                self.inflight[p] = None;
+                if success && done {
+                    self.transfer[p] = None;
+                    self.matches[p] = self.matches[p].max(last_included_index);
+                    self.next[p] = self.matches[p] + 1;
+                } else if let Some((base, _)) = self.transfer[p] {
+                    // Continue (or resend) from where the follower says it is.
+                    self.transfer[p] = Some((base, next_offset));
+                }
+                self.replicate(from, effects);
+            }
             Rpc::AppendResponse {
                 term,
                 success,
@@ -491,7 +784,11 @@ impl Core {
                 let Some(request) = self.inflight[p].clone() else {
                     return;
                 };
-                if request.rpc_id != rpc_id || request.term != term || request.epoch != self.epoch {
+                if request.rpc_id != rpc_id
+                    || request.term != term
+                    || request.epoch != self.epoch
+                    || request.chunk.is_some()
+                {
                     return;
                 }
                 self.inflight[p] = None;

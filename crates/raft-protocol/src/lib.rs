@@ -12,6 +12,36 @@ pub const CLUSTER: &str = "raft-kv-v1";
 pub const VOTERS: u32 = 0b1110;
 /// Largest snapshot a node writes, loads or accepts from a leader.
 pub const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
+/// Largest snapshot chunk per InstallSnapshot. Hex doubles it to 512 KiB,
+/// which fits the 1 MiB frame limit with room for the envelope.
+pub const MAX_CHUNK: usize = 256 * 1024;
+
+/// Lower-case hexadecimal. JSON arrays of numbers would grow bytes about 3.5x.
+pub fn to_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(DIGITS[(byte >> 4) as usize] as char);
+        out.push(DIGITS[(byte & 15) as usize] as char);
+    }
+    out
+}
+/// Inverse of [`to_hex`]; `None` for odd length or any character outside `0-9a-f`.
+pub fn from_hex(text: &str) -> Option<Vec<u8>> {
+    let digit = |c: u8| match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        _ => None,
+    };
+    let bytes = text.as_bytes();
+    if !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    bytes
+        .chunks(2)
+        .map(|pair| Some(digit(pair[0])? << 4 | digit(pair[1])?))
+        .collect()
+}
 pub type NodeId = u8;
 pub type Term = u64;
 pub type LogIndex = u64;
@@ -261,6 +291,30 @@ pub enum Rpc {
         success: bool,
         matched_through: LogIndex,
     },
+    /// Figure 13, plus `voters`, `total_len` and `total_crc` so a follower can
+    /// bound memory on the first chunk and verify the whole on the last.
+    InstallSnapshot {
+        term: Term,
+        leader_id: NodeId,
+        last_included_index: LogIndex,
+        last_included_term: Term,
+        voters: u32,
+        total_len: u64,
+        total_crc: u32,
+        offset: u64,
+        /// Lower-case hex of at most [`MAX_CHUNK`] bytes.
+        data: String,
+        done: bool,
+    },
+    /// `next_offset` tells the leader where to continue. `done` means the
+    /// follower durably holds everything through `last_included_index`.
+    InstallSnapshotResponse {
+        term: Term,
+        success: bool,
+        last_included_index: LogIndex,
+        next_offset: u64,
+        done: bool,
+    },
 }
 impl Rpc {
     pub fn term(&self) -> Term {
@@ -268,7 +322,9 @@ impl Rpc {
             Self::RequestVote { term, .. }
             | Self::VoteResponse { term, .. }
             | Self::AppendEntries { term, .. }
-            | Self::AppendResponse { term, .. } => *term,
+            | Self::AppendResponse { term, .. }
+            | Self::InstallSnapshot { term, .. }
+            | Self::InstallSnapshotResponse { term, .. } => *term,
         }
     }
 }
@@ -309,6 +365,31 @@ impl Envelope {
                                 && e.term > 0
                                 && e.term <= *term
                         })
+                }
+                Rpc::InstallSnapshot {
+                    term,
+                    leader_id,
+                    last_included_index,
+                    last_included_term,
+                    voters,
+                    total_len,
+                    offset,
+                    data,
+                    done,
+                    ..
+                } => {
+                    let length = (data.len() / 2) as u64;
+                    *leader_id == self.from
+                        && *last_included_index > 0
+                        && *last_included_term > 0
+                        && last_included_term <= term
+                        && *voters == VOTERS
+                        && (1..=MAX_SNAPSHOT as u64).contains(total_len)
+                        && data.len() <= 2 * MAX_CHUNK
+                        && from_hex(data).is_some()
+                        && offset
+                            .checked_add(length)
+                            .is_some_and(|end| end <= *total_len && (end == *total_len) == *done)
                 }
                 _ => true,
             }
@@ -398,6 +479,69 @@ mod tests {
         ] {
             assert!(!state.valid(), "{what}");
         }
+    }
+
+    #[test]
+    fn hex_round_trips_and_rejects_bad_input() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        assert_eq!(from_hex(&to_hex(&bytes)).unwrap(), bytes);
+        assert_eq!(to_hex(&[0x0f, 0xa0]), "0fa0");
+        for bad in ["0", "0g", "0A", " 0"] {
+            assert_eq!(from_hex(bad), None, "{bad:?}");
+        }
+        assert_eq!(from_hex(""), Some(vec![]));
+    }
+
+    #[test]
+    fn install_snapshot_envelopes_are_bounded() {
+        let chunk = |offset: u64, data: &str, done: bool, total_len: u64| Envelope {
+            version: 1,
+            cluster_id: CLUSTER.into(),
+            from: 1,
+            to: 2,
+            rpc_id: 1,
+            body: Rpc::InstallSnapshot {
+                term: 3,
+                leader_id: 1,
+                last_included_index: 5,
+                last_included_term: 2,
+                voters: VOTERS,
+                total_len,
+                total_crc: 0,
+                offset,
+                data: data.into(),
+                done,
+            },
+        };
+        assert!(chunk(0, "aabb", false, 4).valid_for(2));
+        assert!(chunk(2, "ccdd", true, 4).valid_for(2));
+        for (what, envelope) in [
+            ("done before the end", chunk(0, "aabb", true, 4)),
+            ("not done at the end", chunk(2, "ccdd", false, 4)),
+            ("past the end", chunk(3, "ccdd", true, 4)),
+            ("not hex", chunk(0, "zz", false, 4)),
+            ("empty snapshot", chunk(0, "", true, 0)),
+            ("too large", chunk(0, "aa", false, MAX_SNAPSHOT as u64 + 1)),
+            (
+                "chunk too large",
+                chunk(
+                    0,
+                    &"a".repeat(2 * MAX_CHUNK + 2),
+                    false,
+                    MAX_SNAPSHOT as u64,
+                ),
+            ),
+        ] {
+            assert!(!envelope.valid_for(2), "{what}");
+        }
+        let mut wrong = chunk(0, "aabb", false, 4);
+        if let Rpc::InstallSnapshot {
+            last_included_term, ..
+        } = &mut wrong.body
+        {
+            *last_included_term = 4;
+        }
+        assert!(!wrong.valid_for(2), "snapshot term above the leader's term");
     }
 
     #[test]
