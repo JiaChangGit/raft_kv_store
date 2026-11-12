@@ -595,6 +595,12 @@ fn main() -> io::Result<()> {
     let client = TcpListener::bind(own.client_addr)?;
     let mut wal = Wal::open(data_dir, id)?;
     wal.inject_sync_failure(std::env::var("RAFT_SYNC_FAILURE").ok().as_deref() == Some("1"));
+    // Entries up to the snapshot are committed; everything after it is relearned.
+    let kv = match wal.snapshot() {
+        Some(snapshot) => StateMachine::restore(&snapshot.data, snapshot.base.index)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+        None => StateMachine::default(),
+    };
     let core = Core::new(id, wal.state().clone()).map_err(io::Error::other)?;
     let (tx, rx) = mpsc::sync_channel(QUEUE);
     peer_listener(peer, tx.clone(), id);
@@ -607,7 +613,7 @@ fn main() -> io::Result<()> {
     Actor {
         core,
         wal,
-        kv: StateMachine::default(),
+        kv,
         config,
         tx,
         rx,

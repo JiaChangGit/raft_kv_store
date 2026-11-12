@@ -293,25 +293,69 @@ fn file_header_corruption_and_identity_mismatch_rejected() {
     assert_eq!(outcome(&dir, &sample.bytes).unwrap(), sample.states[2]);
 }
 
+/// Replaces S1's `reserved_header_fields_must_be_pristine`: since S2 the start
+/// fields carry a snapshot position, so they are checked for consistency.
+/// Every case keeps a valid header checksum so that only the field rule refuses.
 #[test]
-fn reserved_header_fields_must_be_pristine() {
+fn file_header_start_fields_validated() {
     let dir = TestDir::new();
     let sample = sample(&dir);
-    for (what, index) in [
-        ("reserved bytes", 36),
-        ("base index", 40),
-        ("base term", 48),
-        ("start term", 56),
-        ("first sequence", 64),
-        ("start vote", 72),
-    ] {
+    let set = |bytes: &mut Vec<u8>, at: usize, value: &[u8]| {
+        bytes[at..at + value.len()].copy_from_slice(value);
+        reseal_file_header(bytes);
+    };
+    type Fields = Vec<(usize, Vec<u8>)>;
+    let cases: [(&str, Fields); 7] = [
+        ("reserved bytes", vec![(36, vec![1])]),
+        (
+            "base index without a term",
+            vec![(40, 3_u64.to_le_bytes().to_vec())],
+        ),
+        (
+            "base term without an index",
+            vec![(48, 1_u64.to_le_bytes().to_vec())],
+        ),
+        (
+            "base term above start term",
+            vec![
+                (40, 3_u64.to_le_bytes().to_vec()),
+                (48, 5_u64.to_le_bytes().to_vec()),
+                (56, 4_u64.to_le_bytes().to_vec()),
+            ],
+        ),
+        ("first sequence 0", vec![(64, 0_u64.to_le_bytes().to_vec())]),
+        (
+            "vote for node 4",
+            vec![(56, 1_u64.to_le_bytes().to_vec()), (72, vec![4])],
+        ),
+        ("vote in term 0", vec![(72, vec![2])]),
+    ];
+    for (what, fields) in cases {
         let mut changed = sample.bytes.clone();
-        changed[index] ^= 2;
-        reseal_file_header(&mut changed);
+        for (at, value) in fields {
+            set(&mut changed, at, &value);
+        }
         let error = outcome(&dir, &changed).unwrap_err();
-        assert!(error.contains("compacted start"), "{what}: {error}");
+        assert!(
+            error.contains("start fields are inconsistent"),
+            "{what}: {error}"
+        );
         assert!(untouched(&dir, &changed), "{what}");
     }
+    // A consistent start is accepted: term 5 and a vote for node 2 before any record.
+    let mut header = sample.bytes[..80].to_vec();
+    set(&mut header, 56, &5_u64.to_le_bytes());
+    set(&mut header, 72, &[2]);
+    let opened = outcome(&dir, &header).unwrap();
+    assert_eq!(
+        (opened.term, opened.voted_for, opened.last_index()),
+        (5, Some(2), 0)
+    );
+    // A base without its snapshot file is data loss, not a fresh start.
+    set(&mut header, 40, &3_u64.to_le_bytes());
+    set(&mut header, 48, &4_u64.to_le_bytes());
+    let error = outcome(&dir, &header).unwrap_err();
+    assert!(error.contains("snapshot file is missing"), "{error}");
 }
 
 #[test]
@@ -766,4 +810,330 @@ fn boundary_truncation_is_documented_as_undetected() {
         DurableState::default()
     );
     assert!(!dir.0.join("torn").exists());
+}
+
+// ---- S2: snapshots ------------------------------------------------------------
+
+fn snap(index: u64, term: u64, text: &str) -> Snapshot {
+    Snapshot::new(LogBase { index, term }, text.as_bytes().to_vec())
+}
+
+/// Five entries in term 2, then a snapshot covering the first three.
+fn installed(dir: &TestDir) -> (DurableState, Snapshot) {
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    let mut log = state(2, Some(1));
+    for (index, value) in ["A", "B", "C", "D", "E"].into_iter().enumerate() {
+        log.push(entry(index as u64 + 1, 2, value));
+    }
+    wal.save(&log).unwrap();
+    let snapshot = snap(3, 2, "state-at-3");
+    let next = adopt_snapshot(&log, snapshot.base);
+    wal.install(&next, &snapshot).unwrap();
+    assert_eq!(wal.state(), &next);
+    assert_eq!(wal.snapshot(), Some(&snapshot));
+    (next, snapshot)
+}
+
+#[test]
+fn snapshot_file_layout_is_pinned() {
+    let dir = TestDir::new();
+    let (_, snapshot) = installed(&dir);
+    let bytes = fs::read(dir.0.join("snapshot")).unwrap();
+    assert_eq!(&bytes[0..4], b"RFTS");
+    assert_eq!(bytes[4..6], [1, 0], "snapshot format version");
+    assert_eq!(bytes[6..8], [64, 0], "header length");
+    assert_eq!(&bytes[8..18], b"raft-kv-v1");
+    assert!(bytes[18..32].iter().all(|byte| *byte == 0));
+    assert_eq!(bytes[32..40], 3_u64.to_le_bytes(), "last included index");
+    assert_eq!(bytes[40..48], 2_u64.to_le_bytes(), "last included term");
+    assert_eq!(bytes[48..52], 0b1110_u32.to_le_bytes(), "voters 1, 2, 3");
+    assert_eq!(bytes[52..56], 10_u32.to_le_bytes(), "payload length");
+    assert_eq!(bytes[56..60], crc32c(b"state-at-3").to_le_bytes());
+    assert_eq!(bytes[60..64], crc32c(&bytes[..60]).to_le_bytes());
+    assert_eq!(&bytes[64..], b"state-at-3");
+    assert_eq!(decode_snapshot(&bytes).unwrap(), snapshot);
+
+    // The WAL now starts after the snapshot and holds entries 4 and 5.
+    let wal = fs::read(dir.wal()).unwrap();
+    assert_eq!(wal[40..48], 3_u64.to_le_bytes(), "base index");
+    assert_eq!(wal[48..56], 2_u64.to_le_bytes(), "base term");
+    assert_eq!(wal[56..64], 2_u64.to_le_bytes(), "start term");
+    assert_eq!(
+        wal[64..72],
+        2_u64.to_le_bytes(),
+        "first sequence follows the old one"
+    );
+    assert_eq!(wal[72..76], 1_u32.to_le_bytes(), "start vote");
+    assert_eq!(
+        dir.names(""),
+        ["node.lock", "node.meta", "raft.wal", "snapshot"]
+    );
+}
+
+#[test]
+fn install_then_reopen_keeps_base_suffix_and_sequence() {
+    let dir = TestDir::new();
+    let (next, snapshot) = installed(&dir);
+    let reopened = {
+        let mut wal = Wal::open(&dir.0, 1).unwrap();
+        assert_eq!(wal.state(), &next);
+        assert_eq!(wal.snapshot(), Some(&snapshot));
+        assert_eq!(
+            wal.durable_sequence(),
+            2,
+            "one record carries entries 4 and 5"
+        );
+        let core = Core::new(1, wal.state().clone()).unwrap();
+        assert_eq!((core.commit_index, core.last_applied), (3, 3));
+        let mut later = next.clone();
+        later.term = 3;
+        later.voted_for = None;
+        later.truncate_from(5);
+        later.push(entry(5, 3, "F"));
+        wal.save(&later).unwrap();
+        later
+    };
+    let wal = Wal::open(&dir.0, 1).unwrap();
+    assert_eq!(wal.state(), &reopened);
+    assert_eq!(wal.durable_sequence(), 3);
+}
+
+#[test]
+fn install_rejects_invalid_requests_without_writing() {
+    let dir = TestDir::new();
+    let (next, snapshot) = installed(&dir);
+    let before = (
+        fs::read(dir.wal()).unwrap(),
+        fs::read(dir.0.join("snapshot")).unwrap(),
+    );
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    let older = snap(2, 2, "older");
+    let same = snapshot.clone();
+    let mismatched = snap(4, 2, "four");
+    let mut other_vote = adopt_snapshot(&next, LogBase { index: 4, term: 2 });
+    other_vote.voted_for = Some(3);
+    let mut members = snap(4, 2, "members");
+    members.voters = 0b0110;
+    for (what, state, snapshot) in [
+        ("older base", adopt_snapshot(&next, older.base), older),
+        ("same base", next.clone(), same),
+        (
+            "state does not match the snapshot",
+            next.clone(),
+            mismatched.clone(),
+        ),
+        (
+            "vote changed within the term",
+            other_vote,
+            snap(4, 2, "vote"),
+        ),
+        (
+            "membership other than 1, 2, 3",
+            adopt_snapshot(&next, members.base),
+            members,
+        ),
+    ] {
+        assert!(wal.install(&state, &snapshot).is_err(), "{what}");
+        assert!(
+            !wal.poisoned(),
+            "{what}: a refused request is not an I/O failure"
+        );
+    }
+    assert!(
+        wal.save(&adopt_snapshot(&next, mismatched.base)).is_err(),
+        "a base change cannot be saved as a transaction"
+    );
+    drop(wal);
+    assert_eq!(fs::read(dir.wal()).unwrap(), before.0);
+    assert_eq!(fs::read(dir.0.join("snapshot")).unwrap(), before.1);
+}
+
+#[test]
+fn install_sync_failure_poisons_and_keeps_the_old_state() {
+    let dir = TestDir::new();
+    let (next, snapshot) = installed(&dir);
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    wal.inject_sync_failure(true);
+    let newer = snap(5, 2, "state-at-5");
+    assert!(
+        wal.install(&adopt_snapshot(&next, newer.base), &newer)
+            .is_err()
+    );
+    assert!(wal.poisoned());
+    drop(wal);
+    let wal = Wal::open(&dir.0, 1).unwrap();
+    assert_eq!((wal.state(), wal.snapshot()), (&next, Some(&snapshot)));
+}
+
+#[test]
+fn snapshot_corruption_fails_closed_unchanged() {
+    let dir = TestDir::new();
+    installed(&dir);
+    let path = dir.0.join("snapshot");
+    let good = fs::read(&path).unwrap();
+    let wal = fs::read(dir.wal()).unwrap();
+    let refused = |bytes: &[u8]| {
+        fs::write(&path, bytes).unwrap();
+        let error = Wal::open(&dir.0, 1).err();
+        error.is_some() && fs::read(&path).unwrap() == bytes && fs::read(dir.wal()).unwrap() == wal
+    };
+    let mut cases = 0;
+    for index in 0..good.len() {
+        for bit in 0..8 {
+            let mut corrupt = good.clone();
+            corrupt[index] ^= 1 << bit;
+            assert!(refused(&corrupt), "byte {index} bit {bit}");
+            cases += 1;
+        }
+    }
+    assert_eq!(cases, good.len() * 8);
+    assert!(refused(&good[..good.len() - 1]), "truncated payload");
+    assert!(refused(&good[..63]), "truncated header");
+    assert!(refused(&[good.as_slice(), b"x"].concat()), "trailing byte");
+    let mut random = 0x2545_f491_4f6c_dd1d_u64;
+    for case in 0..2_000 {
+        random ^= random << 13;
+        random ^= random >> 7;
+        random ^= random << 17;
+        let mut corrupt = good.clone();
+        let at = (random % good.len() as u64) as usize;
+        for byte in corrupt
+            .iter_mut()
+            .skip(at)
+            .take(1 + (random >> 32) as usize % 16)
+        {
+            *byte ^= 1 + (random >> 40) as u8 % 255;
+        }
+        assert!(refused(&corrupt), "case {case}");
+    }
+    fs::write(&path, &good).unwrap();
+    assert!(Wal::open(&dir.0, 1).is_ok());
+}
+
+/// docs/SNAPSHOT_COMPACTION.md §7.3, one row at a time.
+#[test]
+fn snapshot_and_wal_consistency_rules() {
+    let write = |dir: &TestDir, snapshot: &Snapshot| {
+        fs::write(dir.0.join("snapshot"), encode_snapshot(snapshot)).unwrap()
+    };
+    let refused_unchanged = |dir: &TestDir, expected: &str| {
+        let files = (
+            fs::read(dir.wal()).unwrap(),
+            fs::read(dir.0.join("snapshot")).ok(),
+        );
+        let error = Wal::open(&dir.0, 1).err().expect("must refuse").to_string();
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(
+            (
+                fs::read(dir.wal()).unwrap(),
+                fs::read(dir.0.join("snapshot")).ok()
+            ),
+            files
+        );
+    };
+
+    // No snapshot, B > 0: the snapshot file was lost.
+    let dir = TestDir::new();
+    installed(&dir);
+    fs::remove_file(dir.0.join("snapshot")).unwrap();
+    refused_unchanged(&dir, "snapshot file is missing");
+
+    // S == B with a different term.
+    let dir = TestDir::new();
+    installed(&dir);
+    write(&dir, &snap(3, 1, "state-at-3"));
+    refused_unchanged(&dir, "base term differs");
+
+    // B > S: the snapshot is older than the WAL's start.
+    let dir = TestDir::new();
+    installed(&dir);
+    write(&dir, &snap(2, 2, "older"));
+    refused_unchanged(&dir, "starts after the snapshot");
+
+    // B < S, and the WAL agrees at S: keep what follows S.
+    let dir = TestDir::new();
+    let (next, _) = installed(&dir);
+    write(&dir, &snap(4, 2, "state-at-4"));
+    let wal = Wal::open(&dir.0, 1).unwrap();
+    assert_eq!(
+        wal.state(),
+        &adopt_snapshot(&next, LogBase { index: 4, term: 2 })
+    );
+    assert_eq!(wal.state().entries(), [entry(5, 2, "E")]);
+
+    // B < S, the WAL disagrees at S (or ends before it): the whole log is superseded.
+    let dir = TestDir::new();
+    let (mut next, _) = installed(&dir);
+    {
+        let mut wal = Wal::open(&dir.0, 1).unwrap();
+        next.term = 4;
+        next.voted_for = None;
+        wal.save(&next).unwrap();
+    }
+    write(&dir, &snap(9, 4, "from-a-leader"));
+    let wal = Wal::open(&dir.0, 1).unwrap();
+    assert_eq!(wal.state().base(), LogBase { index: 9, term: 4 });
+    assert!(wal.state().entries().is_empty());
+    assert_eq!((wal.state().term, wal.state().voted_for), (4, None));
+
+    // A snapshot newer than the durable term cannot be adopted.
+    let dir = TestDir::new();
+    installed(&dir);
+    write(&dir, &snap(9, 7, "too-new"));
+    refused_unchanged(&dir, "newer than the durable term");
+}
+
+#[test]
+fn interrupted_install_rolls_forward_idempotently() {
+    let dir = TestDir::new();
+    let (next, _) = installed(&dir);
+    // As if the process died after the snapshot rename, before the WAL rewrite.
+    let newer = snap(5, 2, "state-at-5");
+    fs::write(dir.0.join("snapshot"), encode_snapshot(&newer)).unwrap();
+    fs::write(dir.0.join("raft.wal.tmp"), b"half-written").unwrap();
+    let first = {
+        let wal = Wal::open(&dir.0, 1).unwrap();
+        assert_eq!(wal.state(), &adopt_snapshot(&next, newer.base));
+        assert_eq!(wal.snapshot(), Some(&newer));
+        fs::read(dir.wal()).unwrap()
+    };
+    assert_eq!(
+        first[40..48],
+        5_u64.to_le_bytes(),
+        "the WAL was rewritten to start at 5"
+    );
+    assert!(!dir.0.join("raft.wal.tmp").exists());
+    let wal = Wal::open(&dir.0, 1).unwrap();
+    assert_eq!(wal.state(), &adopt_snapshot(&next, newer.base));
+    drop(wal);
+    assert_eq!(
+        fs::read(dir.wal()).unwrap(),
+        first,
+        "a second restart changes nothing"
+    );
+}
+
+#[test]
+fn large_retained_suffix_is_split_across_records() {
+    let dir = TestDir::new();
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    let mut log = state(2, Some(1));
+    let value = "v".repeat(4096);
+    // 1,200 entries of about 4 KiB: more than two maximal records.
+    for index in 1..=1_200 {
+        log.push(entry(index, 2, &value));
+        if index % 300 == 0 {
+            wal.save(&log).unwrap();
+        }
+    }
+    let snapshot = snap(1, 2, "state-at-1");
+    let next = adopt_snapshot(&log, snapshot.base);
+    wal.install(&next, &snapshot).unwrap();
+    assert!(
+        wal.durable_sequence() >= 4 + 3,
+        "the suffix needed at least three records"
+    );
+    drop(wal);
+    let wal = Wal::open(&dir.0, 1).unwrap();
+    assert_eq!(wal.state(), &next);
 }

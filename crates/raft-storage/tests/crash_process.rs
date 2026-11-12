@@ -5,6 +5,17 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 static NEXT: AtomicU64 = AtomicU64::new(0);
+/// These tests spawn child processes while also holding `node.lock` (a `flock`)
+/// in this process. A child forked by one test briefly inherits every open
+/// descriptor until it calls exec, including another test's lock, so a quick
+/// drop-then-reopen there can fail with "already owned". Running the tests one
+/// at a time removes the overlap. See docs/lessons/02-flaky-lock-inherited-by-child/.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 struct TestDir(PathBuf);
 impl TestDir {
     fn new() -> Self {
@@ -27,6 +38,7 @@ impl Drop for TestDir {
 
 #[test]
 fn real_process_crash_boundaries_restore_only_complete_transactions() {
+    let _serial = serial();
     for boundary in [
         "before_write",
         "after_write_before_sync",
@@ -127,6 +139,7 @@ fn crash_at(data: &Path, marker: &Path, boundary: &str, term: &str) {
 
 #[test]
 fn real_process_partial_write_is_preserved_then_truncated() {
+    let _serial = serial();
     for boundary in ["after_partial_header", "after_partial_payload"] {
         let dir = TestDir::new();
         let marker = dir.0.join("reached");
@@ -165,6 +178,7 @@ fn real_process_partial_write_is_preserved_then_truncated() {
 
 #[test]
 fn real_process_crash_during_initialization_recovers() {
+    let _serial = serial();
     for boundary in [
         "init_before_rename_raft.wal",
         "init_after_wal_before_identity",
@@ -188,5 +202,86 @@ fn real_process_crash_during_initialization_recovers() {
         let wal = Wal::open(&data, 1).unwrap();
         assert_eq!(wal.state().term, 1);
         assert_eq!(wal.durable_sequence(), 1);
+    }
+}
+
+fn snapshot_probe(data: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_snapshot_probe"))
+        .arg(data)
+        .output()
+        .unwrap()
+}
+
+/// Same as `crash_at`, for the snapshot probe.
+fn crash_snapshot_probe_at(data: &Path, marker: &Path, boundary: &str) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_snapshot_probe"))
+        .arg(data)
+        .env("RAFT_WAL_FAILPOINT", boundary)
+        .env("RAFT_WAL_FAILPOINT_MARKER", marker)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() && Instant::now() < deadline {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "probe exited before reaching {boundary}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(marker.exists(), "probe never reached {boundary}");
+    child.kill().unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "the install was never reported");
+}
+
+/// docs/SNAPSHOT_COMPACTION.md §7.4: a SIGKILL between any two install steps
+/// leaves the old state or the new one, and a second restart changes nothing.
+#[test]
+fn real_process_crash_during_snapshot_install_recovers() {
+    let _serial = serial();
+    use raft_protocol::LogBase;
+    let old = LogBase { index: 0, term: 0 };
+    let new = LogBase { index: 2, term: 1 };
+    for (boundary, expected) in [
+        ("install_before_snapshot_rename", old),
+        ("install_after_snapshot_before_wal", new),
+        ("install_before_wal_rename", new),
+        ("install_after_wal_rename", new),
+    ] {
+        let dir = TestDir::new();
+        let marker = dir.0.join("reached");
+        let data = dir.0.join("node");
+        crash_snapshot_probe_at(&data, &marker, boundary);
+        let (state, wal_bytes) = {
+            let wal = Wal::open(&data, 1).unwrap();
+            assert_eq!(wal.state().base(), expected, "{boundary}");
+            assert_eq!(wal.state().last_index(), 3, "{boundary}: no entry is lost");
+            assert_eq!(wal.snapshot().is_some(), expected == new, "{boundary}");
+            (
+                wal.state().clone(),
+                fs::read(data.join("raft.wal")).unwrap(),
+            )
+        };
+        assert!(!data.join("snapshot.tmp").exists() && !data.join("raft.wal.tmp").exists());
+        let again =
+            Wal::open(&data, 1).unwrap_or_else(|error| panic!("{boundary}: second open: {error}"));
+        assert_eq!(again.state(), &state, "{boundary}");
+        drop(again);
+        assert_eq!(
+            fs::read(data.join("raft.wal")).unwrap(),
+            wal_bytes,
+            "{boundary}"
+        );
+        // Whatever survived, the probe can finish the job.
+        let done = snapshot_probe(&data);
+        assert!(
+            done.status.success(),
+            "{boundary}: {}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&done.stdout).trim(), "INSTALLED 2");
     }
 }

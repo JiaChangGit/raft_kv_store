@@ -8,6 +8,10 @@ pub const MAX_FRAME: usize = 1024 * 1024;
 pub const MAX_KEY: usize = 256;
 pub const MAX_VALUE: usize = 4096;
 pub const CLUSTER: &str = "raft-kv-v1";
+/// Snapshot membership: bit n set means node n votes. Fixed to nodes 1, 2, 3 until S4.
+pub const VOTERS: u32 = 0b1110;
+/// Largest snapshot a node writes, loads or accepts from a leader.
+pub const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
 pub type NodeId = u8;
 pub type Term = u64;
 pub type LogIndex = u64;
@@ -172,6 +176,47 @@ impl DurableState {
                 .entries
                 .windows(2)
                 .all(|pair| pair[0].term <= pair[1].term)
+    }
+}
+
+/// Reflected CRC32C/Castagnoli: polynomial 0x82F63B78, init/final xor 0xFFFFFFFF.
+pub fn crc32c(bytes: &[u8]) -> u32 {
+    let mut crc = !0_u32;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0x82f6_3b78 & (0_u32.wrapping_sub(crc & 1)));
+        }
+    }
+    !crc
+}
+
+/// A state machine image covering every entry up to and including `base`.
+/// `data` is opaque here; the node's state machine (or the simulator's model)
+/// produces and interprets it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    pub base: LogBase,
+    pub voters: u32,
+    pub data: std::sync::Arc<[u8]>,
+}
+impl Snapshot {
+    pub fn new(base: LogBase, data: Vec<u8>) -> Self {
+        Self {
+            base,
+            voters: VOTERS,
+            data: data.into(),
+        }
+    }
+    pub fn crc(&self) -> u32 {
+        crc32c(&self.data)
+    }
+    pub fn valid(&self) -> bool {
+        self.base.index > 0
+            && self.base.term > 0
+            && self.voters == VOTERS
+            && !self.data.is_empty()
+            && self.data.len() <= MAX_SNAPSHOT
     }
 }
 

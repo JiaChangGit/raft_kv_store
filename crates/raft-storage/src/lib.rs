@@ -1,7 +1,12 @@
-//! Append-only, checksummed transactions (WAL format 2). A successful save means
-//! sync_all completed. Storage restores persistent consensus data only; it never
-//! decides commitment. Byte layout and recovery rules: docs/STORAGE_FORMAT_V2.md.
-use raft_protocol::{CLUSTER, DurableState, LogEntry, NodeId, valid_node};
+//! Append-only, checksummed transactions (WAL format 2) plus one snapshot file.
+//! A successful save or install means sync_all completed. Storage restores
+//! persistent consensus data only; it never decides commitment. Byte layout and
+//! recovery rules: docs/STORAGE_FORMAT_V2.md and docs/SNAPSHOT_COMPACTION.md.
+pub use raft_protocol::crc32c;
+use raft_protocol::{
+    CLUSTER, DurableState, LogBase, LogEntry, MAX_SNAPSHOT, NodeId, Snapshot, adopt_snapshot,
+    valid_node,
+};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -19,6 +24,10 @@ pub const HEADER_LEN: usize = 24;
 pub const MAX_RECORD_PAYLOAD: usize = 2 * 1024 * 1024;
 /// Preserved copies of removed tails kept under `torn/`.
 pub const MAX_TORN_COPIES: usize = 8;
+/// Fixed snapshot file header; the payload follows it.
+pub const SNAPSHOT_HEADER_LEN: usize = 64;
+const SNAPSHOT_MAGIC: &[u8; 4] = b"RFTS";
+const SNAPSHOT_VERSION: u16 = 1;
 const FILE_MAGIC: &[u8; 4] = b"RFTW";
 const RECORD_MAGIC: &[u8; 4] = b"RFTR";
 const TRANSACTION: u16 = 1;
@@ -43,9 +52,9 @@ struct Transaction {
     append: Vec<LogEntry>,
 }
 
-/// Where a WAL file starts. Format 2 reserves these fields so that log
-/// compaction can later begin a file after a snapshot without another format
-/// change; this build writes and accepts only [`PRISTINE`].
+/// Where a WAL file starts. A fresh node starts at [`PRISTINE`]; after a
+/// snapshot the file is rewritten to start right after it, carrying the term
+/// and vote in force at that moment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FileStart {
     base_index: u64,
@@ -62,11 +71,33 @@ const PRISTINE: FileStart = FileStart {
     start_voted_for: 0,
 };
 
+impl FileStart {
+    fn of(state: &DurableState, first_sequence: u64) -> Self {
+        Self {
+            base_index: state.base().index,
+            base_term: state.base().term,
+            start_term: state.term,
+            first_sequence,
+            start_voted_for: state.voted_for.map_or(0, u32::from),
+        }
+    }
+    fn state(&self) -> DurableState {
+        let vote = (self.start_voted_for != 0).then_some(self.start_voted_for as NodeId);
+        let base = LogBase {
+            index: self.base_index,
+            term: self.base_term,
+        };
+        DurableState::with_base(self.start_term, vote, base, vec![])
+    }
+}
+
 pub struct Wal {
     file: File,
     // Held for the entire lifetime; prevents two writers owning one node directory.
     _lock: File,
+    node_id: NodeId,
     state: DurableState,
+    snapshot: Option<Snapshot>,
     sequence: u64,
     poisoned: bool,
     fail_sync: bool,
@@ -98,27 +129,139 @@ fn create_directory(path: &Path) -> io::Result<()> {
     sync_directory(path)
 }
 
-/// Write a whole small file so that a crash leaves either no file or all of it.
-fn write_atomically(directory: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+/// Write a whole file so that a crash leaves either the old file or all of the
+/// new one: temporary file, sync, rename, sync the directory.
+fn write_atomically(
+    directory: &Path,
+    name: &str,
+    bytes: &[u8],
+    before_rename: &str,
+) -> io::Result<()> {
     let temporary = directory.join(format!("{name}.tmp"));
     let mut file = File::create(&temporary)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    failpoint(&format!("init_before_rename_{name}"));
+    failpoint(before_rename);
     fs::rename(&temporary, directory.join(name))?;
     sync_directory(directory)
 }
 
-/// Reflected CRC32C/Castagnoli: polynomial 0x82F63B78, init/final xor 0xFFFFFFFF.
-pub fn crc32c(bytes: &[u8]) -> u32 {
-    let mut crc = !0_u32;
-    for byte in bytes {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0x82f6_3b78 & (0_u32.wrapping_sub(crc & 1)));
-        }
+fn encode_snapshot(snapshot: &Snapshot) -> Vec<u8> {
+    let mut out = vec![0; SNAPSHOT_HEADER_LEN];
+    out[..4].copy_from_slice(SNAPSHOT_MAGIC);
+    out[4..6].copy_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+    out[6..8].copy_from_slice(&(SNAPSHOT_HEADER_LEN as u16).to_le_bytes());
+    out[8..8 + CLUSTER.len()].copy_from_slice(CLUSTER.as_bytes());
+    out[32..40].copy_from_slice(&snapshot.base.index.to_le_bytes());
+    out[40..48].copy_from_slice(&snapshot.base.term.to_le_bytes());
+    out[48..52].copy_from_slice(&snapshot.voters.to_le_bytes());
+    out[52..56].copy_from_slice(&(snapshot.data.len() as u32).to_le_bytes());
+    out[56..60].copy_from_slice(&snapshot.crc().to_le_bytes());
+    let checksum = crc32c(&out[..60]);
+    out[60..64].copy_from_slice(&checksum.to_le_bytes());
+    out.extend_from_slice(&snapshot.data);
+    out
+}
+
+fn decode_snapshot(bytes: &[u8]) -> io::Result<Snapshot> {
+    if bytes.len() < SNAPSHOT_HEADER_LEN {
+        return Err(invalid("snapshot is shorter than its header"));
     }
-    !crc
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"));
+    let long = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().expect("eight bytes"));
+    if crc32c(&bytes[..60]) != word(60) {
+        return Err(invalid("snapshot header checksum mismatch"));
+    }
+    let mut cluster = [0_u8; 24];
+    cluster[..CLUSTER.len()].copy_from_slice(CLUSTER.as_bytes());
+    if &bytes[..4] != SNAPSHOT_MAGIC
+        || bytes[4..6] != SNAPSHOT_VERSION.to_le_bytes()
+        || bytes[6..8] != (SNAPSHOT_HEADER_LEN as u16).to_le_bytes()
+        || bytes[8..32] != cluster
+    {
+        return Err(invalid("not a snapshot of this cluster and version"));
+    }
+    let length = word(52) as usize;
+    if length == 0 || length > MAX_SNAPSHOT || bytes.len() != SNAPSHOT_HEADER_LEN + length {
+        return Err(invalid("snapshot length does not match its header"));
+    }
+    let data = &bytes[SNAPSHOT_HEADER_LEN..];
+    if crc32c(data) != word(56) {
+        return Err(invalid("snapshot payload checksum mismatch"));
+    }
+    let snapshot = Snapshot {
+        base: LogBase {
+            index: long(32),
+            term: long(40),
+        },
+        voters: word(48),
+        data: data.into(),
+    };
+    if !snapshot.valid() {
+        return Err(invalid("snapshot position or membership is invalid"));
+    }
+    Ok(snapshot)
+}
+
+fn read_snapshot(directory: &Path) -> io::Result<Option<Snapshot>> {
+    let path = directory.join("snapshot");
+    let length = match fs::metadata(&path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if length > (SNAPSHOT_HEADER_LEN + MAX_SNAPSHOT) as u64 {
+        return Err(invalid("snapshot file exceeds the size limit"));
+    }
+    decode_snapshot(&fs::read(path)?).map(Some)
+}
+
+/// The bytes of a WAL that starts right after `state.base()` and holds its
+/// remaining entries, split so that no record exceeds the payload bound.
+fn wal_image(
+    node_id: NodeId,
+    state: &DurableState,
+    first_sequence: u64,
+) -> io::Result<(Vec<u8>, u64)> {
+    let mut out = file_header(node_id, FileStart::of(state, first_sequence)).to_vec();
+    let mut sequence = first_sequence - 1;
+    let mut pending: Vec<LogEntry> = vec![];
+    let mut flush = |pending: &mut Vec<LogEntry>, out: &mut Vec<u8>| -> io::Result<()> {
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let transaction = Transaction {
+            term: state.term,
+            voted_for: state.voted_for,
+            truncate_from: pending[0].index,
+            append: std::mem::take(pending),
+        };
+        let payload = serde_json::to_vec(&transaction).map_err(io::Error::other)?;
+        if payload.len() > MAX_RECORD_PAYLOAD {
+            return Err(invalid(
+                "a single log entry exceeds the record payload bound",
+            ));
+        }
+        sequence += 1;
+        let mut record = record_header(sequence, payload.len()).to_vec();
+        record.extend_from_slice(&payload);
+        record.extend_from_slice(&crc32c(&record).to_le_bytes());
+        out.extend_from_slice(&record);
+        Ok(())
+    };
+    let mut size = 0;
+    for entry in state.entries() {
+        let entry_size = serde_json::to_vec(entry).map_err(io::Error::other)?.len() + 1;
+        // 200 bytes covers the transaction's own fields.
+        if size + entry_size + 200 > MAX_RECORD_PAYLOAD {
+            flush(&mut pending, &mut out)?;
+            size = 0;
+        }
+        size += entry_size;
+        pending.push(entry.clone());
+    }
+    flush(&mut pending, &mut out)?;
+    Ok((out, sequence))
 }
 
 fn validate_change(previous: &DurableState, next: &DurableState) -> io::Result<()> {
@@ -184,8 +327,10 @@ fn file_header(node_id: NodeId, start: FileStart) -> [u8; FILE_HEADER_LEN] {
     out
 }
 
-fn check_file_header(bytes: &[u8; FILE_HEADER_LEN], node_id: NodeId) -> io::Result<()> {
-    if crc32c(&bytes[..76]) != u32::from_le_bytes(bytes[76..80].try_into().expect("four bytes")) {
+fn check_file_header(bytes: &[u8; FILE_HEADER_LEN], node_id: NodeId) -> io::Result<FileStart> {
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"));
+    let long = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().expect("eight bytes"));
+    if crc32c(&bytes[..76]) != word(76) {
         return Err(invalid("WAL file header checksum mismatch"));
     }
     let expected = file_header(node_id, PRISTINE);
@@ -195,12 +340,24 @@ fn check_file_header(bytes: &[u8; FILE_HEADER_LEN], node_id: NodeId) -> io::Resu
     if bytes[8..CLUSTER_FIELD.end] != expected[8..CLUSTER_FIELD.end] {
         return Err(invalid("WAL file header names another node or cluster"));
     }
-    if bytes != &expected {
-        return Err(invalid(
-            "WAL file header declares a compacted start; unsupported by this build",
-        ));
+    let start = FileStart {
+        base_index: long(40),
+        base_term: long(48),
+        start_term: long(56),
+        first_sequence: long(64),
+        start_voted_for: word(72),
+    };
+    let consistent = bytes[36..40] == [0; 4]
+        && (start.base_index == 0) == (start.base_term == 0)
+        && start.base_term <= start.start_term
+        && start.first_sequence >= 1
+        && (start.start_voted_for == 0
+            || (start.start_term > 0
+                && NodeId::try_from(start.start_voted_for).is_ok_and(valid_node)));
+    if !consistent {
+        return Err(invalid("WAL file header start fields are inconsistent"));
     }
-    Ok(())
+    Ok(start)
 }
 
 fn record_header(sequence: u64, payload_len: usize) -> [u8; HEADER_LEN] {
@@ -347,7 +504,12 @@ fn create_identity(directory: &Path, node_id: NodeId) -> io::Result<()> {
         format_version: FORMAT_VERSION,
     };
     let bytes = serde_json::to_vec(&identity).map_err(io::Error::other)?;
-    write_atomically(directory, "node.meta", &bytes)
+    write_atomically(
+        directory,
+        "node.meta",
+        &bytes,
+        "init_before_rename_node.meta",
+    )
 }
 
 impl Wal {
@@ -367,12 +529,27 @@ impl Wal {
             .map_err(|error| io::Error::other(format!("node directory already owned: {error}")))?;
         let metadata_path = directory.join("node.meta");
         let wal_path = directory.join("raft.wal");
+        // A snapshot is written only after initialization finished.
+        if directory.join("snapshot").exists() && !metadata_path.exists() {
+            return Err(invalid("snapshot exists without identity metadata"));
+        }
+        // Left by an install interrupted before its rename; never data.
+        for leftover in ["snapshot.tmp", "raft.wal.tmp"] {
+            if metadata_path.exists() && directory.join(leftover).exists() {
+                fs::remove_file(directory.join(leftover))?;
+            }
+        }
         // First initialization writes the WAL, then the identity. Identity is
         // therefore the proof that initialization finished: with it, a missing
         // WAL is data loss; without it, only an untouched header is acceptable.
         match (metadata_path.exists(), wal_path.exists()) {
             (false, false) => {
-                write_atomically(&directory, "raft.wal", &file_header(node_id, PRISTINE))?;
+                write_atomically(
+                    &directory,
+                    "raft.wal",
+                    &file_header(node_id, PRISTINE),
+                    "init_before_rename_raft.wal",
+                )?;
                 failpoint("init_after_wal_before_identity");
                 create_identity(&directory, node_id)?;
             }
@@ -400,19 +577,136 @@ impl Wal {
         }
         let mut header = [0_u8; FILE_HEADER_LEN];
         file.read_exact(&mut header)?;
-        check_file_header(&header, node_id)?;
+        let start = check_file_header(&header, node_id)?;
+        let initial = start.state();
+        if !initial.valid() {
+            return Err(invalid(
+                "WAL file header describes an invalid starting state",
+            ));
+        }
         let mut wal = Self {
             file,
             _lock: lock,
-            state: DurableState::default(),
-            sequence: PRISTINE.first_sequence - 1,
+            node_id,
+            state: initial,
+            snapshot: None,
+            sequence: start.first_sequence - 1,
             poisoned: false,
             fail_sync: false,
             directory,
             last_sync_us: 0.0,
         };
         wal.recover()?;
+        wal.reconcile_snapshot()?;
         Ok(wal)
+    }
+
+    /// Make the snapshot file and the WAL agree (docs/SNAPSHOT_COMPACTION.md §7.3).
+    fn reconcile_snapshot(&mut self) -> io::Result<()> {
+        let snapshot = read_snapshot(&self.directory)?;
+        let base = self.state.base();
+        match &snapshot {
+            None if base.index > 0 => {
+                return Err(invalid(
+                    "WAL starts after a snapshot but the snapshot file is missing",
+                ));
+            }
+            None => {}
+            Some(found) if base.index > found.base.index => {
+                return Err(invalid("WAL starts after the snapshot it should follow"));
+            }
+            Some(found) if base.index == found.base.index => {
+                if base.term != found.base.term {
+                    return Err(invalid("WAL base term differs from the snapshot"));
+                }
+            }
+            Some(found) => {
+                // The snapshot became durable but the WAL was not rewritten yet:
+                // finish the job. Everything the snapshot covers is committed.
+                let next = adopt_snapshot(&self.state, found.base);
+                if !next.valid() {
+                    return Err(invalid("snapshot is newer than the durable term"));
+                }
+                self.rewrite_wal(&next)?;
+            }
+        }
+        self.snapshot = snapshot;
+        Ok(())
+    }
+
+    /// Replace the WAL with one that starts at `next.base()` (§7.4 steps 2-3).
+    fn rewrite_wal(&mut self, next: &DurableState) -> io::Result<()> {
+        let first_sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid("WAL sequence exhausted"))?;
+        let (image, last_sequence) = wal_image(self.node_id, next, first_sequence)?;
+        if self.fail_sync {
+            return Err(io::Error::other("injected sync failure"));
+        }
+        write_atomically(
+            &self.directory,
+            "raft.wal",
+            &image,
+            "install_before_wal_rename",
+        )?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.directory.join("raft.wal"))?;
+        file.seek(SeekFrom::End(0))?;
+        self.file = file;
+        self.state = next.clone();
+        self.sequence = last_sequence;
+        Ok(())
+    }
+
+    /// Persist a snapshot and drop the log it covers (§7.4). `next` must be the
+    /// state after adopting `snapshot`; nothing is acknowledged until this returns.
+    pub fn install(&mut self, next: &DurableState, snapshot: &Snapshot) -> io::Result<()> {
+        if self.poisoned {
+            return Err(io::Error::other(
+                "WAL is poisoned; restart and recover before use",
+            ));
+        }
+        if !snapshot.valid()
+            || next.base() != snapshot.base
+            || snapshot.base.index <= self.state.base().index
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "snapshot must move the log base forward and match the new state",
+            ));
+        }
+        validate_change(&self.state, next)?;
+        let result = (|| {
+            if self.fail_sync {
+                return Err(io::Error::other("injected sync failure"));
+            }
+            write_atomically(
+                &self.directory,
+                "snapshot",
+                &encode_snapshot(snapshot),
+                "install_before_snapshot_rename",
+            )?;
+            failpoint("install_after_snapshot_before_wal");
+            self.rewrite_wal(next)
+        })();
+        if let Err(error) = result {
+            self.poisoned = true;
+            return Err(error);
+        }
+        self.snapshot = Some(snapshot.clone());
+        failpoint("install_after_wal_rename");
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> Option<&Snapshot> {
+        self.snapshot.as_ref()
+    }
+    /// Current size of `raft.wal`, used to decide when to take a snapshot.
+    pub fn wal_bytes(&self) -> io::Result<u64> {
+        Ok(self.file.metadata()?.len())
     }
 
     fn recover(&mut self) -> io::Result<()> {

@@ -3,8 +3,7 @@ use raft_protocol::{ClientResponse, Command, LogEntry, MAX_VALUE, Operation};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Largest snapshot accepted from disk or a leader (docs/SNAPSHOT_COMPACTION.md).
-pub const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
+pub use raft_protocol::MAX_SNAPSHOT;
 
 /// The latest request a client made (dissertation section 6.3). A client has at
 /// most one outstanding request, so only the newest one can still be retried.
