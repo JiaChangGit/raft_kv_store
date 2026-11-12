@@ -40,3 +40,10 @@ def test_invalid_argument_cannot_become_a_successful_effect():
     assert check([bad,op(2,"Get",2,3)])["status"]=="PASS"
     bad["status"]="OK"
     assert check([bad])["status"]=="FAIL"
+
+def test_only_the_latest_request_per_client_is_remembered():
+    # A delayed copy of request 1 committed after request 2 is rejected, not answered again.
+    h=[op(1,"Put",0,1,value="A"),op(2,"Put",2,3,value="B",result="A"),op(1,"Put",4,5,value="A",status="INVALID_ARGUMENT")]
+    assert check(h)["status"]=="PASS"
+    h[2].update(status="OK",result=None)
+    assert check(h)["status"]=="FAIL"

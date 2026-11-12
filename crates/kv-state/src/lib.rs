@@ -1,20 +1,28 @@
 //! Deterministic applied state. The caller supplies only an already committed prefix.
-use raft_protocol::{ClientResponse, Command, LogEntry, Operation};
+use raft_protocol::{ClientResponse, Command, LogEntry, MAX_VALUE, Operation};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Largest snapshot accepted from disk or a leader (docs/SNAPSHOT_COMPACTION.md).
+pub const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
+
+/// The latest request a client made (dissertation section 6.3). A client has at
+/// most one outstanding request, so only the newest one can still be retried.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Session {
+    sequence: u64,
     operation: Operation,
     response: ClientResponse,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StateMachine {
-    values: BTreeMap<String, String>,
-    sessions: BTreeMap<(u128, u64), Session>,
-    highest_sequence: BTreeMap<u128, u64>,
     applied_index: u64,
     effect_count: u64,
+    values: BTreeMap<String, String>,
+    sessions: BTreeMap<u128, Session>,
 }
 impl StateMachine {
     pub fn get(&self, key: &str) -> Option<&str> {
@@ -23,6 +31,7 @@ impl StateMachine {
     pub fn values(&self) -> &BTreeMap<String, String> {
         &self.values
     }
+    /// Number of clients with a remembered request.
     pub fn session_count(&self) -> usize {
         self.sessions.len()
     }
@@ -48,20 +57,20 @@ impl StateMachine {
                 committed_index: Some(entry.index),
             };
         };
-        let id = (request.client_id, request.sequence);
-        if let Some(session) = self.sessions.get(&id) {
-            return if session.operation == request.operation {
-                session.response.clone()
-            } else {
-                rejection("REQUEST_ID_REUSE", entry.index)
-            };
+        if let Some(session) = self.sessions.get(&request.client_id) {
+            if request.sequence == session.sequence {
+                return if session.operation == request.operation {
+                    session.response.clone()
+                } else {
+                    rejection("REQUEST_ID_REUSE", entry.index)
+                };
+            }
+            if request.sequence < session.sequence {
+                // Older than the client's latest request: never executed again.
+                return rejection("INVALID_ARGUMENT", entry.index);
+            }
         }
-        if !request.operation.valid()
-            || self
-                .highest_sequence
-                .get(&request.client_id)
-                .is_some_and(|last| request.sequence <= *last)
-        {
+        if !request.operation.valid() {
             return rejection("INVALID_ARGUMENT", entry.index);
         }
         let result = match &request.operation {
@@ -77,15 +86,59 @@ impl StateMachine {
             committed_index: Some(entry.index),
         };
         self.sessions.insert(
-            id,
+            request.client_id,
             Session {
+                sequence: request.sequence,
                 operation: request.operation.clone(),
                 response: response.clone(),
             },
         );
-        self.highest_sequence
-            .insert(request.client_id, request.sequence);
         response
+    }
+
+    /// Deterministic bytes: equal states always serialize identically, because
+    /// every collection is an ordered map and fields have a fixed order.
+    pub fn snapshot(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("state machine serializes")
+    }
+
+    /// Rebuild the state a snapshot taken at `applied_index` describes.
+    pub fn restore(bytes: &[u8], applied_index: u64) -> Result<Self, String> {
+        if bytes.len() > MAX_SNAPSHOT {
+            return Err("snapshot exceeds the size limit".into());
+        }
+        let state: Self =
+            serde_json::from_slice(bytes).map_err(|e| format!("invalid snapshot: {e}"))?;
+        if state.applied_index != applied_index {
+            return Err(format!(
+                "snapshot describes index {} but was installed as {applied_index}",
+                state.applied_index
+            ));
+        }
+        let pairs_valid = state.values.iter().all(|(key, value)| {
+            Operation::Put {
+                key: key.clone(),
+                value: value.clone(),
+            }
+            .valid()
+        });
+        // A response carries a value that was stored earlier, so it obeys the same bound.
+        let sessions_valid = state.sessions.values().all(|session| {
+            session.operation.valid()
+                && session
+                    .response
+                    .committed_index
+                    .is_some_and(|i| i <= applied_index)
+                && session
+                    .response
+                    .result
+                    .as_ref()
+                    .is_none_or(|value| value.len() <= MAX_VALUE)
+        });
+        if !pairs_valid || !sessions_valid || state.effect_count > applied_index {
+            return Err("snapshot content violates state machine bounds".into());
+        }
+        Ok(state)
     }
 }
 fn rejection(status: &str, index: u64) -> ClientResponse {
@@ -196,6 +249,187 @@ mod tests {
         assert_eq!(replay.get("x"), None);
         assert_eq!(results[1].result, Some("A".into()));
         assert_eq!(replay.effect_count(), 3);
+    }
+
+    fn noop(index: u64) -> LogEntry {
+        LogEntry {
+            index,
+            term: 1,
+            command: Command::NoOp,
+        }
+    }
+
+    /// A mixed history: writes, deletes, reads, a retry, an ID reuse, an older
+    /// sequence, an oversized value, several clients and Raft no-ops.
+    fn history() -> Vec<LogEntry> {
+        let get = |key: &str| Operation::Get { key: key.into() };
+        let ops = [
+            (1, 1, put("A")),
+            (
+                2,
+                7,
+                Operation::Put {
+                    key: "y".into(),
+                    value: "Y".into(),
+                },
+            ),
+            (1, 1, put("A")),
+            (1, 2, get("x")),
+            (2, 7, put("other")),
+            (3, 1, Operation::Delete { key: "y".into() }),
+            (1, 1, put("A")),
+            (
+                2,
+                8,
+                Operation::Put {
+                    key: "z".into(),
+                    value: "Z".repeat(4097),
+                },
+            ),
+            (u128::MAX, 0, put("max-client")),
+            (2, 9, get("y")),
+        ];
+        let mut entries = vec![noop(1)];
+        for (client, sequence, operation) in ops {
+            entries.push(entry(entries.len() as u64 + 1, client, sequence, operation));
+        }
+        entries.push(noop(entries.len() as u64 + 1));
+        entries
+    }
+
+    #[test]
+    fn older_sequence_after_newer_is_rejected_without_effect() {
+        let mut kv = StateMachine::default();
+        let first = kv.apply(&entry(1, 1, 1, put("A")));
+        kv.apply(&entry(2, 1, 2, put("B")));
+        // A delayed copy of request 1 committed after request 2.
+        let late = kv.apply(&entry(3, 1, 1, put("A")));
+        assert_eq!(late.status, "INVALID_ARGUMENT");
+        assert_ne!(
+            late, first,
+            "only the latest request per client is remembered"
+        );
+        assert_eq!(kv.get("x"), Some("B"));
+        assert_eq!(kv.effect_count(), 2);
+        assert_eq!(kv.session_count(), 1, "one record per client");
+    }
+
+    /// G4: restoring a snapshot taken after k entries is indistinguishable from
+    /// replaying those k entries, including every later response.
+    #[test]
+    fn snapshot_restore_equals_replay_at_every_prefix() {
+        let entries = history();
+        let mut full = StateMachine::default();
+        let expected: Vec<_> = entries.iter().map(|e| full.apply(e)).collect();
+        for k in 0..=entries.len() {
+            let mut prefix = StateMachine::default();
+            entries[..k].iter().for_each(|e| {
+                prefix.apply(e);
+            });
+            let mut restored = StateMachine::restore(&prefix.snapshot(), k as u64).unwrap();
+            assert_eq!(restored, prefix, "k={k}");
+            let rest: Vec<_> = entries[k..].iter().map(|e| restored.apply(e)).collect();
+            assert_eq!(rest, expected[k..], "k={k}");
+            assert_eq!(restored, full, "k={k}");
+        }
+        // expected[i] answers entries[i]; entries[0] is a no-op.
+        assert_eq!(
+            expected[3], expected[1],
+            "the retry kept its original result"
+        );
+        assert_eq!(expected[5].status, "REQUEST_ID_REUSE");
+        assert_eq!(expected[7].status, "INVALID_ARGUMENT", "older sequence");
+        assert_eq!(expected[8].status, "INVALID_ARGUMENT", "oversized value");
+        assert_eq!(full.session_count(), 4);
+    }
+
+    #[test]
+    fn independent_replays_produce_identical_snapshot_bytes() {
+        let entries = history();
+        let snapshots: Vec<_> = (0..3)
+            .map(|_| {
+                let mut kv = StateMachine::default();
+                entries.iter().for_each(|e| {
+                    kv.apply(e);
+                });
+                kv.snapshot()
+            })
+            .collect();
+        assert!(snapshots.windows(2).all(|pair| pair[0] == pair[1]));
+        let text = String::from_utf8(snapshots[0].clone()).unwrap();
+        let field = |name: &str| text.find(&format!("\"{name}\"")).unwrap();
+        assert!(field("applied_index") < field("effect_count"));
+        assert!(field("effect_count") < field("values"));
+        assert!(field("values") < field("sessions"));
+        assert!(
+            text.contains(&format!("\"{}\"", u128::MAX)),
+            "u128 client IDs survive JSON"
+        );
+    }
+
+    #[test]
+    fn restore_rejects_inconsistent_snapshots() {
+        let entries = history();
+        let mut kv = StateMachine::default();
+        entries.iter().for_each(|e| {
+            kv.apply(e);
+        });
+        let index = entries.len() as u64;
+        let good = String::from_utf8(kv.snapshot()).unwrap();
+        assert!(StateMachine::restore(good.as_bytes(), index).is_ok());
+        let bad = [
+            ("installed at another index", good.clone(), index + 1),
+            ("not JSON", "{".to_string(), index),
+            (
+                "unknown field",
+                good.replacen('{', "{\"extra\":1,", 1),
+                index,
+            ),
+            (
+                // "values" precedes "sessions", so the first match is the stored value.
+                "oversized stored value",
+                good.replacen("\"max-client\"", &format!("\"{}\"", "M".repeat(4097)), 1),
+                index,
+            ),
+            (
+                "oversized remembered response",
+                good.replacen(
+                    "\"result\":\"Y\"",
+                    &format!("\"result\":\"{}\"", "Y".repeat(4097)),
+                    1,
+                ),
+                index,
+            ),
+            (
+                "session newer than the snapshot",
+                good.replacen(
+                    &format!("\"committed_index\":{}", index - 1),
+                    &format!("\"committed_index\":{}", index + 5),
+                    1,
+                ),
+                index,
+            ),
+            (
+                "more effects than entries",
+                good.replacen(
+                    &format!("\"effect_count\":{}", kv.effect_count()),
+                    &format!("\"effect_count\":{}", index + 1),
+                    1,
+                ),
+                index,
+            ),
+        ];
+        for (what, text, at) in bad {
+            if at == index {
+                assert_ne!(text, good, "{what}: the corruption must change something");
+            }
+            assert!(
+                StateMachine::restore(text.as_bytes(), at).is_err(),
+                "{what}"
+            );
+        }
+        let huge = vec![b' '; MAX_SNAPSHOT + 1];
+        assert!(StateMachine::restore(&huge, 0).is_err());
     }
 
     #[test]

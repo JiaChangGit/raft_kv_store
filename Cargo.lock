@@ -35,6 +35,8 @@ name = "kv-state"
 version = "0.1.0"
 dependencies = [
  "raft-protocol",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

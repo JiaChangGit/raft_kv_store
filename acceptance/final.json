@@ -398,7 +398,7 @@
       "final_tests": [
         "tests/integration/test_client_retry.py::test_retry_after_leader_crash"
       ],
-      "note": "unchanged"
+      "note": "same test; S2 decision D1 changed one assertion. v1 sent an older sequence with another command and expected REQUEST_ID_REUSE. It now checks both properties separately: the latest sequence with another command is REQUEST_ID_REUSE, an older sequence is INVALID_ARGUMENT, and a follow-up read confirms neither changed the value"
     },
     "tests/integration/test_faults.py::test_partitioned_leader_cannot_commit_or_read": {
       "final_phase": "06",

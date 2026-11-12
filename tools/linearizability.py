@@ -9,13 +9,16 @@ def apply(model,sessions,operation):
     name,body=next(iter(operation["operation"].items()))
     if len(body["key"].encode("utf-8"))>256 or (name=="Put" and len(body["value"].encode("utf-8"))>4096):
         return model,sessions,("INVALID_ARGUMENT",None)
-    key=(operation["client_id"],operation["sequence"])
+    # One remembered request per client: only its latest sequence can be answered
+    # again; anything older is rejected without effect (docs/CLIENT_CONTRACT.md).
+    client,sequence=operation["client_id"],operation["sequence"]
     command=json.dumps(operation["operation"],sort_keys=True,separators=(",",":"))
-    if key in sessions:
-        old_command,result=sessions[key]
-        return model,sessions,("OK",result) if old_command==command else ("REQUEST_ID_REUSE",None)
-    if any(client==key[0] and sequence>=key[1] for client,sequence in sessions):
-        return model,sessions,("INVALID_ARGUMENT",None)
+    if client in sessions:
+        latest,old_command,result=sessions[client]
+        if sequence==latest:
+            return model,sessions,("OK",result) if old_command==command else ("REQUEST_ID_REUSE",None)
+        if sequence<latest:
+            return model,sessions,("INVALID_ARGUMENT",None)
     kv=dict(model)
     k=body["key"]
     value=kv.get(k)
@@ -23,7 +26,7 @@ def apply(model,sessions,operation):
     elif name=="Delete": kv.pop(k,None)
     elif name!="Get": raise ValueError("unsupported operation")
     table=dict(sessions)
-    table[key]=(command,value)
+    table[client]=(sequence,command,value)
     return kv,table,("OK",value)
 
 def check(history,max_states=200000):

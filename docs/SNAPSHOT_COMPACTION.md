@@ -121,6 +121,9 @@ sessions: client_id -> { sequence, operation, response }
 最後一列只有在 client 違反「一次只有一筆未完成請求」的契約、或同一請求的延遲副本在更新的請求之後才被 commit 時才會出現。
 兩種情況都不會重複執行，差別只在回覆內容；而後者發生時，client 早已收到原結果並送出了新請求，沒有人在等這個回覆。
 需同步修改：`AGENTS.md` 的去重條文、`docs/CLIENT_CONTRACT.md`、`tools/linearizability.py` 的模型與其測試。
+（實作時補記：v1 契約的 `test_retry_after_leader_crash` 原本以「舊 sequence＋不同指令」驗證 `REQUEST_ID_REUSE`，
+本規格漏列。已改為分別驗證「最新 sequence＋不同指令 → `REQUEST_ID_REUSE`」與「舊 sequence → `INVALID_ARGUMENT`」，
+兩者都另外確認 KV 未改變；對照記於契約的 `v1_mapping`。）
 原本的 `highest_sequence` 併入這份紀錄。
 
 ### 6.2 序列化

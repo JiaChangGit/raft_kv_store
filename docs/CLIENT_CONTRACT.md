@@ -13,9 +13,12 @@ applied_index+1。它不判定 commit，也不讀 WAL。NoOp 僅推進 applied i
 Put 回傳先前 value（原本不存在為 null），Delete 回傳移除的 value（不存在為 null），
 Get 回傳當時 value（不存在為 null）。所有值皆為字串；null 與空字串不同。
 
-session key 為 (client_id,sequence)，保存完整 typed operation 與原 ClientResponse。
+session 以 client_id 為鍵，每個 client 只保存**最新一筆**請求的 sequence、完整 typed operation
+與原 ClientResponse（S2 起，見 [快照規格](SNAPSHOT_COMPACTION.md) §6.1）。
 相同 ID 與內容的重送回傳原結果與原 committed_index，且不重新執行操作；同 ID
-不同內容回 REQUEST_ID_REUSE，不能改 KV。不同 leader 可將同一 request 寫進多筆
+不同內容回 REQUEST_ID_REUSE，不能改 KV。sequence 小於該 client 最新一筆的請求回
+INVALID_ARGUMENT，同樣不執行：正確的 client 一次只有一筆未完成請求，不會重送更舊的；
+同一請求的延遲副本若在更新的請求之後才被 commit，也只會得到這個拒絕，不會重複執行。不同 leader 可將同一 request 寫進多筆
 log；這不影響同一 logical request 只產生一次效果。
 
 GET 重送的舊結果是原 logical read，不是新讀取。runtime 仍須經安全的
@@ -29,8 +32,8 @@ STORAGE_ERROR 也不能推定操作一定沒有發生：完整但未成功同步
 存活，之後依合法共識提交。若需重試，仍保持相同 ID／sequence／內容；獨立 history
 checker 對這個狀態採不確定結果分支，而不直接刪除該操作。
 
-recovery 從空 KV/session 重放重新確認 committed 的 prefix，重建相同值與原結果。
-V1 不做 session GC；記憶體與 WAL 都可能持續成長，故障實驗與 benchmark 應限制規模。
+recovery 先從已落盤的快照還原 KV/session（沒有快照則為空），再重放重新確認 committed 的後續
+entry，重建相同值與原結果。session 數等於 client 數，沒有依時間淘汰；client 數本身沒有上限。
 effect_count 是首次執行的 logical request 數，含 GET；不等於 log entry 數或寫入數。
 
 測試結果由階段證據另行記錄，不將本契約文字當作已執行驗證。
