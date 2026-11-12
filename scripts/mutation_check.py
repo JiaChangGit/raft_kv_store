@@ -65,9 +65,10 @@ CASES=[
      "    while older.len() >= MAX_TORN_COPIES {",
      "    while false && older.len() >= MAX_TORN_COPIES {",
      "torn_tail_copies_are_idempotent_and_bounded","raft-storage"),
+    # Falls back to a fresh start on any file header error instead of refusing.
     ("wal_ignore_file_header",STORAGE,
-     "        check_file_header(&header, node_id)?;\n",
-     "",
+     "        let start = check_file_header(&header, node_id)?;",
+     "        let start = check_file_header(&header, node_id).unwrap_or(PRISTINE);",
      "file_header_corruption_and_identity_mismatch_rejected","raft-storage"),
     ("wal_adopt_any_wal_without_identity",STORAGE,
      "                if !untouched {",
@@ -128,6 +129,9 @@ CASES=[
 ]
 
 def main():
+    # Fail before spending minutes on earlier cases if any anchor has drifted.
+    drifted=[name for name,file,original,*_ in CASES if (ROOT/file).read_text().count(original)!=1]
+    if drifted: raise RuntimeError(f"Mutation anchors missing or not unique: {drifted}")
     _,fingerprint=snapshot(ROOT)
     stamp=datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     destination=ROOT/"artifacts"/"mutations"/stamp
