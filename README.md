@@ -92,7 +92,7 @@ fault schedule 與 logs 留在 `artifacts/runs/`；這些本機資料預設不�
 | raft-node | actor、同步 storage barrier、TCP、timers、client reply |
 
 推薦讀 [API 契約](docs/API_CONTRACT.md)、[commit 規則](docs/COMMIT_RULE_REVIEW.md)、
-[WAL 格式](docs/STORAGE_FORMAT_V1.md)、[client 契約](docs/CLIENT_CONTRACT.md)、
+[WAL 格式 2](docs/STORAGE_FORMAT_V2.md)、[client 契約](docs/CLIENT_CONTRACT.md)、
 [故障排程](docs/FAULT_SCHEDULE_FORMAT.md)、[帶讀與練習](docs/LEARNING_GUIDE.md)。
 Raft 原始權威來源為 [extended paper](https://raft.github.io/raft.pdf) Figure 2/3、§5.4；
 本專案規格與論文的差異必須明示。

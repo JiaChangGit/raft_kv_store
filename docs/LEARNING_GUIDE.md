@@ -111,7 +111,8 @@ Figure 8 的五節點是論文用來展示反例的配置。正式專案始終�
 
 ## 磁碟回復：為什麼不直接重播所有 KV？
 
-先讀 [STORAGE_FORMAT_V1.md](STORAGE_FORMAT_V1.md)，再追 `Wal::recover` →
+先讀 [STORAGE_FORMAT_V2.md](STORAGE_FORMAT_V2.md)（目前的格式；舊的格式 1 為何被換掉，見
+[Bug 教學 01](lessons/01-wal-length-corruption/README.md)），再追 `Wal::recover` →
 `Core::new` → 空 `StateMachine`。WAL 回復只說明該節點保存了哪些 term、vote、log；
 其中仍可能有未提交 entry。Core 重啟為 Follower、commit_index=last_applied=0，
 之後透過合法 Leader 的已匹配 prefix，或新 Leader 的 current-term NoOp，重新建立

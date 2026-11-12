@@ -7,7 +7,6 @@
   "supersedes": "acceptance/v1.json (kept as a historical record with its receipts under artifacts/acceptance-v1/)",
   "growth_rule": "Each roadmap stage appends its own phase after its specification is approved. A phase may replace tests of an earlier phase only by updating v1_mapping so that every v1 property still names at least one final test that checks it no more weakly; scripts/test_verify_gate.py enforces that the mapping is complete and resolvable, and independent review judges strength.",
   "planned_phases": {
-    "10": "S1 storage format",
     "11": "S2 snapshot and compaction",
     "12": "S3 ReadIndex",
     "13": "S4 membership change",
@@ -168,6 +167,44 @@
         "docs/IMPLEMENTATION_REPORT.md",
         "artifacts/reports/benchmark.json"
       ]
+    },
+    "10": {
+      "title": "S1: WAL format 2 header integrity, torn-tail preservation and restartable initialization",
+      "rust_tests": [
+        "crc32c_has_castagnoli_known_vector",
+        "new_directory_layout_and_file_header",
+        "existing_identity_without_wal_fails_closed",
+        "interrupted_initialization_is_completed_or_rejected",
+        "v1_directory_rejected_without_modification",
+        "file_header_corruption_and_identity_mismatch_rejected",
+        "reserved_header_fields_must_be_pristine",
+        "recovered_prefix_requires_successful_sync",
+        "atomic_suffix_transaction_and_identity_are_checked",
+        "reproduced_length_corruption_fails_closed_unchanged",
+        "every_single_bit_flip_fails_closed_unchanged",
+        "header_field_rules_checked_after_crc",
+        "seeded_multibyte_corruption_never_accepts_or_shortens",
+        "zero_or_garbage_tail_rejected",
+        "partial_header_tail_checks_every_available_byte",
+        "torn_tail_copy_failure_blocks_truncation",
+        "torn_tail_copies_are_idempotent_and_bounded",
+        "boundary_truncation_is_documented_as_undetected",
+        "real_process_crash_boundaries_restore_only_complete_transactions",
+        "real_process_partial_write_is_preserved_then_truncated",
+        "real_process_crash_during_initialization_recovers"
+      ],
+      "pytest_nodes": [
+        "tests/integration/test_wal_corruption.py::test_corrupt_header_node_refuses_start_and_cluster_continues"
+      ],
+      "required_files": [
+        "docs/STORAGE_FORMAT_V2.md",
+        "crates/raft-storage/tests/fixtures/v1/raft.wal",
+        "crates/raft-storage/tests/fixtures/v1/node.meta",
+        "docs/lessons/01-wal-length-corruption/README.md",
+        "docs/lessons/01-wal-length-corruption/repro.sh",
+        "docs/lessons/01-wal-length-corruption/expected-output.txt",
+        "artifacts/reports/mutations.json"
+      ]
     }
   },
   "reports": {
@@ -194,6 +231,36 @@
       ],
       "required_positive_integer": [
         "run_count"
+      ]
+    },
+    "10": {
+      "path": "artifacts/reports/mutations.json",
+      "required_nonempty": [
+        "command"
+      ],
+      "required_positive_integer": [
+        "case_count",
+        "detected_count"
+      ],
+      "required_empty_array": [
+        "undetected"
+      ],
+      "source_fingerprint_must_match": true,
+      "required_detected_cases": [
+        "quorum_one",
+        "unsafe_old_term_commit",
+        "reversed_queue",
+        "saturated_pool_spin",
+        "wal_skip_record_header_checksum",
+        "wal_truncate_on_bad_header",
+        "wal_compare_eof_before_header_checksum",
+        "wal_skip_record_checksum",
+        "wal_accept_any_partial_header",
+        "wal_truncate_before_copy_is_durable",
+        "wal_unbounded_torn_copies",
+        "wal_ignore_file_header",
+        "wal_adopt_any_wal_without_identity",
+        "wal_recreate_missing_wal"
       ]
     }
   },
@@ -259,28 +326,30 @@
       "final_tests": [
         "vote_after_restart_not_duplicated"
       ],
-      "note": "unchanged"
+      "note": "same test body; since S1 it runs against WAL format 2, the only storage implementation"
     },
     "append_ack_after_durable_sync": {
       "final_phase": "03",
       "final_tests": [
         "append_ack_after_durable_sync"
       ],
-      "note": "unchanged"
+      "note": "same test body; since S1 it runs against WAL format 2, the only storage implementation"
     },
     "uncommitted_suffix_not_applied_after_recovery": {
       "final_phase": "03",
       "final_tests": [
         "uncommitted_suffix_not_applied_after_recovery"
       ],
-      "note": "unchanged"
+      "note": "same test body; since S1 it runs against WAL format 2, the only storage implementation"
     },
     "truncated_wal_tail_safe": {
       "final_phase": "03",
       "final_tests": [
-        "truncated_wal_tail_safe"
+        "truncated_wal_tail_safe",
+        "every_single_bit_flip_fails_closed_unchanged",
+        "zero_or_garbage_tail_rejected"
       ],
-      "note": "unchanged"
+      "note": "same name and same assertions with format 2 offsets; additionally requires the removed tail to be preserved under torn/. Its single-bit and garbage checks are extended exhaustively by the two phase-10 tests"
     },
     "tcp_framing_handles_partial_io": {
       "final_phase": "04",
@@ -391,6 +460,9 @@
   "limits": [
     "Original required-files, fingerprint and script semantics are unavailable.",
     "Named test discovery and execution do not establish assertion quality; independent review required.",
-    "Subprocess tests cover process crashes, not arbitrary storage hardware power loss."
+    "Subprocess tests cover process crashes, not arbitrary storage hardware power loss.",
+    "Format 1 data is neither read nor converted; it is reproducible only from git tag v1-baseline-verified-20261112.",
+    "Truncation at or inside a record, a missing file and replacement by an older complete file are outside per-record checksum detection.",
+    "The mutation report shows that each named test fails for one planted mistake; it does not show the tests are complete."
   ]
 }

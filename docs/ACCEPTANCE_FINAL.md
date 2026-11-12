@@ -28,9 +28,14 @@ checker 或契約檔本身改變時，必須從第一個階段重新依序驗收
 ```bash
 . "$HOME/.cargo/env"
 .venv/bin/python scripts/status.py            # 各階段最近一次結果，以及是否對應目前來源
+.venv/bin/python scripts/mutation_check.py    # 階段 10 起需要：產生對應目前來源的 mutation 報告
 .venv/bin/python scripts/revalidate_all.py    # 依序重跑全部階段，寫入 artifacts/
 bash scripts/run_phase.sh 03                  # 只跑到某一階段（需前一階段已有通過紀錄）
 ```
+
+階段 10 要求 `artifacts/reports/mutations.json` 的 `source_fingerprint` 等於受驗收的來源，
+並且列出的每個植入錯誤都被抓到。來源改過之後，先重跑 `mutation_check.py`（數分鐘），再跑驗收；
+否則 P10 會以「報告不是由目前來源產生」失敗。這是刻意的：舊的 mutation 結果不能替新的程式作證。
 
 receipt 位於 `artifacts/acceptance-final/`：`phase-XX.last-attempt.json` 是最近一次嘗試，
 `phase-XX.json` 只在通過時更新。判斷現況請看前者與 `status.py` 的 `current source` 標示。

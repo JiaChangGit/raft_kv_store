@@ -1,5 +1,8 @@
 # WAL 格式 v1 與持久化契約
 
+> **歷史文件。** 目前的程式使用 [格式 2](STORAGE_FORMAT_V2.md)，不再讀寫格式 1；格式 1 的程式保存在
+> Git tag `v1-baseline-verified-20261112`。下文保留原樣，其中「限制」一段描述的問題就是 [Bug 教學 01](lessons/01-wal-length-corruption/README.md) 的主題。
+
 此文件描述本專案實作，不是遺失的原始 gate。適用 Linux／WSL ext4。
 每個節點使用獨立目錄；`node.lock` 的標準庫檔案鎖由 Wal 全生命週期持有，
 防止相同資料目錄有兩個 writer。`node.meta` 以 JSON 保存 cluster_id、node_id、

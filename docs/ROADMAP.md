@@ -1,6 +1,6 @@
 # 最終版路線圖
 
-更新日期：2026-11-12。狀態：**待使用者確認**。本文件是之後每個 session 的共同依據；
+更新日期：2026-11-12。狀態：使用者已確認；S0、S1 已完成。本文件是之後每個 session 的共同依據；
 實際進度以 Git tag、驗收 receipt 與 `scripts/status.py` 為準，不以本文件的文字為準。
 
 ## 專案目的與由此而來的取捨
@@ -42,8 +42,8 @@ ReadIndex 與 membership 都依賴「目前的成員是誰、多數是幾台」�
 | 階段 | 內容 | 主要風險與和其他功能的交互作用 |
 |---|---|---|
 | S0 基礎 | 最終驗收契約與 checker、`AGENTS.md` 規則更新流程、Bug 教學樣板與專案 skill、參考資料筆記 | checker 改動後須從頭重驗 |
-| S1 儲存格式 | header CRC、檔頭、殘尾保留。**格式一次設計到位**：檔頭預留 snapshot 基準（last included index／term），log entry 型別預留設定變更，避免之後再改格式。順便修掉每次 `save` 都複製並比對整份 log 的做法 | 現行草稿 `STORAGE_FORMAT_V2.md` 需依「只留新格式」重寫 |
-| S2 Snapshot 與壓縮 | 狀態機快照（KV＋去重 session＋成員設定）、WAL 截掉已快照的前段、InstallSnapshot RPC、落後節點追趕、安裝中斷的回復 | 目前到處假設「log 的位置＝index」，要全面改成帶起始位移；這是影響面最大的一次重構 |
+| S1 儲存格式（**已完成**，tag `s1-storage-format-verified`） | header CRC、檔頭、殘尾保留、可接續的初始化。檔頭已預留 snapshot 基準（base index／term、起點的 term 與投票、起始 sequence）；log entry 的種類在 JSON 內擴充，不需改外框。規格見 `STORAGE_FORMAT_V2.md`，教學見 `lessons/01-wal-length-corruption/` | 「每次 `save` 都複製並比對整份 log」原訂在此處理，**改到 S2**：讀程式後發現 core 每個事件也複製並比對整份狀態，只改儲存層無效，應與 S2 的 log 結構重構一起做 |
+| S2 Snapshot 與壓縮 | 狀態機快照（KV＋去重 session＋成員設定）、WAL 截掉已快照的前段、InstallSnapshot RPC、落後節點追趕、安裝中斷的回復。一併把 core 與儲存層改成只處理變動的部分，不再每個事件複製整份 log | 目前到處假設「log 的位置＝index」，要全面改成帶起始位移；這是影響面最大的一次重構 |
 | S3 ReadIndex | GET 不寫入 log：leader 先確認本任期已有 entry 被 commit，再向多數確認自己仍是 leader，等本地 apply 到該位置後回覆 | 多數的定義來自目前成員設定；用戶端契約與線性一致性檢查要同步更新 |
 | S4 Membership change | 一次增減一台（單步變更）；設定以 log entry 表示，寫入即生效；新節點靠 snapshot 追上；leader 被移除後退位 | 固定 ID 1/2/3 與 quorum 2 的假設散布在 core、transport、設定檔與測試；單步變更有一個已知的安全性陷阱（leader 必須先在本任期 commit 過 entry） |
 | S5 效能 | group commit（多筆交易共用一次 fsync）、批次複製、前後 benchmark 對照 | 不得改變「先持久化、後回覆」的次序 |
@@ -94,7 +94,7 @@ mutation 測試與獨立審查，並把沒驗到的部分寫清楚。達不到�
 | Scripts（新增） | `scripts/check_lessons.py` | 檢查每篇教學章節齊全、重現命令存在且可執行 |
 | | 各教學資料夾內的重現腳本 | 讓讀者一行命令看到 bug |
 | Scripts（修改） | `verify_gate.py`、`status.py`、`revalidate_all.py`、`mutation_check.py` | 支援最終契約 |
-| 圖解 | 既有的 Mermaid 樣板與本機 `mmdc` | 架構圖、時序圖 |
+| 圖解 | Mermaid 圖源，寫在 Markdown 的 `mermaid` 區塊（GitHub 直接顯示） | 架構圖、時序圖。本機的 `mmdc` 設定指向 Windows 的瀏覽器，在 WSL 內無法渲染；需要圖檔時要另外處理 |
 | Reference（新增） | `docs/reference/raft-notes.md` | 論文章節對照筆記與出處連結：Raft 擴充版論文、Ongaro 博士論文（成員變更、壓縮、唯讀請求各章）、單步成員變更的已知問題說明。只放筆記與連結，不放論文全文；內容以實際讀取的原文為準 |
 | MCP | 不新增 | 純本機開發；讀論文用宿主內建的網頁讀取即可。之後若出現具體缺口再評估並記錄 |
 

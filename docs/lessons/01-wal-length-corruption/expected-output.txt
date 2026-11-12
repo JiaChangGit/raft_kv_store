@@ -1,0 +1,44 @@
+
+== 1. Build the old code (git tag v1-baseline-verified-20261112) in a temporary copy
+   built: wal_probe (format 1)
+
+== 2. Write two durable records with the old code: term 1, then term 2
+DURABLE 1
+DURABLE 2
+   raft.wal is 230 bytes: 2 records, each 20 (header) + 91 (payload) + 4 (CRC)
+     {"term":1,"voted_for":1,"truncate_from":1,"append":[{"index":1,"term":1,"command":"NoOp"}]}
+     {"term":2,"voted_for":1,"truncate_from":2,"append":[{"index":2,"term":2,"command":"NoOp"}]}
+
+== 3. Case A: damage the FIRST record's length field (91 -> 65536), then restart with term 1
+DURABLE 1
+   the old code started normally. raft.wal is now 115 bytes:
+     {"term":1,"voted_for":1,"truncate_from":1,"append":[{"index":1,"term":1,"command":"NoOp"}]}
+BUG REPRODUCED (A): the node had durably reached term 2, forgot both records, and accepted term 1 again.
+
+== 4. Case B: damage the LAST record's length field (91 -> 92), then restart with term 3
+   control (no damage), after writing term 3:
+     {"term":1,"voted_for":1,"truncate_from":1,"append":[{"index":1,"term":1,"command":"NoOp"}]}
+     {"term":2,"voted_for":1,"truncate_from":2,"append":[{"index":2,"term":2,"command":"NoOp"}]}
+     {"term":3,"voted_for":1,"truncate_from":3,"append":[{"index":3,"term":3,"command":"NoOp"}]}
+   damaged, after writing term 3:
+     {"term":1,"voted_for":1,"truncate_from":1,"append":[{"index":1,"term":1,"command":"NoOp"}]}
+     {"term":3,"voted_for":1,"truncate_from":2,"append":[{"index":2,"term":3,"command":"NoOp"}]}
+BUG REPRODUCED (B): the durable entry (index 2, term 2) is gone; index 2 now holds a term 3 entry.
+
+== 5. Run a regression test against the old code (it should FAIL)
+   the damaged WAL was opened: durable state went from (term 2, 2 entries) to Ok((0, 0))
+   test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+RED: the test fails on format 1, so it really detects this bug.
+
+== 6. Build the current code and repeat both cases
+DURABLE 1
+DURABLE 2
+   raft.wal is 318 bytes: 80 (file header) + 2 records, each 24 (header) + 91 (payload) + 4 (CRC)
+   case A: refused -> "WAL record header checksum mismatch; refusing repair"
+            raft.wal is byte-for-byte unchanged
+   case B: refused -> "WAL record header checksum mismatch; refusing repair"
+            raft.wal is byte-for-byte unchanged
+FIXED: format 2 refuses both cases and does not touch the file.
+
+== RESULT
+Bug reproduced on format 1 (cases A and B); regression test is red there; format 2 refuses both.

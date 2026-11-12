@@ -135,3 +135,50 @@ session 的起始工作目錄是 `/home/user/src`，不是本專案根目錄。
   並加了一個單元測試確認 `docs`、`scripts`、`crates` 等來源目錄沒有被一併排除。
 - **分類**：已證實（目標專案的變更）。**歸因**：目標專案。
 - **啟示**：這是 L05 的實際處置，可作為框架部署說明中「受管檔案與目標專案驗證範圍」的一個案例。
+
+## 2026-11-13
+
+共同背景：同一個 Claude Code 桌面版 session，中途由使用者把模型從 claude-fable-5-2 切換成 claude-opus-5-5。
+框架版本同前（HEAD `2569a91`，工作樹 10 個未提交修改）。
+
+### L16 skills 在工作目錄移進專案後出現（L03 的後續）
+- **發生了什麼**：session 的主要工作目錄由 `/home/user/src` 變成專案根目錄後，宿主的系統訊息列出六個可用 skill：
+  五個框架管理的，加上專案自有的 `write-bug-lesson`，並註明 "applies when working on files under Distributed_Key-Value_Store_with_Raft/"。
+  先前（L03、L11）同一個 session 內呼叫 `review-change` 得到 `Unknown skill`。
+- **分類**：已證實（本 session 的系統訊息）。**歸因**：宿主。看起來 skill 的可見範圍跟著工作目錄走，
+  而不是只在 session 開始時掃描一次；但我無法區分是「工作目錄改變」還是「其他時間點的重新掃描」觸發的。
+- **啟示**：L03 的兩個假說中，「起始目錄不在專案根目錄」較可能。框架的交接指引可提醒：在 Claude Code 中，
+  從目標專案根目錄啟動，或確保工作目錄位於專案內，skill 才會出現。仍需一次乾淨的對照（兩個新 session，起始目錄不同）。
+
+### L17 框架的圖解工具設定綁定了另一個宿主的環境
+- **發生了什麼**：照專案規則要用 `mmdc` 渲染 Mermaid。`.agf/qa/mermaid-render/puppeteer.json` 的 `executablePath`
+  是 `C:\Program Files\Google\Chrome\Application\chrome.exe`，`render-one.cmd` 也寫死 Windows 的 Codex 執行環境路徑。
+  在 WSL 內執行報錯；`cache-linux` 裡沒有 Linux 版瀏覽器。改把 Mermaid 圖源直接寫進 Markdown（GitHub 會顯示），沒有產生 SVG。
+- **分類**：已證實。**歸因**：前一個宿主（Codex，Windows 端）留下的本機配置；框架規則「AI 只寫 Mermaid 圖源、由工具渲染」本身沒問題。
+- **啟示**：工具配置與宿主、作業系統綁在一起，換宿主時不會跟著可用。交接時可列出「哪些本機工具配置屬於哪個宿主環境」。
+  另外，對 Markdown 為主的文件，「圖源直接放在 `mermaid` 區塊」可能比渲染成圖檔更省事，值得列為框架圖解指引的一個選項。
+
+### L18 `write-bug-lesson`（專案自有 skill）第一次實際使用
+- **發生了什麼**：照 skill 流程寫第一篇教學。有用的部分：「動筆前要有的東西」清單逼我先準備舊版重現與首敗紀錄；
+  「先寫 `repro.sh` 並存實際輸出，正文數值都從這裡來」讓正文的數字都可以對到檔案。
+  需要修正的部分：skill 原本建議用 `git worktree add` 取得舊版，實作時改用 `git archive | tar`，因為它不會在儲存庫留下 worktree 紀錄
+  （本 session 先前就有一個暫存目錄被清掉後留下 prunable worktree 的情況）；已更新 skill。
+  練習題的解答原本打算憑推理寫，改成實際在副本跑一次再寫，結果發現第一個被接受的 bit 是第 89 個 byte 的 bit 1，
+  這個具體數字比推理更有教學價值。
+- **分類**：觀察（一次使用）。**歸因**：專案自有 skill。
+- **啟示**：「解答也要實際執行」值得加進 skill。累積到第二、三篇再評估是否提議給框架。
+
+### L19 結構檢查腳本無法判斷內容品質
+- **發生了什麼**：`scripts/check_lessons.py` 對第一篇回報 0 個問題，但它只檢查章節與檔案是否存在。
+  教學是否新手讀得懂、命令是否還能跑，仍需要人照做一遍；所以第一篇維持「草稿」。
+- **分類**：觀察。**歸因**：目標專案的工具，設計上就是如此。
+- **啟示**：「格式檢查通過不等於內容有效」與框架 AGENTS.md 的 "formatting checks alone do not validate a skill" 是同一件事。
+
+### L20 第一次透過宿主實際呼叫框架 skill：`review-change`
+- **發生了什麼**：以 Skill 工具呼叫 `review-change` 審查 S1 的變更，宿主載入成功（L16 之後）。
+  skill 要求「能指出觸發條件、執行路徑與具體後果」「必要時做有針對性的重現」，促使我實際檢查而非憑讀程式下結論：
+  用 `cargo test -- --list` 確認契約內 39 個測試名稱在 workspace 中唯一；算出練習解答中長度 168（`0xa8`）的位元，
+  發現原本「翻轉讓長度加 1 到 128」的說法對已設定的 bit 不成立。結果：程式碼無可證實缺陷，兩項文件問題已修正。
+- **分類**：觀察。**歸因**：skill 內容與代理判斷；沒有不使用 skill 的對照。
+- **限制**：這是同一個 session 的自我審查，作者與審查者的上下文相同（中途雖換了模型，對話歷史完整保留），
+  **不等於獨立審查**。路線圖要求的「不同模型、新 session、不給預期答案」的審查仍待使用者另外執行。

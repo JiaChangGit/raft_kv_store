@@ -24,9 +24,11 @@ description: Turn a bug found while developing this Raft KV store into a beginne
 1. 在 `docs/lessons/` 取下一個編號，建立 `NN-簡短名稱/`，複製樣板為 `README.md`，狀態標「草稿」。
 2. 先寫 `repro.sh`。它只在暫存目錄寫入、可重複執行、結束時印出一行明確的結論
    （例如 `BUG REPRODUCED: term went from 2 back to 1`）。需要舊版程式時，用
-   `git worktree add <暫存目錄> <tag>` 取得並在那裡建置，結束時移除。
+   `git archive <tag> | tar -x -C <暫存目錄>` 取得並在那裡建置（不會在儲存庫留下任何紀錄）。
+   若要證明某個測試抓得到 bug，把測試檔複製進舊版副本執行，確認它在那裡失敗。
 3. 實際執行，把完整輸出存成 `expected-output.txt`。之後正文引用的數值都從這個檔案來。
-4. 依樣板寫第 1～10 節。第 4 節的圖用 Mermaid 圖源加工具渲染，不手寫 SVG。
+4. 依樣板寫第 1～10 節。第 4 節的圖用 Mermaid 圖源寫在 ```` ```mermaid ```` 區塊內（GitHub 會直接顯示），不手寫 SVG。
+   引用論文前到 `docs/reference/raft-notes.md` 找出處並回原文核對句子。
 5. 寫 `answers.md`。
 6. 執行 `python3 -B scripts/check_lessons.py`，修到通過。
 7. 以沒看過這個 bug 的讀者身分，從頭照第 3 節做一遍。卡住或需要回頭查的地方就是要改的地方。

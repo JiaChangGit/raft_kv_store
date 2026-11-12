@@ -21,6 +21,10 @@
 "Updated on stable storage before responding to RPCs"：`currentTerm`、`votedFor`、`log[]`
 （"first index is 1"）。
 
+論文 §5.2："Each server will vote for at most one candidate in a given term, on a first-come-first-served basis"；
+Figure 3 的 Election Safety："at most one leader can be elected in a given term"，以及 Leader Completeness
+（一筆 entry 在某任期被 commit 後，會出現在之後所有任期的 leader 的 log 中）。
+
 對本專案的意義：這正是 WAL 要保存的三樣東西，也是「先持久化、後回覆」規則的出處。
 節點若在重啟後遺失其中任一項，就可能在同一 term 投兩次票或讓已確認的 entry 消失——第一篇 bug 教學的嚴重性論證以此為據。
 
