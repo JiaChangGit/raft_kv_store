@@ -198,9 +198,10 @@ def main() -> int:
                 if len(cases) != 1 or any(case.find(tag) is not None for case in cases for tag in ("failure", "error", "skipped")):
                     raise ValueError(f"pytest node must execute exactly one unskipped passing case: {node}")
                 result["pytest_nodes"].append({"node": node, "passed": 1, "junit": junit.relative_to(ROOT).as_posix(), "sha256": sha(junit)})
-        for phase, schema in contract["reports"].items():
+        for phase, schemas in contract["reports"].items():
             if phase <= args.phase:
-                result["reports"].append(validate_report(ROOT / schema["path"], schema, fingerprint))
+                for schema in schemas if isinstance(schemas, list) else [schemas]:
+                    result["reports"].append(validate_report(ROOT / schema["path"], schema, fingerprint))
         _, after = snapshot(ROOT)
         if after != fingerprint:
             raise ValueError("Source changed during acceptance; preserve diagnostics and rerun after changes settle")

@@ -7,7 +7,6 @@
   "supersedes": "acceptance/v1.json (kept as a historical record with its receipts under artifacts/acceptance-v1/)",
   "growth_rule": "Each roadmap stage appends its own phase after its specification is approved. A phase may replace tests of an earlier phase only by updating v1_mapping so that every v1 property still names at least one final test that checks it no more weakly; scripts/test_verify_gate.py enforces that the mapping is complete and resolvable, and independent review judges strength.",
   "planned_phases": {
-    "11": "S2 snapshot and compaction",
     "12": "S3 ReadIndex",
     "13": "S4 membership change",
     "14": "S5 performance",
@@ -177,7 +176,6 @@
         "interrupted_initialization_is_completed_or_rejected",
         "v1_directory_rejected_without_modification",
         "file_header_corruption_and_identity_mismatch_rejected",
-        "reserved_header_fields_must_be_pristine",
         "recovered_prefix_requires_successful_sync",
         "atomic_suffix_transaction_and_identity_are_checked",
         "reproduced_length_corruption_fails_closed_unchanged",
@@ -203,6 +201,58 @@
         "docs/lessons/01-wal-length-corruption/README.md",
         "docs/lessons/01-wal-length-corruption/repro.sh",
         "docs/lessons/01-wal-length-corruption/expected-output.txt",
+        "artifacts/reports/mutations.json"
+      ]
+    },
+    "11": {
+      "title": "S2: snapshots, log compaction and InstallSnapshot",
+      "rust_tests": [
+        "log_accessors_respect_the_base",
+        "truncating_into_the_base_is_refused",
+        "base_consistency_is_validated",
+        "adopt_snapshot_keeps_suffix_only_when_the_base_matches",
+        "hex_round_trips_and_rejects_bad_input",
+        "install_snapshot_envelopes_are_bounded",
+        "older_sequence_after_newer_is_rejected_without_effect",
+        "snapshot_restore_equals_replay_at_every_prefix",
+        "independent_replays_produce_identical_snapshot_bytes",
+        "restore_rejects_inconsistent_snapshots",
+        "file_header_start_fields_validated",
+        "snapshot_file_layout_is_pinned",
+        "install_then_reopen_keeps_base_suffix_and_sequence",
+        "install_rejects_invalid_requests_without_writing",
+        "install_sync_failure_poisons_and_keeps_the_old_state",
+        "snapshot_corruption_fails_closed_unchanged",
+        "snapshot_and_wal_consistency_rules",
+        "interrupted_install_rolls_forward_idempotently",
+        "large_retained_suffix_is_split_across_records",
+        "real_process_crash_during_snapshot_install_recovers",
+        "restore_requires_the_snapshot_matching_the_base",
+        "compaction_only_covers_applied_entries",
+        "leader_sends_snapshot_chunks_in_order_and_resumes",
+        "a_newer_snapshot_restarts_the_transfer",
+        "follower_installs_only_after_the_snapshot_is_durable",
+        "a_conflicting_log_is_discarded_on_install",
+        "out_of_order_foreign_and_corrupt_chunks_are_refused",
+        "a_snapshot_we_already_cover_is_acknowledged_without_change",
+        "a_higher_term_install_persists_term_and_snapshot_together",
+        "append_entries_that_start_before_the_base_count_as_matching"
+      ],
+      "pytest_nodes": [
+        "tests/history/test_checker.py::test_only_the_latest_request_per_client_is_remembered",
+        "tests/integration/test_snapshot.py::test_wal_stays_bounded_under_load",
+        "tests/integration/test_snapshot.py::test_lagging_follower_catches_up_via_snapshot",
+        "tests/integration/test_snapshot.py::test_full_restart_recovers_from_snapshots_and_sessions"
+      ],
+      "required_files": [
+        "docs/SNAPSHOT_COMPACTION.md",
+        "docs/lessons/02-flaky-lock-inherited-by-child/README.md",
+        "docs/lessons/02-flaky-lock-inherited-by-child/repro.sh",
+        "docs/lessons/02-flaky-lock-inherited-by-child/expected-output.txt",
+        "docs/lessons/03-compaction-without-install-snapshot/README.md",
+        "docs/lessons/03-compaction-without-install-snapshot/repro.sh",
+        "docs/lessons/03-compaction-without-install-snapshot/expected-output.txt",
+        "artifacts/reports/simulation.json",
         "artifacts/reports/mutations.json"
       ]
     }
@@ -262,7 +312,67 @@
         "wal_adopt_any_wal_without_identity",
         "wal_recreate_missing_wal"
       ]
-    }
+    },
+    "11": [
+      {
+        "path": "artifacts/reports/simulation.json",
+        "required_nonempty": [
+          "command"
+        ],
+        "required_positive_integer": [
+          "seed_count",
+          "event_count",
+          "pass_count",
+          "snapshots_taken",
+          "snapshots_installed"
+        ],
+        "required_empty_array": [
+          "failures"
+        ],
+        "source_fingerprint_must_match": true
+      },
+      {
+        "path": "artifacts/reports/mutations.json",
+        "required_nonempty": [
+          "command"
+        ],
+        "required_positive_integer": [
+          "case_count",
+          "detected_count"
+        ],
+        "required_empty_array": [
+          "undetected"
+        ],
+        "source_fingerprint_must_match": true,
+        "required_detected_cases": [
+          "quorum_one",
+          "unsafe_old_term_commit",
+          "reversed_queue",
+          "saturated_pool_spin",
+          "wal_skip_record_header_checksum",
+          "wal_truncate_on_bad_header",
+          "wal_compare_eof_before_header_checksum",
+          "wal_skip_record_checksum",
+          "wal_accept_any_partial_header",
+          "wal_truncate_before_copy_is_durable",
+          "wal_unbounded_torn_copies",
+          "wal_ignore_file_header",
+          "wal_adopt_any_wal_without_identity",
+          "wal_recreate_missing_wal",
+          "s2_compact_beyond_applied",
+          "s2_reply_before_install_is_durable",
+          "s2_install_already_covered_snapshot",
+          "s2_no_append_before_base_rule",
+          "s2_chunk_offset_unchecked",
+          "s2_snapshot_crc_unchecked_on_receive",
+          "s2_keep_suffix_on_term_mismatch",
+          "s2_wal_rewritten_before_snapshot",
+          "s2_snapshot_file_crc_unchecked",
+          "s2_accept_wal_newer_than_snapshot",
+          "s2_older_sequence_executes_again"
+        ]
+      }
+    ]
   },
   "v1_mapping": {
     "simulation_seed_is_replayable": {
@@ -463,6 +573,18 @@
     "Subprocess tests cover process crashes, not arbitrary storage hardware power loss.",
     "Format 1 data is neither read nor converted; it is reproducible only from git tag v1-baseline-verified-20261112.",
     "Truncation at or inside a record, a missing file and replacement by an older complete file are outside per-record checksum detection.",
-    "The mutation report shows that each named test fails for one planted mistake; it does not show the tests are complete."
-  ]
+    "The mutation report shows that each named test fails for one planted mistake; it does not show the tests are complete.",
+    "Snapshots are taken synchronously in the node's actor; their pause is traced but no availability bound is claimed.",
+    "The key-value data and the number of clients are not bounded; compaction stops when a snapshot would exceed 64 MiB."
+  ],
+  "replaced_tests": {
+    "reserved_header_fields_must_be_pristine": {
+      "phase": "10",
+      "replaced_by": [
+        "file_header_start_fields_validated"
+      ],
+      "replaced_in": "11",
+      "note": "S1 required the WAL start fields to hold fixed values. S2 uses them for the snapshot position, so the replacement checks their relations instead: seven inconsistent combinations are each refused with the file unchanged, a consistent non-default start is accepted, and a base without its snapshot file is refused."
+    }
+  }
 }

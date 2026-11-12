@@ -8,6 +8,8 @@
 | 編號 | 題目 | 一句話 | 狀態 |
 |---|---|---|---|
 | 01 | [WAL 長度欄位毀損](01-wal-length-corruption/README.md) | 磁碟上一個數字壞掉，節點重開後默默刪掉 log，忘了自己投過票 | 草稿（待有人照做一遍） |
+| 02 | [測試偶爾說目錄已被佔用](02-flaky-lock-inherited-by-child/README.md) | 別的測試 fork 出的子程序，暫時帶走了這個測試的檔案鎖 | 草稿（待有人照做一遍） |
+| 03 | [壓縮開了，leader 卻沒東西可送](03-compaction-without-install-snapshot/README.md) | 只做 log 壓縮、還沒有 InstallSnapshot，第一個落後的 follower 就讓 leader 停住 | 草稿（待有人照做一遍） |
 
 ## 怎麼讀
 

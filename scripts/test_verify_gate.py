@@ -141,6 +141,15 @@ class ContractContinuityTests(unittest.TestCase):
         for phase, schema in self.v1["reports"].items():
             self.assertEqual(self.final["reports"].get(phase), schema)
 
+    def test_replaced_tests_name_replacements_that_still_run(self):
+        final_tests = {name for body in self.final["phases"].values()
+                       for name in body["rust_tests"] + body["pytest_nodes"]}
+        for name, entry in self.final.get("replaced_tests", {}).items():
+            self.assertNotIn(name, final_tests, f"{name} is replaced but still listed")
+            self.assertTrue(entry["note"].strip(), name)
+            for target in entry["replaced_by"]:
+                self.assertIn(target, final_tests, f"{name} is replaced by a test no phase runs")
+
     def test_host_configuration_is_outside_fingerprint_but_sources_are_not(self):
         self.assertTrue({".claude", ".agents"} <= gate.EXCLUDED)
         self.assertFalse({"docs", "scripts", "crates", "tests", "tools", "acceptance"} & gate.EXCLUDED)

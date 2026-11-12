@@ -1,0 +1,19 @@
+
+== 1. What lock does Wal::open take? (strace of the real binary)
+   flock(3, LOCK_EX|LOCK_NB)               = 0
+   DURABLE 1
+
+== 2. The mechanism, made deterministic: fork, then delay exec by one second
+   parent: locked
+   parent: closed its descriptor
+   parent: re-lock FAILED while the child has not exec'd yet
+   parent: re-locked after the child exec'd and exited
+
+== 3. The real test binary, 40 runs each, without and with the fix
+   without serialization: 20 failures in 40 runs
+   example: install_before_snapshot_rename: second open: node directory already owned: lock acquisition failed because the operation would block
+   with serialization:    0 failures in 40 runs
+
+== RESULT
+Step 2 shows the cause deterministically. Step 3 is random by nature: zero failures
+without the fix does not disprove the cause; any failure with the fix would be a new bug.

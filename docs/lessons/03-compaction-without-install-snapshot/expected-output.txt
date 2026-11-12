@@ -1,0 +1,17 @@
+
+== 1. Two copies of the current code
+   'without': the leader has no way to send a snapshot (as after S2 step 4)
+   'with':    unchanged
+
+== 2. Simulation with compaction on, 60 seeds x 3000 events, WITHOUT InstallSnapshot
+   thread 'main' (80653) panicked at crates/raft-core/src/lib.rs:412:13:
+   reason: log compaction is not enabled yet; entry 2 was discarded
+BUG REPRODUCED: a leader needed an entry it had already compacted away.
+
+== 3. The same campaign WITH InstallSnapshot
+   passed 60/60 seeds, 180000 events
+   snapshots taken 3420, installed through InstallSnapshot 524
+   invariants checked: I1, I2, I3, I4, I5, I6, I7
+
+== RESULT
+Compaction is only safe together with a way to send the discarded prefix.

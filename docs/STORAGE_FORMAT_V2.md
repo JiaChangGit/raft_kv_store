@@ -80,10 +80,11 @@ Raft 的安全性依賴節點不會忘記自己投過的票與已確認的 log�
 
 `cluster_id` 的值 `raft-kv-v1` 是叢集名稱，和儲存格式版本無關。
 
-offset 40～75 的五個欄位是**為 log 壓縮預留**的：將來做完快照後，WAL 可以改寫成一個從快照之後才開始的新檔，
-檔頭記下起點。這樣做快照時不必再改一次磁碟格式。**本版只寫入、也只接受上表的值**，其他值即使檢查碼正確也拒絕。
-因為本版每個欄位的值都固定，單一位元錯誤即使沒有檔頭 CRC 也會被欄位比對擋下；
-等這些欄位開始有變化時，檔頭 CRC 才成為必要的防線。
+offset 40～75 的五個欄位記錄這個 WAL 從哪裡開始。全新節點是上表的值；做完快照後（S2 起），WAL 會被改寫成從快照之後開始的新檔，
+這些欄位就記下快照的位置（`base_index`、`base_term`）、當時的 term 與投票，以及第一筆 record 的 sequence。
+檔頭檢查不要求固定值，而是要求這些欄位彼此一致：保留位元組為 0、`base_index` 為 0 時 `base_term` 也是 0、`base_term` 不大於 `start_term`、
+投票對象是 0～3 且有投票時 `start_term` 大於 0、`first_sequence` 至少為 1。它們和快照檔之間的一致性規則見
+[快照規格](SNAPSHOT_COMPACTION.md) §7.3。這次格式變動沒有改外框，只是開始使用 S1 預留的欄位，因此格式版本仍是 2。
 
 ### 4.2 Record（從 offset 80 起連續排列）
 
@@ -198,6 +199,7 @@ Transaction 的欄位依序是 `term`、`voted_for`、`truncate_from`、`append`
 | `before_write`、`after_write_before_sync`、`after_sync_before_ack` | `save` 的三個邊界 |
 | `after_partial_header`、`after_partial_payload` | 只寫出 record 的前 13 bytes，或 header 加上一半 payload |
 | `init_before_rename_raft.wal`、`init_after_wal_before_identity`、`init_before_rename_node.meta` | 初始化的三個邊界 |
+| `install_before_snapshot_rename`、`install_after_snapshot_before_wal`、`install_before_wal_rename`、`install_after_wal_rename` | 安裝快照的四個邊界（S2，`snapshot_probe` 搭配使用） |
 
 `wal_probe` 是搭配這些中斷點使用的小程式，不是共識實作。
 
@@ -209,7 +211,7 @@ Transaction 的欄位依序是 `term`、`voted_for`、`truncate_from`、`append`
 |---|---|
 | G1、G3 | `reproduced_length_corruption_fails_closed_unchanged`（案例 A、B）、`every_single_bit_flip_fails_closed_unchanged`（逐一翻轉整個檔案的每個位元）、`seeded_multibyte_corruption_never_accepts_or_shortens`（固定種子 10,000 次）、`header_field_rules_checked_after_crc`、`zero_or_garbage_tail_rejected`、`partial_header_tail_checks_every_available_byte` |
 | G2 | `truncated_wal_tail_safe`（最後一筆的每個切點）、`torn_tail_copy_failure_blocks_truncation`、`torn_tail_copies_are_idempotent_and_bounded`、`real_process_partial_write_is_preserved_then_truncated` |
-| G4 | `new_directory_layout_and_file_header`、`file_header_corruption_and_identity_mismatch_rejected`、`reserved_header_fields_must_be_pristine`、`v1_directory_rejected_without_modification` |
+| G4 | `new_directory_layout_and_file_header`、`file_header_corruption_and_identity_mismatch_rejected`、`file_header_start_fields_validated`（S2 取代原本的 `reserved_header_fields_must_be_pristine`）、`v1_directory_rejected_without_modification` |
 | G5 | `interrupted_initialization_is_completed_or_rejected`、`existing_identity_without_wal_fails_closed`、`real_process_crash_during_initialization_recovers` |
 | G6 | `append_ack_after_durable_sync`、`vote_after_restart_not_duplicated`、`recovered_prefix_requires_successful_sync`、`uncommitted_suffix_not_applied_after_recovery`、`real_process_crash_boundaries_restore_only_complete_transactions` |
 | 叢集層面 | `test_corrupt_header_node_refuses_start_and_cluster_continues`（三個真實 process） |

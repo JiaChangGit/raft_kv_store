@@ -1,7 +1,7 @@
 # S2 規格：快照與 log 壓縮
 
-狀態：**草稿，待使用者核准；尚未實作，本文件沒有任何一項已被測試驗證。**
-日期：2026-11-13。已確認的決定見 §13。核准後才修改 `AGENTS.md` 對應條目並開始實作。
+狀態：**已核准（2026-11-13）並實作**，驗收結果以 `scripts/status.py` 與 `artifacts/acceptance-final/` 的階段 11 為準。
+下文保留核准時的原文；實作中發現的偏離與補記集中在 §14。
 
 用語：**快照**（snapshot）是狀態機在某個 log 位置的完整內容。**壓縮**（compaction）是做完快照後丟掉被它涵蓋的 log。
 **base** 指目前快照涵蓋到的最後一個 index 與它的 term；base 之前的 log 已不存在。**落後的節點**指它需要的 log 已被 leader 丟掉的 follower。
@@ -311,3 +311,15 @@ InstallSnapshotResponse { term, success, last_included_index, next_offset }
 
 核准本規格後，`AGENTS.md` 要在同一個 commit 修改三處：解除「不做 snapshot」；
 重啟規則加上「可還原已落盤的快照（只含已 commit 的 entry）」；去重規則改為「每個 client 保存最新一筆的 sequence、canonical command 與原結果」。
+
+## 14. 實作補記（2026-11-13）
+
+| 項目 | 規格原文 | 實際情況 |
+|---|---|---|
+| §12 步驟 4、5 | 分成兩步，每步結束全部測試通過 | 做不到：只有本機壓縮時，第一個落後的 follower 就讓 leader 走到 `unreachable!`。兩步合併為一個 commit（`a5023d7`）。見 [教學 03](lessons/03-compaction-without-install-snapshot/README.md) |
+| §6.1 需同步修改的地方 | 列了 AGENTS.md、用戶端契約、檢查器 | 漏了 v1 契約的 `test_retry_after_leader_crash`，已改寫並記錄於契約的 `v1_mapping` |
+| §9.1 回覆欄位 | `term, success, last_included_index, next_offset` | 另加 `done`：follower 已持久保存到 `last_included_index`。leader 據此更新進度，模擬器據此檢查「先落盤才回覆」 |
+| §11 S1 被取代的測試 | `reserved_header_fields_must_be_pristine` 改為新測試 | 新測試是 `file_header_start_fields_validated`，記錄在契約的 `replaced_tests` |
+| 測試程式的偶發失敗 | 未預期 | 安裝快照的真實 process 測試與其他測試平行時偶發失敗，原因是 `flock` 被別的測試 fork 出的子程序暫時繼承。見 [教學 02](lessons/02-flaky-lock-inherited-by-child/README.md) |
+| 狀態機快照的驗證 | §6.2 列了 index 與大小限制 | 寫測試時發現 `restore` 沒有限制 session 中記住的回覆值大小，已補上 |
+| 模擬器的檢查範圍 | §10 列出 I6、I7 | 模擬器只檢查安全性，不檢查活性；拿掉 §9.4 的處理時模擬器仍全部通過，只有單元測試抓得到（教學 03 的練習） |

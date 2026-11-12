@@ -29,7 +29,8 @@ description: Turn a bug found while developing this Raft KV store into a beginne
 3. 實際執行，把完整輸出存成 `expected-output.txt`。之後正文引用的數值都從這個檔案來。
 4. 依樣板寫第 1～10 節。第 4 節的圖用 Mermaid 圖源寫在 ```` ```mermaid ```` 區塊內（GitHub 會直接顯示），不手寫 SVG。
    引用論文前到 `docs/reference/raft-notes.md` 找出處並回原文核對句子。
-5. 寫 `answers.md`。
+5. 寫 `answers.md`。練習題的預期結果**先實際執行再寫**，記下執行日期與實際數字；推理與實測不同時，照實寫出差異。
+   （三篇教學中有兩篇的推理被實測推翻，見 `docs/FRAMEWORK_EXPERIENCE_LOG.md` L18、L21。）
 6. 執行 `python3 -B scripts/check_lessons.py`，修到通過。
 7. 以沒看過這個 bug 的讀者身分，從頭照第 3 節做一遍。卡住或需要回頭查的地方就是要改的地方。
 8. 更新 `docs/lessons/README.md` 的目錄。請使用者實際照做後，再把狀態改為「完成」。
