@@ -1,0 +1,22 @@
+
+== 0. The failure seen once, in acceptance phase 11 on 2026-11-13
+   thread 'real_process_crash_during_initialization_recovers' (35105) panicked at crates/raft-storage/tests/crash_process.rs:130:5:
+   assertion `left == right` failed
+     left: ""
+    right: "init_after_wal_before_identity"
+
+== 1. Two copies of the current code
+   old: marker created in place, then written (as in tag v1-baseline-verified-20261112)
+   new: written to marker.tmp, then renamed (current)
+
+== 2. Old version, 300 ms between creating and writing the marker
+   result: FAIL
+   assertion `left == right` failed
+     left: ""
+
+== 3. Current version, 300 ms between writing and renaming the marker
+   result: pass
+
+== RESULT
+BUG REPRODUCED: the test read an empty marker that existed but was not yet written.
+FIXED: with write-then-rename the marker is never visible half-written.

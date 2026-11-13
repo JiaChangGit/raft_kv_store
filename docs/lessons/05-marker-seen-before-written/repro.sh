@@ -51,7 +51,7 @@ run() {  # run COPY: the test with a 300 ms gap where each version has its gap
 say "2. Old version, 300 ms between creating and writing the marker"
 OLD=$(run old)
 echo "   result: $OLD"
-grep -E "left|right" "$WORK/old.err" | head -2 | sed 's/^/   /' || true
+grep -h -E "left|right" "$WORK/old.out" "$WORK/old.err" | head -2 | sed "s/^/   /" || true
 
 say "3. Current version, 300 ms between writing and renaming the marker"
 NEW=$(run new)

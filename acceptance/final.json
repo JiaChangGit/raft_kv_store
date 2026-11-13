@@ -258,7 +258,10 @@
         "artifacts/reports/mutations.json",
         "docs/lessons/04-mutation-checker-false-survivors/README.md",
         "docs/lessons/04-mutation-checker-false-survivors/repro.sh",
-        "docs/lessons/04-mutation-checker-false-survivors/expected-output.txt"
+        "docs/lessons/04-mutation-checker-false-survivors/expected-output.txt",
+        "docs/lessons/05-marker-seen-before-written/README.md",
+        "docs/lessons/05-marker-seen-before-written/repro.sh",
+        "docs/lessons/05-marker-seen-before-written/expected-output.txt"
       ]
     }
   },
