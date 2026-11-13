@@ -5,8 +5,13 @@ Preserve the three original specification Markdown files. Original ZIP/gates/scr
 were not supplied; acceptance/v1.json is an explicitly different acceptance contract.
 
 Implement P00 through P08 in dependency order, with tests and independent review.
-Use one actual raft-core in simulator and runtime, fixed IDs 1/2/3 and quorum 2.
-No existing Raft library, unsafe Rust, membership changes or leases.
+Use one actual raft-core in simulator and runtime. Node IDs are 1..=7; each node uses
+the latest configuration entry in its log (else its snapshot's), and every majority
+(commit, election, ReadIndex) is a majority of that configuration. Membership changes
+add or remove one server at a time (docs/MEMBERSHIP.md, S4): a leader appends a
+configuration entry only after committing an entry of its own term and while no
+other configuration entry in its log is uncommitted.
+No existing Raft library, unsafe Rust or leases.
 Snapshots follow docs/SNAPSHOT_COMPACTION.md (S2).
 One actor owns consensus state. Persist term/vote/log before dependent messages;
 storage failures fail closed. Only durable matches and current-term entries advance
@@ -35,7 +40,7 @@ The V1 rules above stay in force until the stage that changes them begins:
 |---|---|---|
 | "No ... snapshot", recovery and deduplication sentences | S2 (approved 2026-11-13) | changed above |
 | "No ... ReadIndex", "All new GETs replicate" | S3 (approved 2026-11-13) | changed above |
-| "fixed IDs 1/2/3 and quorum 2", "No ... membership changes" | S4 | in force |
+| "fixed IDs 1/2/3 and quorum 2", "No ... membership changes" | S4 (approved 2026-11-13) | changed above |
 | No existing Raft library, no unsafe Rust, no leases | never | in force |
 
 When a stage starts: write its specification first, get the user's approval, then
