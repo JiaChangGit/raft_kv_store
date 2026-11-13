@@ -32,6 +32,7 @@ checker 或契約檔本身改變時，必須從第一個階段重新依序驗收
 .venv/bin/python scripts/mutation_check.py    # 階段 10 起需要：產生對應目前來源的 mutation 報告
 .venv/bin/python scripts/simulation_report.py # 階段 11 起需要：以目前來源跑 1,000 種子模擬並記下指紋
 .venv/bin/python scripts/read_benchmark.py    # 階段 12 起需要：GET 前後對照（S2 tag 與目前版本），只記錄不設門檻
+                                              # 階段 13（S4）沿用 mutation 與模擬報告，另要求成員變更的統計（見契約 reports.13）
 .venv/bin/python scripts/revalidate_all.py    # 依序重跑全部階段，寫入 artifacts/
 bash scripts/run_phase.sh 03                  # 只跑到某一階段（需前一階段已有通過紀錄）
 ```

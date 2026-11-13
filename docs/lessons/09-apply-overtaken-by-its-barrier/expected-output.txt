@@ -1,0 +1,19 @@
+
+== before the fix: the barrier goes first
+   test applies_stay_in_order_when_a_barrier_commits_more: FAIL
+   assertion `left == right` failed: the applies precede the barrier
+     left: ["persist", "apply", "apply"]
+    right: ["apply", "apply", "persist"]
+   simulator: 28 of 200 seeds passed
+   first failure: seed 28 after 3714 events: apply order/commit bound node=2 index=69
+
+== after the fix (62e61d1): Applies first, then the barrier
+   test applies_stay_in_order_when_a_barrier_commits_more: pass
+   simulator: 200 of 200 seeds passed
+
+== why a real node would stop (from the source, not executed here)
+   raft-node main.rs:425:                        queue.push_front(effect);
+   kv-state lib.rs:48:            "apply must consume an uninterrupted committed prefix"
+
+== RESULT
+BUG REPRODUCED: the barrier ran before the step's Apply, and its completion applied a later index first

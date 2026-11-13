@@ -21,7 +21,9 @@
   （`docs/STORAGE_FORMAT_V2.md`）；格式 1 的程式只存在於 tag `v1-baseline-verified-20261112`，`STORAGE_FORMAT_V1.md` 是歷史文件。
   S2（tag `s2-snapshot-compaction-verified`）已完成，規格與實作補記在 `docs/SNAPSHOT_COMPACTION.md`。
   S3（tag `s3-read-index-verified`）已完成，規格與補記在 `docs/READ_INDEX.md`；新的 GET 走 ReadIndex、不寫 log、不去重。
-  S4（成員變更）進行中：規格 `docs/MEMBERSHIP.md` 已於 2026-11-13 核准；論文第 4 章與 2015 年 raft-dev 郵件的引文已核對，摘錄在 `docs/reference/raft-notes.md`。
+  S4（tag `s4-membership-verified`）已完成，規格與補記在 `docs/MEMBERSHIP.md`：節點編號 1～7、設定在 log 中、一次一台；
+  叢集由一台 `--bootstrap`、其他以 `tools/kv_admin.py` 逐一加入（`tools/cluster.py` 自動這樣做）。論文第 4 章與 2015 年郵件的摘錄在 `docs/reference/raft-notes.md`。
+  下一個階段是 S5（效能），開始前先寫規格並取得使用者同意。
 - `AGENTS.md` 的 V1 禁止事項依路線圖在各階段開始時改寫（S2 snapshot、S3 ReadIndex、S4 成員變更已改）；
   仍有效的是不使用既有 Raft 函式庫、不用 unsafe、不做 lease。
 - 框架的增刪修候選與驗證方式另見 [框架改進建議](docs/FRAMEWORK_IMPROVEMENT_PROPOSALS.md)；

@@ -105,6 +105,9 @@ Transaction 的欄位依序是 `term`、`voted_for`、`truncate_from`、`append`
 
 之後若新增 log entry 的種類（例如成員設定變更），是在 JSON 內擴充，位元組外框不變；
 舊程式遇到不認得的種類會解析失敗而 fail closed。
+S4（[成員變更規格](MEMBERSHIP.md) §11）正是這樣擴充：設定 entry 的 command 是 `{"Config":{"voters":[1,2,3]}}`，清單遞增、不重複、
+非空、皆在 1～7；不合法時與其他不合法的 entry 一樣拒絕開啟。快照檔 offset 48 的成員欄位記錄快照位置的設定，
+接受任何非空且只用到第 1～7 位的位元集合（S2 時只接受 `0b1110`）。位元組外框與既有欄位都沒有改變。
 
 ## 5. 開啟與回復
 

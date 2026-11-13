@@ -14,6 +14,9 @@
 | 05 | [檔案存在不代表內容寫好了](05-marker-seen-before-written/README.md) | 測試看到中斷點的標記檔就去讀，讀到空字串；從 V1 就有的潛在問題 | 草稿（待有人照做一遍） |
 | 06 | [原始碼寫 2，執行的卻是 3](06-mutants-sharing-a-build-directory/README.md) | mutation 案例共用 cargo 建置目錄，後面的案例悄悄執行前面案例植入錯誤的程式 | 草稿（待有人照做一遍） |
 | 07 | [測試還是綠的，卻已經不測了](07-test-silently-stopped-testing/README.md) | S3 讓 GET 不再複製，一個用 GET 製造複製工作的回歸測試悄悄失效 | 草稿（待有人照做一遍） |
+| 08 | [剛選出的 leader 把早就 commit 的設定當成「進行中」](08-judged-before-the-term-commit/README.md) | 新 leader 還不知道什麼已 commit 就先做判斷，每次換 leader 後成員變更都被誤拒 | 草稿（待有人照做一遍） |
+| 09 | [先 commit 的反而後套用](09-apply-overtaken-by-its-barrier/README.md) | 落盤 barrier 排在 Apply 前面，它完成時又 commit 了更新的 entry，69 比 68 先套用 | 草稿（待有人照做一遍） |
+| 10 | [植入的錯誤存活了，但測試沒有問題](10-mutant-that-changed-nothing/README.md) | 一個 mutation 案例根本沒有改變程式行為（等價突變），被誤報成測試抓不到 | 草稿（待有人照做一遍） |
 
 ## 怎麼讀
 

@@ -1,7 +1,8 @@
 # Rust Raft KV Store
 
-從零實作的三節點、單一 Raft group 教學與工程實驗專案。固定 IDs 1/2/3，quorum=2，
-三個獨立 Linux process；同一份 `raft-core` 用於虛擬模擬器與 TCP runtime。
+從零實作的單一 Raft group 教學與工程實驗專案。節點編號 1～7，成員設定存在 Raft log 中、
+一次增減一台（[成員變更規格](docs/MEMBERSHIP.md)），多數依目前的設定計算；預設以三個獨立的
+Linux process 執行。同一份 `raft-core` 用於虛擬模擬器與 TCP runtime。
 
 原始套件、gates.json、runner/checker 未提供。三份原始 Markdown 完整保留，
 本專案採用另行定義的驗收契約，不宣稱等同原 gate 或形式化證明。目前有效的是
@@ -29,14 +30,24 @@ cargo build --workspace --locked
 
 ## 手動啟動與 client
 
-三個 terminal 分別執行（各 terminal 先載入 cargo env）：
+叢集第一次建立時，只有節點 1 以 `--bootstrap` 引導（它的第一筆 log 是「只含自己」的設定），
+其餘節點以空白資料目錄啟動，再逐一加入（博士論文 §4.4）。三個 terminal 分別執行（各 terminal 先載入 cargo env）：
 
 ```bash
-cargo run -p raft-node -- --id 1 --config config/cluster.toml --data-dir data/node-1
+cargo run -p raft-node -- --id 1 --config config/cluster.toml --data-dir data/node-1 --bootstrap
 cargo run -p raft-node -- --id 2 --config config/cluster.toml --data-dir data/node-2
 cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/node-3
 ```
 
+再從另一個 terminal 把節點 2、3 加進設定：
+
+```bash
+.venv/bin/python tools/kv_admin.py --config config/cluster.toml add 2
+.venv/bin/python tools/kv_admin.py --config config/cluster.toml add 3
+```
+
+`--bootstrap` 只對完全空白的資料目錄生效，重啟時帶著也沒關係；但**整個叢集只引導一台、只引導一次**。
+`config/cluster.toml` 是位址表：列出節點在哪裡，誰有投票權由 log 中的設定決定。
 同一資料目錄不能由兩個 process 共用，也不能交換 node identity。另一個 terminal：
 
 ```bash
@@ -48,6 +59,20 @@ cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/no
 重試；新請求增加 sequence。Put/Delete 回傳先前值，Get 回傳當時值。
 新的 GET 走 ReadIndex（[規格](docs/READ_INDEX.md)）：不寫進 Raft log，只由已在讀取到達後以多數確認自己仍是 leader 的節點，在狀態機套用到 readIndex 後回覆；debug status 的 KV map 不提供線性化讀取契約。
 停止節點可用 Ctrl-C；故障測試另外使用 SIGKILL，並保留原資料目錄重啟。
+
+## 成員變更
+
+```bash
+.venv/bin/python tools/kv_admin.py --config config/cluster.toml status
+.venv/bin/python tools/kv_admin.py --config config/cluster.toml add 4
+.venv/bin/python tools/kv_admin.py --config config/cluster.toml remove 2
+```
+
+要加入的節點必須已列在位址表中並已啟動（空白資料目錄）；leader 先讓它追上 log（最多約 10 秒），
+追不上就回覆 `CATCH_UP_FAILED`，設定不變。一次只能進行一個變更，其他請求會得到 `CHANGE_IN_PROGRESS`。
+換掉一台故障的節點時**先加新的、再移除舊的**，過程中都能容忍一台故障；被移除的節點等變更完成後再關掉。
+不要把一個節點編號以清空的資料目錄重新加入，也不要對第二台節點引導：這兩種操作錯誤本版不偵測，
+可能破壞安全性（規格 N2）。縮小到少於三台時工具會提示，因為這時無法容忍任何故障。
 
 重複執行上面的固定 client ID／sequence 時，既有資料目錄會保留 session，
 因此是重試舊請求，不是新操作。要完整體驗隔離的三程序啟動、PUT／GET、
@@ -64,7 +89,7 @@ cargo build --workspace --bins
 .venv/bin/python scripts/verify_gate.py 00
 ```
 
-後續依序執行 `01` 到 `08`。每次 gate 累積先前必測、精確 discovery、逐項實跑、
+後續依序執行 `01` 到 `08`、`10` 到 `13`（`scripts/revalidate_all.py` 會依序全部執行）。每次 gate 累積先前必測、精確 discovery、逐項實跑、
 完整 Rust 回歸與對應 process tests；失敗保留原始輸出，不改條件繞過。
 `scripts/run_phase.sh XX` 只是單階段驗收 wrapper，不呼叫模型或自動產生程式。
 測試 profile 僅優化執行速度，隨機測試預設仍是 1000 seeds × 10000 events。
@@ -83,9 +108,9 @@ fault schedule 與 logs 留在 `artifacts/runs/`；這些本機資料預設不�
 
 | 模組 | 責任 |
 |---|---|
-| raft-protocol | 強型別 RPC、ID、尺寸與格式限制 |
+| raft-protocol | 強型別 RPC、ID、成員設定（`Voters`）、尺寸與格式限制 |
 | raft-core | 純 Event → 有序 Effect，共識狀態單一擁有者 |
-| raft-sim | 虛擬時計、MockDisk、故障排程、獨立 I1～I5 observer |
+| raft-sim | 虛擬時計、MockDisk、故障排程、成員變更工作負載、獨立 I1～I10 observer |
 | raft-storage | checksummed append-only WAL transaction、sync、recovery |
 | kv-state | deterministic KV、完整 replicated session records |
 | raft-transport | 有界 frame 讀寫與 RPC correlation |
@@ -105,7 +130,8 @@ Raft 原始權威來源為 [extended paper](https://raft.github.io/raft.pdf) Fig
 [WORKLOG](docs/WORKLOG.md)，再核對目前檔案與實際結果。
 獨立審查發現、負向回歸與乾淨副本的操作方式見[工程強化紀錄](docs/ENGINEERING_HARDENING.md)。
 
-無 snapshot/compaction、session GC、動態成員、TLS、sharding 或 Multi-Raft。
-WAL/session 持續增長；本專案用於有限規模實驗，不作長期 production database。
+無 session GC、TLS、sharding 或 Multi-Raft。Snapshot 與 log 壓縮見 [規格](docs/SNAPSHOT_COMPACTION.md)；
+session 數不設上限；本專案用於有限規模實驗，不作長期 production database。
+成員變更沒有形式化證明，操作錯誤不會被偵測，限制見 [規格的不保證](docs/MEMBERSHIP.md)。
 非 Byzantine 模型；假設成功的 sync_all 由 OS/磁碟正確履行，SIGKILL 不等於硬體斷電。
 安全性與進展分開：永久失去多數時不保證可用。效能數字只代表該次單機 WSL 環境。

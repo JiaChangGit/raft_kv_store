@@ -1,0 +1,19 @@
+
+== control: nothing planted
+   test removing_a_follower_and_then_the_leader: pass
+
+== mutant A: the leader is added to the holders of entry n
+   test removing_a_follower_and_then_the_leader: pass  -> survived
+
+== mutant B: a leader outside its configuration counts its own durable copy
+   test removing_a_follower_and_then_the_leader: FAIL  -> detected
+   thread 'membership_tests::removing_a_follower_and_then_the_leader' (386192) panicked at crates/raft-core/src/membership_tests.rs:373:5:
+   assertion `left == right` failed: its own copy does not count
+
+== why A changes nothing: the majority counts members only
+   raft-protocol lib.rs:88:    pub fn is_quorum(self, members: Voters) -> bool {
+   raft-protocol lib.rs:89-        !self.is_empty() && (self.0 & members.0).count_ones() as usize >= self.majority()
+   raft-protocol lib.rs:90-    }
+
+== RESULT
+EQUIVALENT MUTANT SHOWN: the same test lets A pass and catches B; A never changed the program's behaviour

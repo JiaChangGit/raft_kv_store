@@ -44,8 +44,8 @@ ReadIndex 與 membership 都依賴「目前的成員是誰、多數是幾台」�
 | S0 基礎 | 最終驗收契約與 checker、`AGENTS.md` 規則更新流程、Bug 教學樣板與專案 skill、參考資料筆記 | checker 改動後須從頭重驗 |
 | S1 儲存格式（**已完成**，tag `s1-storage-format-verified`） | header CRC、檔頭、殘尾保留、可接續的初始化。檔頭已預留 snapshot 基準（base index／term、起點的 term 與投票、起始 sequence）；log entry 的種類在 JSON 內擴充，不需改外框。規格見 `STORAGE_FORMAT_V2.md`，教學見 `lessons/01-wal-length-corruption/` | 「每次 `save` 都複製並比對整份 log」原訂在此處理，**改到 S2**：讀程式後發現 core 每個事件也複製並比對整份狀態，只改儲存層無效，應與 S2 的 log 結構重構一起做 |
 | S2 Snapshot 與壓縮（**已完成**，tag `s2-snapshot-compaction-verified`） | 狀態機快照（KV＋每個 client 最新一筆的 session）、WAL 從快照之後重寫、分塊的 InstallSnapshot、落後節點追趕、安裝中斷的往前完成。規格 `SNAPSHOT_COMPACTION.md`，教學 02、03。「每個事件複製整份狀態」依決定 D4 延到 S5 | 目前到處假設「log 的位置＝index」，要全面改成帶起始位移；這是影響面最大的一次重構 |
-| S3 ReadIndex（**已完成**，tag `s3-read-index-verified`） | GET 不寫入 log：leader 先 commit 本任期 entry，記下 readIndex，以讀取到達後送出的一輪 AppendEntries 取得多數確認，套用到 readIndex 後回覆；GET 不再去重。規格 `READ_INDEX.md`。量測：GET 不再產生 WAL record | 多數的計算集中在一處，S4 改為依成員設定計算。**S4 待辦**：follower 數少於多數所需時，ReadIndex 必須不確認任何回合（S3 已改預設值，但固定三台時無法測試） |
-| S4 Membership change（**進行中**，規格 `MEMBERSHIP.md` 已於 2026-11-13 核准） | 一次增減一台（單步變更）；設定以 log entry 表示，寫入即生效；新節點靠 snapshot 追上；leader 被移除後退位 | 固定 ID 1/2/3 與 quorum 2 的假設散布在 core、transport、設定檔與測試；單步變更有一個已知的安全性陷阱（leader 必須先在本任期 commit 過 entry） |
+| S3 ReadIndex（**已完成**，tag `s3-read-index-verified`） | GET 不寫入 log：leader 先 commit 本任期 entry，記下 readIndex，以讀取到達後送出的一輪 AppendEntries 取得多數確認，套用到 readIndex 後回覆；GET 不再去重。規格 `READ_INDEX.md`。量測：GET 不再產生 WAL record | 多數的計算集中在一處，S4 改為依成員設定計算。S4 待辦「確認不足時不確認任何回合」已在 S4 完成（`MEMBERSHIP.md` G9） |
+| S4 Membership change（**已完成**，tag `s4-membership-verified`） | 一次增減一台；設定以 log entry 表示，寫入即生效；一台引導、其他逐一加入；先追趕再加入（固定 10 輪）；2015 修正；leader 不在設定中時不計自己、commit 後退位；干擾防護；節點編號 1～7。規格與補記 `MEMBERSHIP.md`，教學 08～10 | 2015 年反例以五個 core 逐步重現。實作中發現 V1 起的「barrier 一律排最前」在 S4 失效（教學 09）。刪減方案仍適用：若 S6 不過，移除本功能、回到固定三台 |
 | S5 效能 | group commit（多筆交易共用一次 fsync）、批次複製、前後 benchmark 對照 | 不得改變「先持久化、後回覆」的次序 |
 | S6 整體強化 | 所有功能同時開啟的模擬（多種子、長時間）、故障注入下的線性一致性、mutation、由不同模型做獨立審查、乾淨副本重建 | 功能兩兩交互作用的 bug 最可能在這裡出現 |
 | S7 公開整理 | 中英 README、架構圖、教學索引、移除本機絕對路徑、AI 協作說明 | 不改程式行為 |

@@ -1,7 +1,7 @@
 # S4 規格：成員變更（一次一台）
 
-狀態：**已核准（2026-11-13，使用者：「依你建議，繼續完成」），實作中；本文件的保證都還沒有被測試驗證。**
-已確認的決定見 §17。實作完成後在 §18 補記實際做法與證據。
+狀態：**已核准（2026-11-13，使用者：「依你建議，繼續完成」）並實作；驗收結果見 §18 與階段 13 的 receipt。**
+已確認的決定見 §17；實作與規格的差異、遇到的 bug 與證據見 §18。
 
 用語：
 - **設定**（configuration）：哪些節點有投票權。本文寫作 `{1,2,3}`。**Cold／Cnew**：一次變更前後的設定。
@@ -146,15 +146,17 @@
 
 1. 不是 leader → `NOT_LEADER`。
 2. 節點編號不在 1～7、或移除後設定會變成空的 → `INVALID_ARGUMENT`。
-3. 已有進行中的請求，或 log 中有尚未 commit 的設定 entry → `CHANGE_IN_PROGRESS`（呼叫者稍後重試）。
-4. 變更已經成立（加入已在設定中的節點、移除不在設定中的節點）→ 立即 `MembershipDone`。
-5. 本任期尚未有 entry commit（2015 修正）→ 先等待，條件成立後再繼續。
-6. `Remove(n)` → 附加 `Config(目前設定 - n)`。
-7. `Add(n)` → 追趕 n（§8），成功後附加 `Config(目前設定 + n)`。
-8. 設定 entry commit 後 → `MembershipDone`；若 leader 自己不在新設定中，接著退位（§9.3）。
-9. 附加設定 entry **之前**失去 leader 身分或追趕失敗 → `MembershipFailed`（`NOT_LEADER`、`CATCH_UP_FAILED`），叢集沒有任何改變。
-   **之後**才失去身分 → `TIMEOUT_UNKNOWN`：那筆 entry 仍可能被下一任 leader commit，和寫入的未知結果相同。
-10. `CancelMembership`（節點程式的等待逾時）：忘掉這個請求、不再產生效果；若還在追趕就停止追趕。已附加的設定 entry 留在 log 中照常進行。
+3. 已有進行中的請求 → `CHANGE_IN_PROGRESS`（呼叫者稍後重試）。
+4. 本任期尚未有 entry commit（2015 修正）→ 先等待，條件成立後再繼續。**以下各步都在這之後才判斷**：
+   新 leader 在本任期的 entry commit 之前，`commit_index` 是落後的，無法分辨之前的設定是否已 commit（[教學 08](lessons/08-judged-before-the-term-commit/README.md)；初版規格把下一步排在等待之前，是錯的）。
+5. log 中有尚未 commit 的設定 entry（只可能是這個 leader 在本任期為先前已取消的請求附加的）→ `CHANGE_IN_PROGRESS`。
+6. 變更已經成立（加入已在設定中的節點、移除不在設定中的節點）→ 立即 `MembershipDone`。
+7. `Remove(n)` → 附加 `Config(目前設定 - n)`。
+8. `Add(n)` → 追趕 n（§8），成功後附加 `Config(目前設定 + n)`。
+9. 設定 entry commit 後 → `MembershipDone`；若 leader 自己不在新設定中，接著退位（§9.3）。
+10. 附加設定 entry **之前**失去 leader 身分或追趕失敗 → `MembershipFailed`（`NOT_LEADER`、`CATCH_UP_FAILED`），叢集沒有任何改變。
+    **之後**才失去身分 → `TIMEOUT_UNKNOWN`：那筆 entry 仍可能被下一任 leader commit，和寫入的未知結果相同。
+11. `CancelMembership`（節點程式的等待逾時）：忘掉這個請求、不再產生效果；若還在追趕就停止追趕。已附加的設定 entry 留在 log 中照常進行。
     節點程式自己回覆 `TIMEOUT_UNKNOWN`，與 S3 的 `CancelRead` 相同。
 
 ## 8. 追趕新節點
@@ -316,6 +318,50 @@ D1～D4 的方向由使用者在問答中選定；輪數、heartbeat 次數與 �
 核准後 `AGENTS.md` 在同一個 commit 修改：「fixed IDs 1/2/3 and quorum 2」改為節點編號 1～7、設定取自 log 中最新的設定 entry、多數為該設定的多數（一次一台，見本文件）；
 解除「No ... membership changes」；路線圖表格的 S4 列標示已核准。
 
-## 18. 實作補記
+## 18. 實作補記（2026-11-13）
 
-（實作完成後填寫：實際做法與本規格的差異、遇到的 bug 與教學、教學 07 式的測試檢查結論、驗收證據。）
+### 18.1 與規格的差異
+
+| 項目 | 實際做法 |
+|---|---|
+| §7 的步驟順序 | 初版把「log 中有未 commit 的設定」排在 2015 修正的等待之前，新 leader 因 commit index 落後而誤拒每一個請求。已改為先等本任期 commit 再判斷（§7 現在的順序），[教學 08](lessons/08-judged-before-the-term-commit/README.md) |
+| 效果的順序 | 同一步產生的 `Apply` 排在落盤 barrier 之前，其他效果在 barrier 之後。V1 起的「barrier 一律最前」在 S4 讓 barrier 完成時可能再 commit 後失效，[教學 09](lessons/09-apply-overtaken-by-its-barrier/README.md)；已寫入 `API_CONTRACT.md` |
+| 不能參選的節點 | 沒有設定、或知道自己已被移除的節點，選舉逾時到期時 core 不做任何事；節點程式在沒有選舉計時器時自己補上（既有行為），所以它只是定期醒來 |
+| 追趕的常數 | `CATCH_UP_ROUNDS = 10`、`CATCH_UP_SHORT_ROUND = 4`（最後一輪少於 4 次 heartbeat）、`CATCH_UP_MAX_HEARTBEATS = 100`，照 §8 |
+| 位址表以外的節點 | 送出時視為連不上（照一般的重試節奏），收到時丟棄，不會 panic |
+| 模擬器的管理者 | 每個事件以 1/150 的機率提出變更、一次一個、15,000 虛擬毫秒逾時；每 8 次 crash 有 1 次停機 11～13 秒（長於追趕上限），讓「加入停機中的節點」確實出現 `CATCH_UP_FAILED` |
+| 對照用的舊版 | `tools/cluster.py` 的 `legacy=True` 以舊方式啟動 S2 tag 的二進位檔（`scripts/read_benchmark.py` 使用），因為舊版沒有 `--bootstrap` |
+
+### 18.2 遇到的 bug
+
+- [教學 08](lessons/08-judged-before-the-term-commit/README.md)：剛選出的 leader 把早就 commit 的設定當成「進行中」（規格與程式的步驟順序錯誤；可用性問題）。
+- [教學 09](lessons/09-apply-overtaken-by-its-barrier/README.md)：先 commit 的反而後套用（模擬器第一次執行就抓到；依程式碼，真實節點會在 KV 的 `assert` 停止）。
+- [教學 10](lessons/10-mutant-that-changed-nothing/README.md)：一個 mutation 案例是等價突變，被誤報為測試抓不到；已換成真正會改變行為的植入。
+- 另有五個只出現在剛寫好的測試或腳本中、第一次執行就發現的筆誤，沒有寫成教學：多數測試的輔助函式用 `from_ids` 建空集合（大小 1 的「少一票」）；
+  位址表測試預期的路由埠號算錯（7320，應為 7316）；測試網路中丟棄排隊訊息卻留下進行中紀錄，leader 不再重送；一個斷言訊息的 `{2}` 未跳脫；
+  練習腳本把 `--nocapture` 當成 cargo 的參數。
+
+### 18.3 教學 07 式的檢查（把行為當工具的測試）
+
+- **S4 會讓它失效、已在執行前修改**：`saturated_outbound_pool_does_not_starve_status`（手動建立的 leader 沒有設定，就沒有複製對象，連線池不會被用到）；
+  `reads_fail_when_leadership_is_lost`（S4 起 leader 忽略更高 term 的 RequestVote，改用新 leader 的 AppendEntries 讓它退位）。兩者都記在契約的 `modified_tests`。
+- **檢查後仍然有效**：以 `(1,2,3)` 走訪節點的 Python 測試（預設叢集仍是三台）；以回覆的 `committed_index` 等待其他節點追上的測試（commit index 的意義不變）；
+  `test_three_process_election_and_restart` 殺掉 leader（初始 leader 現在固定是節點 1，測試只要求新 leader 不同、term 更大）；
+  隔離 leader 的故障測試（干擾防護下，其他節點仍在 400～800 ms 內選出新 leader）。
+- **index 與 term 平移的 core 測試**：起始狀態改為 index 1 的三台設定，逐一修改並記入 `modified_tests`；`quorum_is_two_of_three` 由
+  `majority_follows_the_configuration` 與 `node_ids_are_one_to_seven` 取代，記入 `replaced_tests`。
+- 這是逐一閱讀後的判斷，不是自動檢查。
+
+### 18.4 證據
+
+- **2015 年反例**：`the_2015_counterexample_cannot_lose_a_committed_entry` 依郵件第一個反例逐步送訊息。在暫存副本中拿掉 2015 修正，測試在「E 不得在本任期 commit 前附加」處失敗；
+  再拿掉那個斷言，測試網路回報 `State Machine Safety: node 1 applied a different entry at index 3`（S2、S3 已套用 term 3 的 NoOp，S1 帶著 D 當選後在同一個 index 套用了 D），與郵件描述的後果一致。
+- **模擬器**（1,000 個種子 × 10,000 個事件，I1～I10）：全部通過。完成 16,729 次變更，leader 移除自己 2,487 次，追趕失敗 36 次；
+  commit 過的設定大小分布為 1 台 2,401、2 台 4,947、3 台 5,648、4 台 4,164、5 台 1,612 次（偶數大小 9,111 次）。
+  請求失敗的狀態：`NOT_LEADER` 24,946、`TIMEOUT_UNKNOWN` 1,386、管理者逾時 401；這反映故障注入下頻繁換 leader：
+  每 1,000 個種子有 45,765 次選舉，S3 時固定三台的同一組種子是 41,918 次，多約 9%，所以不是成員變更本身造成的干擾。
+  拿掉 2015 修正時模擬器能不能自己找到反例，本階段沒有另外實測（§12 的提醒）；確定抓得到的是上面的反例測試與 mutation 案例 `s4_no_2015_fix`。
+- **Mutation**：45 個案例（S4 新增 15 個；`quorum_one`、`unsafe_old_term_commit`、`s2_reply_before_install_is_durable`、`s3_skip_current_term_commit_wait`
+  因程式搬移而改了錨點，名稱與規則不變）。結果以完整驗收時的 `artifacts/reports/mutations.json` 為準。
+- **真實 process**：`tests/integration/test_membership.py` 的 9 個測試；所有既有整合測試也經由「引導＋逐一加入」建立叢集。
+- **不保證事項**仍如 §4 所列；尤其沒有形式化證明（N1），操作錯誤不偵測（N2）。

@@ -79,12 +79,20 @@ mkdir -p artifacts/runs
 mktemp -d "$PWD/artifacts/runs/manual-XXXXXX"
 ```
 
-下列 `<實驗目錄>` 請替換為剛顯示的同一個絕對路徑；三個 terminal 各自從專案根目錄執行一行：
+下列 `<實驗目錄>` 請替換為剛顯示的同一個絕對路徑；三個 terminal 各自從專案根目錄執行一行。
+只有節點 1 帶 `--bootstrap`（S4 起叢集由一台引導、其他逐一加入，見 [成員變更規格](MEMBERSHIP.md) §6）：
 
 ```bash
-target/debug/raft-node --id 1 --config config/cluster.toml --data-dir <實驗目錄>/node-1
+target/debug/raft-node --id 1 --config config/cluster.toml --data-dir <實驗目錄>/node-1 --bootstrap
 target/debug/raft-node --id 2 --config config/cluster.toml --data-dir <實驗目錄>/node-2
 target/debug/raft-node --id 3 --config config/cluster.toml --data-dir <實驗目錄>/node-3
+```
+
+再從第四個 terminal 把節點 2、3 加進設定（每行都應印出 `"status": "OK"`）：
+
+```bash
+.venv/bin/python tools/kv_admin.py --config config/cluster.toml add 2
+.venv/bin/python tools/kv_admin.py --config config/cluster.toml add 3
 ```
 
 在第四個 terminal 分別檢查 7201、7202、7203 的狀態（將下面埠號替換三次）：
@@ -99,7 +107,7 @@ debug 工具。使用 README 的 client 命令送 PUT／GET，記下 `committed_
 
 確認目標 PID 的 `ps -p <PID> -o pid,args` 確實是**這次自己啟動的 Leader**，再使用
 `kill -KILL <PID>`。觀察另外兩個節點的狀態，確認新的 Leader；以新的 sequence 再做
-GET。最後使用相同 node ID 與原 `<實驗目錄>/node-N` 重啟舊節點，輪詢三個狀態的
+GET。最後使用相同 node ID 與原 `<實驗目錄>/node-N` 重啟舊節點（不需要、也不要加 `--bootstrap`），輪詢三個狀態的
 `last_applied` 是否到達新 GET 的 index。完成後只停止這次實驗所啟動的程序。
 
 ## 試著預測

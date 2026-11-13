@@ -4,7 +4,8 @@ client_id 為穩定 u128，sequence 為嚴格遞增 u64。每個 client 一次�
 logical outstanding request；timeout／斷線後保留同一 ID、sequence、operation 重試。
 初始 sequence 可為任意值，新 logical request 必須增加。新 GET 也需要新 sequence。
 
-Command 是 NoOp 或 Client(Put/Delete/Get)。NoOp 只能由 Raft 產生。
+Command 是 NoOp、Client(Put/Delete/Get) 或 Config（成員設定，S4）。NoOp 與 Config 只能由 Raft 產生；
+狀態機套用 Config 時只前進 applied index，不改變 KV（與 NoOp 相同）。
 key 上限 256 UTF-8 bytes，value 上限 4096 bytes；runtime 在接受入 log 前檢查。
 state machine 也防禦性拒絕非法尺寸與未曾見過卻低於該 client 最高 sequence 的請求。
 
@@ -37,5 +38,11 @@ checker 對這個狀態採不確定結果分支，而不直接刪除該操作。
 recovery 先從已落盤的快照還原 KV/session（沒有快照則為空），再重放重新確認 committed 的後續
 entry，重建相同值與原結果。session 數等於 client 數，沒有依時間淘汰；client 數本身沒有上限。
 effect_count 是首次執行的寫入數（Put、Delete）；S3 起不含 GET。log 中既有的 Get entry（例如舊資料）仍照 S2 的規則套用。
+
+成員變更請求（S4，見[成員變更規格](MEMBERSHIP.md) §10）走同一個 client 連接埠：
+`{"version":1,"membership":{"Add":4}}` 或 `{"version":1,"membership":{"Remove":2}}`。回覆 OK 時 `result` 是新設定（例如 `"1,2,3,4"`），
+`committed_index` 是該設定 entry 的 index。其他狀態：NOT_LEADER（附 hint）、CHANGE_IN_PROGRESS（稍後重試）、CATCH_UP_FAILED（新節點追不上，
+設定不變）、INVALID_ARGUMENT（編號不合法、要加入的節點不在位址表中，或會移除最後一台）、TIMEOUT_UNKNOWN（節點程式的 15 秒等待逾時；設定 entry
+可能已附加，之後仍可能 commit）。成員變更請求沒有 client_id／sequence，不進 session；重送同一個變更，若已生效會立即回 OK。
 
 測試結果由階段證據另行記錄，不將本契約文字當作已執行驗證。

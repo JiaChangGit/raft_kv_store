@@ -1,0 +1,10 @@
+
+== before the fix: 'uncommitted configuration?' is judged first
+   test a_new_leader_waits_for_a_committed_entry_of_its_term: FAIL
+   the request waits instead of failing: [(40, Err("CHANGE_IN_PROGRESS"))]
+
+== after the fix (62e61d1): wait for a committed entry of this term, then judge
+   test a_new_leader_waits_for_a_committed_entry_of_its_term: pass
+
+== RESULT
+BUG REPRODUCED: a new leader with commit index 0 called the configuration at index 1 'in progress'
