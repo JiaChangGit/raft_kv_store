@@ -50,10 +50,11 @@ class FaultProxy:
             change()
 
     def isolate(self, node):
-        for other in (1,2,3):
-            if other != node:
-                self.set_rule(node,other,"drop")
-                self.set_rule(other,node,"drop")
+        # Every node the routes know about (S4: any number of nodes).
+        others = {source for source,_,_,_ in self.endpoints} | {target for _,target,_,_ in self.endpoints}
+        for other in sorted(others - {node}):
+            self.set_rule(node,other,"drop")
+            self.set_rule(other,node,"drop")
 
     def heal(self):
         for source,target,_,_ in self.endpoints:

@@ -1157,3 +1157,51 @@ fn large_retained_suffix_is_split_across_records() {
     let wal = Wal::open(&dir.0, 1).unwrap();
     assert_eq!(wal.state(), &next);
 }
+
+// ---- S4: configurations (docs/MEMBERSHIP.md §11) ----------------------------
+
+/// Configuration entries are ordinary Transaction JSON: they survive a reopen
+/// with the same configuration, and a snapshot may record any valid set of
+/// voters (not only 1, 2, 3), which also survives a reopen.
+#[test]
+fn configuration_entries_and_snapshot_voters_survive_reopen() {
+    let dir = TestDir::new();
+    let config = |index: u64, ids: &[u8]| LogEntry {
+        index,
+        term: 2,
+        command: Command::Config {
+            voters: ids.to_vec(),
+        },
+    };
+    let mut log = state(2, Some(1));
+    log.push(config(1, &[1]));
+    log.push(entry(2, 2, "A"));
+    log.push(config(3, &[1, 5]));
+    log.push(entry(4, 2, "B"));
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    wal.save(&log).unwrap();
+    drop(wal);
+    let wal = Wal::open(&dir.0, 1).unwrap();
+    assert_eq!(wal.state(), &log);
+    assert_eq!(
+        wal.state().latest_config(),
+        Some((3, Voters::from_ids(&[1, 5]).unwrap()))
+    );
+    drop(wal);
+    // A snapshot through index 3 records {1, 5}, the configuration there.
+    let voters = Voters::from_ids(&[1, 5]).unwrap();
+    let snapshot = Snapshot::new(LogBase { index: 3, term: 2 }, voters, b"at-3".to_vec());
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    wal.install(&adopt_snapshot(&log, snapshot.base), &snapshot)
+        .unwrap();
+    drop(wal);
+    let wal = Wal::open(&dir.0, 1).unwrap();
+    assert_eq!(wal.snapshot().map(|s| s.voters), Some(voters.bits()));
+    assert_eq!(
+        wal.state().latest_config(),
+        None,
+        "only in the snapshot now"
+    );
+    let core = Core::restore(1, wal.state().clone(), wal.snapshot().cloned()).unwrap();
+    assert_eq!(core.configuration(), Some((3, voters)));
+}

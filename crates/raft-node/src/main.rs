@@ -1091,6 +1091,63 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// docs/MEMBERSHIP.md §6: the address book lists any distinct IDs 1..=7; if
+    /// routed, every direction between them needs its own proxy endpoint.
+    #[test]
+    fn address_book_accepts_any_nodes_one_to_seven_with_complete_routes() {
+        let book = |ids: &[u8]| Config {
+            cluster_id: CLUSTER.into(),
+            nodes: ids
+                .iter()
+                .map(|id| NodeConfig {
+                    id: *id,
+                    peer_addr: format!("127.0.0.1:{}", 7100 + u16::from(*id))
+                        .parse()
+                        .unwrap(),
+                    client_addr: format!("127.0.0.1:{}", 7200 + u16::from(*id))
+                        .parse()
+                        .unwrap(),
+                })
+                .collect(),
+            routes: vec![],
+        };
+        for ids in [&[1][..], &[2, 5], &[1, 2, 3, 4, 5], &[1, 2, 3, 4, 5, 6, 7]] {
+            assert!(book(ids).validate().is_ok(), "{ids:?}");
+        }
+        assert!(book(&[]).validate().is_err(), "empty");
+        assert!(book(&[1, 8]).validate().is_err(), "node 8");
+        assert!(book(&[0, 1]).validate().is_err(), "node 0");
+        let mut duplicate = book(&[1, 2]);
+        duplicate.nodes[1].id = 1;
+        duplicate.nodes[1].peer_addr = "127.0.0.1:7999".parse().unwrap();
+        assert!(duplicate.validate().is_err(), "duplicate ID");
+        let mut routed = book(&[1, 2, 3, 4, 5]);
+        let mut port = 7300;
+        for from in 1..=5 {
+            for to in 1..=5 {
+                if from != to {
+                    port += 1;
+                    routed.routes.push(Route {
+                        from,
+                        to,
+                        address: format!("127.0.0.1:{port}").parse().unwrap(),
+                    });
+                }
+            }
+        }
+        assert_eq!(routed.routes.len(), 20);
+        assert!(routed.validate().is_ok());
+        assert_eq!(
+            routed.outbound(4, 5),
+            // Routes are numbered in (from, to) order: (4, 5) is the 16th.
+            Some("127.0.0.1:7316".parse().unwrap())
+        );
+        assert_eq!(routed.outbound(4, 6), None, "not in the address book");
+        routed.routes.pop();
+        assert!(routed.validate().is_err(), "one direction missing");
+        assert!(book(&[1, 2]).has(2) && !book(&[1, 2]).has(3));
+    }
+
     #[test]
     fn config_rejects_partial_routes_and_wrong_cluster() {
         let mut config = Config {

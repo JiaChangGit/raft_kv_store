@@ -7,7 +7,6 @@
   "supersedes": "acceptance/v1.json (kept as a historical record with its receipts under artifacts/acceptance-v1/)",
   "growth_rule": "Each roadmap stage appends its own phase after its specification is approved. A phase may replace tests of an earlier phase only by updating v1_mapping so that every v1 property still names at least one final test that checks it no more weakly; scripts/test_verify_gate.py enforces that the mapping is complete and resolvable, and independent review judges strength.",
   "planned_phases": {
-    "13": "S4 membership change",
     "14": "S5 performance",
     "15": "S6 whole-system hardening"
   },
@@ -46,7 +45,8 @@
       "title": "Foundation and deterministic harness",
       "rust_tests": [
         "simulation_seed_is_replayable",
-        "quorum_is_two_of_three"
+        "majority_follows_the_configuration",
+        "node_ids_are_one_to_seven"
       ],
       "pytest_nodes": [],
       "required_files": [
@@ -294,6 +294,56 @@
         "docs/lessons/07-test-silently-stopped-testing/repro.sh",
         "docs/lessons/07-test-silently-stopped-testing/expected-output.txt"
       ]
+    },
+    "13": {
+      "title": "S4: membership changes, one server at a time",
+      "rust_tests": [
+        "voters_validate_ids_and_bits",
+        "latest_configuration_tracks_appends_and_truncation",
+        "a_bootstrapped_node_elects_itself_once_its_vote_is_durable",
+        "a_node_without_configuration_never_campaigns",
+        "a_new_node_is_found_in_one_round_trip_and_added_after_ten_rounds",
+        "the_last_round_must_be_shorter_than_the_minimum_election_timeout",
+        "an_unreachable_node_is_given_up_after_one_hundred_heartbeats",
+        "removing_a_follower_and_then_the_leader",
+        "change_requests_are_checked_and_one_runs_at_a_time",
+        "losing_leadership_answers_the_pending_change",
+        "applies_stay_in_order_when_a_barrier_commits_more",
+        "a_new_leader_waits_for_a_committed_entry_of_its_term",
+        "the_2015_counterexample_cannot_lose_a_committed_entry",
+        "after_a_term_commit_a_stale_configuration_cannot_win",
+        "a_recent_leader_contact_blocks_votes_without_a_term_change",
+        "only_voters_of_the_configuration_count",
+        "read_index_needs_a_majority_of_the_current_configuration",
+        "a_snapshot_records_the_configuration_at_its_position",
+        "a_truncated_configuration_falls_back_to_the_previous_one",
+        "configuration_entries_and_snapshot_voters_survive_reopen",
+        "address_book_accepts_any_nodes_one_to_seven_with_complete_routes"
+      ],
+      "pytest_nodes": [
+        "tests/integration/test_membership.py::test_grow_to_five_and_back_to_three_stays_linearizable",
+        "tests/integration/test_membership.py::test_removing_the_leader_elects_another_and_it_stops_campaigning",
+        "tests/integration/test_membership.py::test_a_new_node_catches_up_from_a_snapshot",
+        "tests/integration/test_membership.py::test_adding_an_unreachable_node_fails_and_changes_nothing",
+        "tests/integration/test_membership.py::test_a_removed_node_that_keeps_running_does_not_disturb",
+        "tests/integration/test_membership.py::test_replacing_a_failed_node",
+        "tests/integration/test_membership.py::test_five_nodes_survive_an_isolated_leader_through_the_proxies",
+        "tests/integration/test_membership.py::test_bootstrap_is_ignored_on_a_directory_with_data",
+        "tests/integration/test_membership.py::test_admin_tool_adds_removes_and_warns"
+      ],
+      "required_files": [
+        "docs/MEMBERSHIP.md",
+        "tools/kv_admin.py",
+        "artifacts/reports/simulation.json",
+        "artifacts/reports/mutations.json",
+        "docs/lessons/08-judged-before-the-term-commit/README.md",
+        "docs/lessons/08-judged-before-the-term-commit/repro.sh",
+        "docs/lessons/08-judged-before-the-term-commit/expected-output.txt",
+        "docs/lessons/09-apply-overtaken-by-its-barrier/README.md",
+        "docs/lessons/09-apply-overtaken-by-its-barrier/repro.sh",
+        "docs/lessons/09-apply-overtaken-by-its-barrier/expected-output.txt"
+      ],
+      "notes": "Since S4 tools/cluster.py creates every test cluster by bootstrapping node 1 and adding the others through membership requests, so every earlier integration test also exercises the add path. Tests whose only change is a constructor signature (Snapshot::new takes voters, AppendResponse carries last_log_index) are not listed in modified_tests."
     }
   },
   "reports": {
@@ -488,6 +538,91 @@
           "s3_answer_before_applied"
         ]
       }
+    ],
+    "13": [
+      {
+        "path": "artifacts/reports/simulation.json",
+        "required_nonempty": [
+          "command"
+        ],
+        "required_positive_integer": [
+          "seed_count",
+          "event_count",
+          "pass_count",
+          "reads_served",
+          "membership_changes",
+          "leader_removals",
+          "catch_up_failures",
+          "even_configurations"
+        ],
+        "required_empty_array": [
+          "failures"
+        ],
+        "source_fingerprint_must_match": true
+      },
+      {
+        "path": "artifacts/reports/mutations.json",
+        "required_nonempty": [
+          "command",
+          "isolation"
+        ],
+        "required_positive_integer": [
+          "case_count",
+          "detected_count",
+          "control_count"
+        ],
+        "required_empty_array": [
+          "undetected"
+        ],
+        "source_fingerprint_must_match": true,
+        "required_detected_cases": [
+          "quorum_one",
+          "unsafe_old_term_commit",
+          "reversed_queue",
+          "saturated_pool_spin",
+          "wal_skip_record_header_checksum",
+          "wal_truncate_on_bad_header",
+          "wal_compare_eof_before_header_checksum",
+          "wal_skip_record_checksum",
+          "wal_accept_any_partial_header",
+          "wal_truncate_before_copy_is_durable",
+          "wal_unbounded_torn_copies",
+          "wal_ignore_file_header",
+          "wal_adopt_any_wal_without_identity",
+          "wal_recreate_missing_wal",
+          "s2_compact_beyond_applied",
+          "s2_reply_before_install_is_durable",
+          "s2_install_already_covered_snapshot",
+          "s2_no_append_before_base_rule",
+          "s2_chunk_offset_unchecked",
+          "s2_snapshot_crc_unchecked_on_receive",
+          "s2_keep_suffix_on_term_mismatch",
+          "s2_wal_rewritten_before_snapshot",
+          "s2_snapshot_file_crc_unchecked",
+          "s2_accept_wal_newer_than_snapshot",
+          "s2_older_sequence_executes_again",
+          "s3_answer_without_confirmation",
+          "s3_round_not_advanced",
+          "s3_skip_current_term_commit_wait",
+          "s3_keep_reads_after_losing_leadership",
+          "s3_answer_before_applied",
+          "s4_no_2015_fix",
+          "s4_two_changes_at_once",
+          "s4_change_over_uncommitted_configuration",
+          "s4_judge_uncommitted_before_term_commit",
+          "s4_count_votes_from_outside",
+          "s4_leader_counts_itself_outside_configuration",
+          "s4_no_step_down_after_removal",
+          "s4_removed_node_campaigns",
+          "s4_campaign_without_configuration",
+          "s4_no_disruption_guard",
+          "s4_add_without_catch_up",
+          "s4_read_index_fixed_majority",
+          "s4_snapshot_records_latest_configuration",
+          "s4_no_length_hint",
+          "s4_apply_after_barrier"
+        ]
+      }
     ]
   },
   "v1_mapping": {
@@ -501,9 +636,10 @@
     "quorum_is_two_of_three": {
       "final_phase": "00",
       "final_tests": [
-        "quorum_is_two_of_three"
+        "majority_follows_the_configuration",
+        "node_ids_are_one_to_seven"
       ],
-      "note": "unchanged"
+      "note": "S4 replaced the fixed quorum of two out of nodes 1/2/3 with the majority of the current configuration (docs/MEMBERSHIP.md section 13); see replaced_tests"
     },
     "single_leader_per_term": {
       "final_phase": "01",
@@ -694,7 +830,11 @@
     "The key-value data and the number of clients are not bounded; compaction stops when a snapshot would exceed 64 MiB.",
     "ReadIndex reads are served by the leader only; there is no check-quorum, so an isolated leader's reads wait until they time out.",
     "Read latency numbers in read-benchmark.json are recorded for comparison only and are not acceptance thresholds.",
-    "Mutation reports before 2026-11-13 (S1, S2 tags) were produced with one shared cargo target directory and may mix mutants; only reports with an isolation field are isolated."
+    "Mutation reports before 2026-11-13 (S1, S2 tags) were produced with one shared cargo target directory and may mix mutants; only reports with an isolation field are isolated.",
+    "Membership changes (S4) have no formal proof; the evidence is the dissertation, the 2015 raft-dev fix and finite tests, including a scripted replay of the 2015 counterexample.",
+    "Operator mistakes are not detected: bootstrapping twice, or re-adding an ID with a wiped data directory, can break safety (docs/MEMBERSHIP.md N2).",
+    "Catch-up is timed in heartbeats, not wall-clock time; a removed node keeps running until stopped, and re-adding a still-running removed node may make the leader step down once (MEMBERSHIP.md N5, N6, N8).",
+    "The simulator uses five node slots; configurations of six or seven nodes are exercised only by unit tests of the majority rule."
   ],
   "replaced_tests": {
     "reserved_header_fields_must_be_pristine": {
@@ -704,6 +844,15 @@
       ],
       "replaced_in": "11",
       "note": "S1 required the WAL start fields to hold fixed values. S2 uses them for the snapshot position, so the replacement checks their relations instead: seven inconsistent combinations are each refused with the file unchanged, a consistent non-default start is accepted, and a base without its snapshot file is refused."
+    },
+    "quorum_is_two_of_three": {
+      "phase": "00",
+      "replaced_by": [
+        "majority_follows_the_configuration",
+        "node_ids_are_one_to_seven"
+      ],
+      "replaced_in": "13",
+      "note": "V1 checked has_quorum over the fixed nodes 1/2/3: no quorum for none, one or a duplicated node, quorum for any two, node 4 invalid. S4 removes the fixed set. The replacements check the majority for every configuration size 1..=7 at the exact boundary (just enough passes, one short fails), that members outside the configuration never count, that a set cannot count a node twice, that a missing configuration has no quorum, and that node IDs 0 and 8 are refused while 1..=7 are accepted."
     }
   },
   "modified_tests": {
@@ -719,8 +868,98 @@
     },
     "saturated_outbound_pool_does_not_starve_status": {
       "phase": "none (mutation target of saturated_pool_spin)",
-      "changed_in": "12",
-      "note": "sent a GET to make the leader replicate into a saturated pool; since S3 a GET waits for ReadIndex and sends nothing, so the test stopped exercising the pool and the mutant survived. It now sends a Put; the control passes and the mutant is detected (lesson 07)"
+      "changed_in": "12, 13",
+      "note": "sent a GET to make the leader replicate into a saturated pool; since S3 a GET waits for ReadIndex and sends nothing, so the test stopped exercising the pool and the mutant survived. It now sends a Put; the control passes and the mutant is detected (lesson 07) S4 (13): Its hand-made leader now holds a three-node configuration entry: since S4 a leader replicates only to the voters of its configuration, and without one the Put would send nothing and the pool would not be exercised (the lesson 07 failure again)."
+    },
+    "single_leader_per_term": {
+      "phase": "01",
+      "changed_in": "13",
+      "note": "A node without a configuration no longer campaigns (S4), so the test starts from a three-node configuration entry at index 1, term 1 instead of an empty log; every term and index it asserts moved up by one, the asserted behaviour is the same."
+    },
+    "vote_persist_intent_before_reply": {
+      "phase": "01",
+      "changed_in": "13",
+      "note": "A node without a configuration no longer campaigns (S4), so the test starts from a three-node configuration entry at index 1, term 1 instead of an empty log; every term and index it asserts moved up by one, the asserted behaviour is the same. The follower half still starts empty: an unconfigured node may vote."
+    },
+    "previous_term_entry_requires_current_term_commit": {
+      "phase": "02",
+      "changed_in": "13",
+      "note": "The first entry is now a configuration entry (a leader counts only voters of its configuration), indexes unchanged. The RAM-only sub-check now has entry 1 durable and entry 2 only in the leader's RAM, both held by follower 2: it asserts commit 1, not 2, where it used to assert commit 0 for an empty durable log, so it still shows that a RAM-only self match does not count."
+    },
+    "conflicting_suffix_repaired": {
+      "phase": "02",
+      "changed_in": "13",
+      "note": "Asserted that the durability barrier is the first effect. Since lesson 09 the Applies of entries committed before the barrier come first (a barrier's completion may commit and apply more), so it now asserts that the barrier precedes the AppendResponse and that nothing is applied after the barrier."
+    },
+    "append_response_cannot_inflate_match_index": {
+      "phase": "02",
+      "changed_in": "13",
+      "note": "A node without a configuration no longer campaigns (S4), so the test starts from a three-node configuration entry at index 1, term 1 instead of an empty log; every term and index it asserts moved up by one, the asserted behaviour is the same."
+    },
+    "replicated_get_linearizable": {
+      "phase": "05",
+      "changed_in": "13",
+      "note": "A node without a configuration no longer campaigns (S4), so the test starts from a three-node configuration entry at index 1, term 1 instead of an empty log; every term and index it asserts moved up by one, the asserted behaviour is the same."
+    },
+    "read_waits_for_a_committed_entry_of_its_term": {
+      "phase": "12",
+      "changed_in": "13",
+      "note": "Its leader fixture starts from a three-node configuration entry at index 1 (S4: no configuration, no election); readIndex values and indexes moved up by one."
+    },
+    "replies_to_requests_sent_before_the_read_do_not_confirm_it": {
+      "phase": "12",
+      "changed_in": "13",
+      "note": "Its leader fixture starts from a three-node configuration entry at index 1 (S4: no configuration, no election); readIndex values and indexes moved up by one."
+    },
+    "one_round_confirms_every_waiting_read": {
+      "phase": "12",
+      "changed_in": "13",
+      "note": "Its leader fixture starts from a three-node configuration entry at index 1 (S4: no configuration, no election); readIndex values and indexes moved up by one."
+    },
+    "a_same_term_rejection_still_confirms_leadership": {
+      "phase": "12",
+      "changed_in": "13",
+      "note": "Its leader fixture starts from a three-node configuration entry at index 1 (S4: no configuration, no election); readIndex values and indexes moved up by one."
+    },
+    "read_waits_until_the_state_machine_reaches_read_index": {
+      "phase": "12",
+      "changed_in": "13",
+      "note": "Its leader fixture starts from a three-node configuration entry at index 1 (S4: no configuration, no election); readIndex values and indexes moved up by one."
+    },
+    "cancelled_read_is_not_answered": {
+      "phase": "12",
+      "changed_in": "13",
+      "note": "Its leader fixture starts from a three-node configuration entry at index 1 (S4: no configuration, no election); readIndex values and indexes moved up by one."
+    },
+    "reads_never_write_durable_state": {
+      "phase": "12",
+      "changed_in": "13",
+      "note": "Its leader fixture starts from a three-node configuration entry at index 1 (S4: no configuration, no election); readIndex values and indexes moved up by one."
+    },
+    "reads_fail_when_leadership_is_lost": {
+      "phase": "12",
+      "changed_in": "13",
+      "note": "Used a higher-term RequestVote to depose the leader; since S4 a leader ignores a higher-term RequestVote (docs/MEMBERSHIP.md section 9.4), so the higher term now arrives in an AppendEntries from that term's leader, and the test also asserts the new term. Fixture moved up by one as for the other read tests."
+    },
+    "compaction_only_covers_applied_entries": {
+      "phase": "11",
+      "changed_in": "13",
+      "note": "Index 1 is now a configuration entry: a snapshot records the configuration at its position, so a log without one cannot be compacted. It additionally asserts the snapshot's voters."
+    },
+    "install_rejects_invalid_requests_without_writing": {
+      "phase": "11",
+      "changed_in": "13",
+      "note": "Refused a snapshot whose membership was not exactly 1, 2, 3; since S4 any non-empty set of nodes 1..=7 is valid, so it now refuses three invalid memberships instead (empty, naming node 0, naming node 8)."
+    },
+    "file_header_start_fields_validated": {
+      "phase": "11",
+      "changed_in": "13",
+      "note": "The invalid vote case voted for node 4; since S4 nodes 1..=7 are valid, so it votes for node 8."
+    },
+    "heartbeat_does_not_retire_slow_valid_append": {
+      "phase": "none (not in a phase)",
+      "changed_in": "13",
+      "note": "A node without a configuration no longer campaigns (S4), so the test starts from a three-node configuration entry at index 1, term 1 instead of an empty log; every term and index it asserts moved up by one, the asserted behaviour is the same."
     }
   }
 }

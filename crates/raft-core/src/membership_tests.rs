@@ -532,7 +532,8 @@ fn a_new_leader_waits_for_a_committed_entry_of_its_term() {
     );
     assert!(
         net.answers.is_empty(),
-        "the request waits instead of failing"
+        "the request waits instead of failing: {:?}",
+        net.answers
     );
     net.deliver(all);
     assert_eq!(

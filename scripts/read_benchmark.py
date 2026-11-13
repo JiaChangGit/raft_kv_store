@@ -28,8 +28,9 @@ BEFORE = "s2-snapshot-compaction-verified"
 READS = int(os.environ.get("READ_BENCHMARK_READS", "300"))
 
 
-def measure(label, binary, directory):
-    with Cluster(directory, proxy=False, binary=binary) as c:
+def measure(label, binary, directory, legacy=False):
+    # The S2 binary predates S4's bootstrap and membership requests.
+    with Cluster(directory, proxy=False, binary=binary, legacy=legacy) as c:
         assert c.invoke(request(700, 1, "Put", "bench", "v" * 64))["status"] == "OK"
         leader = c.wait_leader()
         wal = lambda: {n: c.status(n)["wal_bytes"] for n in (1, 2, 3)}  # noqa: E731
@@ -75,7 +76,7 @@ def run_all(work, fingerprint):
     subprocess.run(["cargo", "build", "-q", "--locked", "-p", "raft-node"], cwd=old_src, check=True,
                    env={**os.environ, "CARGO_TARGET_DIR": str(work / "target-old")})
     subprocess.run(["cargo", "build", "-q", "--locked", "-p", "raft-node"], cwd=ROOT, check=True)
-    runs = [measure(f"before ({BEFORE})", work / "target-old/debug/raft-node", work / "cluster-old"),
+    runs = [measure(f"before ({BEFORE})", work / "target-old/debug/raft-node", work / "cluster-old", legacy=True),
             measure("after (current source)", ROOT / "target/debug/raft-node", work / "cluster-new")]
     if snapshot(ROOT)[1] != fingerprint:
         raise SystemExit("source changed during the benchmark")
