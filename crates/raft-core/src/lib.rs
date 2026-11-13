@@ -3,6 +3,8 @@ use raft_protocol::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
+mod read_tests;
+#[cfg(test)]
 mod snapshot_tests;
 #[cfg(test)]
 mod tests;
@@ -33,6 +35,15 @@ pub enum Event {
         index: LogIndex,
         data: Vec<u8>,
     },
+    /// A linearizable read (docs/READ_INDEX.md). `id` is chosen by the host and
+    /// comes back in exactly one `ReadReady` or `ReadFailed`, unless cancelled.
+    Read {
+        id: u64,
+    },
+    /// The host gave up on a read (its client timed out); forget it.
+    CancelRead {
+        id: u64,
+    },
 }
 #[derive(Clone, Debug)]
 pub enum Effect {
@@ -59,6 +70,17 @@ pub enum Effect {
         generation: u64,
     },
     Reject(ClientRequest, &'static str),
+    /// The host may now answer read `id` from its state machine, which has
+    /// applied at least through `read_index`.
+    ReadReady {
+        id: u64,
+        read_index: LogIndex,
+    },
+    /// Read `id` was not served and had no effect.
+    ReadFailed {
+        id: u64,
+        status: &'static str,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +93,18 @@ struct Inflight {
     commit: u64,
     /// Set when this request is an InstallSnapshot chunk: which snapshot.
     chunk: Option<LogBase>,
+    /// `read_round` when this request was sent; a reply confirms leadership
+    /// only for reads registered no later than that (docs/READ_INDEX.md §6.2).
+    round: u64,
+}
+
+/// A read waiting for its confirmation round (docs/READ_INDEX.md §6.1).
+#[derive(Clone, Debug)]
+struct PendingRead {
+    id: u64,
+    /// `None` until the leader has committed an entry of its own term.
+    read_index: Option<LogIndex>,
+    round: u64,
 }
 
 /// A snapshot a follower is receiving chunk by chunk (Figure 13 steps 2-5).
@@ -112,6 +146,9 @@ pub struct Core {
     transfer: [Option<(LogBase, u64)>; 4],
     receiving: Option<Receiving>,
     chunk_size: usize,
+    read_round: u64,
+    acked_round: [u64; 4],
+    pending_reads: Vec<PendingRead>,
     failed: bool,
 }
 impl Core {
@@ -160,6 +197,9 @@ impl Core {
             transfer: [None; 4],
             receiving: None,
             chunk_size: MAX_CHUNK,
+            read_round: 0,
+            acked_round: [0; 4],
+            pending_reads: vec![],
             failed: false,
         })
     }
@@ -200,6 +240,8 @@ impl Core {
         if self.role == Role::Leader {
             self.matches[self.id as usize] = self.durable_index;
             self.advance_commit(&mut effects);
+            self.start_read_round(&mut effects);
+            self.finish_reads(&mut effects);
         }
         effects
     }
@@ -228,6 +270,8 @@ impl Core {
                 self.message(message, &mut effects)
             }
             Event::Compact { index, data } => self.compact(index, data),
+            Event::Read { id } => self.read(id, &mut effects),
+            Event::CancelRead { id } => self.pending_reads.retain(|read| read.id != id),
             Event::RpcTimeout { peer, rpc_id } if valid_node(peer) && self.role == Role::Leader => {
                 if self.inflight[peer as usize]
                     .as_ref()
@@ -297,6 +341,98 @@ impl Core {
         self.state = adopt_snapshot(&self.state, snapshot.base);
         self.requested_snapshot = Some((snapshot, false));
     }
+    /// docs/READ_INDEX.md §6.2 step 1-3.
+    fn read(&mut self, id: u64, effects: &mut Vec<Effect>) {
+        if self.role != Role::Leader {
+            effects.push(Effect::ReadFailed {
+                id,
+                status: "NOT_LEADER",
+            });
+            return;
+        }
+        self.pending_reads.push(PendingRead {
+            id,
+            read_index: None,
+            round: 0,
+        });
+        self.start_read_round(effects);
+    }
+    /// Give every read still without a readIndex one, and a fresh round.
+    fn start_read_round(&mut self, effects: &mut Vec<Effect>) {
+        // Step 1: a new leader does not know what is committed until an entry
+        // of its own term is (the no-op appended on election).
+        if self.role != Role::Leader
+            || self.state.term_at(self.commit_index) != Some(self.state.term)
+        {
+            return;
+        }
+        if self
+            .pending_reads
+            .iter()
+            .all(|read| read.read_index.is_some())
+        {
+            return;
+        }
+        // Step 4's key point: only requests sent after this increment can
+        // confirm these reads, because they carry the new round number.
+        self.read_round += 1;
+        for read in self
+            .pending_reads
+            .iter_mut()
+            .filter(|r| r.read_index.is_none())
+        {
+            read.read_index = Some(self.commit_index);
+            read.round = self.read_round;
+        }
+        self.replicate_all(effects);
+    }
+    /// Steps 6-7: answer every read whose round a majority has acknowledged.
+    fn finish_reads(&mut self, effects: &mut Vec<Effect>) {
+        if self.role != Role::Leader || self.pending_reads.is_empty() {
+            return;
+        }
+        let mut acks: Vec<u64> = NODES
+            .into_iter()
+            .filter(|peer| *peer != self.id)
+            .map(|peer| self.acked_round[peer as usize])
+            .collect();
+        acks.sort_unstable_by(|a, b| b.cmp(a));
+        // The leader counts itself; it needs quorum - 1 followers.
+        let confirmed = acks.get(QUORUM - 2).copied().unwrap_or(u64::MAX);
+        let last_applied = self.last_applied;
+        self.pending_reads.retain(|read| match read.read_index {
+            Some(read_index) if read.round <= confirmed && last_applied >= read_index => {
+                effects.push(Effect::ReadReady {
+                    id: read.id,
+                    read_index,
+                });
+                false
+            }
+            _ => true,
+        });
+    }
+    /// Make sure every follower gets a request of the newest round.
+    fn replicate_for_reads(&mut self, peer: NodeId, effects: &mut Vec<Effect>) {
+        let wanted = self
+            .pending_reads
+            .iter()
+            .map(|r| r.round)
+            .max()
+            .unwrap_or(0);
+        if wanted > self.acked_round[peer as usize] {
+            self.replicate(peer, effects);
+        }
+    }
+    /// Step 8: a node that is no longer leader serves no read.
+    fn fail_reads(&mut self, effects: &mut Vec<Effect>) {
+        for read in self.pending_reads.drain(..) {
+            effects.push(Effect::ReadFailed {
+                id: read.id,
+                status: "NOT_LEADER",
+            });
+        }
+        self.acked_round = [0; 4];
+    }
     fn reset_election(&mut self, effects: &mut Vec<Effect>) {
         self.election_generation += 1;
         effects.push(Effect::ResetElection {
@@ -331,6 +467,7 @@ impl Core {
         self.vote_requests.clear();
         self.inflight = std::array::from_fn(|_| None);
         self.transfer = [None; 4];
+        self.fail_reads(effects);
         self.heartbeat_generation += 1;
         // A former leader has no active election timer; this starts one without
         // resetting an already running follower timer on arbitrary higher terms.
@@ -353,6 +490,7 @@ impl Core {
         self.vote_requests.clear();
         self.inflight = std::array::from_fn(|_| None);
         self.transfer = [None; 4];
+        self.fail_reads(effects);
         self.reset_election(effects);
         for peer in NODES
             .into_iter()
@@ -383,6 +521,7 @@ impl Core {
         self.matches[self.id as usize] = self.durable_index;
         self.inflight = std::array::from_fn(|_| None);
         self.transfer = [None; 4];
+        self.acked_round = [0; 4];
         self.state.push(LogEntry {
             index: self.state.last_index() + 1,
             term: self.state.term,
@@ -440,6 +579,7 @@ impl Core {
             count,
             commit: self.commit_index,
             chunk: None,
+            round: self.read_round,
         });
     }
     /// docs/SNAPSHOT_COMPACTION.md §9.2: send the next chunk of the current snapshot.
@@ -482,6 +622,7 @@ impl Core {
             count: 0,
             commit: self.commit_index,
             chunk: Some(snapshot.base),
+            round: self.read_round,
         });
     }
     fn advance_commit(&mut self, effects: &mut Vec<Effect>) {
@@ -762,6 +903,9 @@ impl Core {
                     return;
                 }
                 self.inflight[p] = None;
+                // Same term: this follower still accepted us as leader (§6.2 step 5).
+                self.acked_round[p] = self.acked_round[p].max(request.round);
+                self.finish_reads(effects);
                 if success && done {
                     self.transfer[p] = None;
                     self.matches[p] = self.matches[p].max(last_included_index);
@@ -771,6 +915,7 @@ impl Core {
                     self.transfer[p] = Some((base, next_offset));
                 }
                 self.replicate(from, effects);
+                self.replicate_for_reads(from, effects);
             }
             Rpc::AppendResponse {
                 term,
@@ -792,6 +937,9 @@ impl Core {
                     return;
                 }
                 self.inflight[p] = None;
+                // Same term, success or not: this follower still accepts us (§6.2 step 5).
+                self.acked_round[p] = self.acked_round[p].max(request.round);
+                self.finish_reads(effects);
                 if success {
                     let confirmed = request.prev + request.count;
                     if matched_through != confirmed {
@@ -802,6 +950,8 @@ impl Core {
                     let old_commit = self.commit_index;
                     self.advance_commit(effects);
                     if self.commit_index > old_commit {
+                        self.start_read_round(effects);
+                        self.finish_reads(effects);
                         self.replicate_all(effects);
                     }
                     if self.next[p] <= self.state.last_index() || request.commit < self.commit_index
@@ -815,6 +965,7 @@ impl Core {
                         .max(1);
                     self.replicate(from, effects);
                 }
+                self.replicate_for_reads(from, effects);
             }
         }
     }

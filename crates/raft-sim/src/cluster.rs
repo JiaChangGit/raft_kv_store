@@ -517,6 +517,8 @@ impl Cluster {
                     self.timer(node, 100, Event::Heartbeat { generation })
                 }
                 Effect::Reject(_, _) => {}
+                // Not issued until S3 step 3 adds reads to the simulated workload.
+                Effect::ReadReady { .. } | Effect::ReadFailed { .. } => {}
             }
         }
         Ok(())
@@ -535,6 +537,8 @@ impl Cluster {
             Event::Propose(_) => "propose",
             Event::RpcTimeout { .. } => "rpc-timeout",
             Event::Compact { .. } => "compact",
+            Event::Read { .. } => "read",
+            Event::CancelRead { .. } => "cancel-read",
         };
         let effects = self.nodes[node].step(event);
         // Observe election before a crash-prone NoOp persist can hide the transition.

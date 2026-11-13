@@ -463,6 +463,8 @@ impl Actor {
                 Effect::ResetHeartbeat { generation } => {
                     self.heartbeat = Some((Instant::now() + Duration::from_millis(100), generation))
                 }
+                // Not issued until S3 step 2 routes GETs through Event::Read.
+                Effect::ReadReady { .. } | Effect::ReadFailed { .. } => {}
                 Effect::Reject(request, status) => self.reply_request(
                     &request,
                     ClientResponse::error(status, self.core.leader_hint),
@@ -500,6 +502,8 @@ impl Actor {
             Event::Compact { index, data } => {
                 json!({"event":"compact","index":index,"bytes":data.len()})
             }
+            Event::Read { id } => json!({"event":"read","read_id":id}),
+            Event::CancelRead { id } => json!({"event":"cancel_read","read_id":id}),
         };
         self.trace("event", details);
         let effects = self.core.step(event);
