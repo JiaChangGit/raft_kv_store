@@ -289,7 +289,10 @@
         "artifacts/reports/mutations.json",
         "docs/lessons/06-mutants-sharing-a-build-directory/README.md",
         "docs/lessons/06-mutants-sharing-a-build-directory/repro.sh",
-        "docs/lessons/06-mutants-sharing-a-build-directory/expected-output.txt"
+        "docs/lessons/06-mutants-sharing-a-build-directory/expected-output.txt",
+        "docs/lessons/07-test-silently-stopped-testing/README.md",
+        "docs/lessons/07-test-silently-stopped-testing/repro.sh",
+        "docs/lessons/07-test-silently-stopped-testing/expected-output.txt"
       ]
     }
   },
@@ -713,6 +716,11 @@
       "phase": "none (not in a phase)",
       "changed_in": "12",
       "note": "showed the rejection with a GET; GETs no longer pass the session table, so it uses a Put and adds a read"
+    },
+    "saturated_outbound_pool_does_not_starve_status": {
+      "phase": "none (mutation target of saturated_pool_spin)",
+      "changed_in": "12",
+      "note": "sent a GET to make the leader replicate into a saturated pool; since S3 a GET waits for ReadIndex and sends nothing, so the test stopped exercising the pool and the mutant survived. It now sends a Put; the control passes and the mutant is detected (lesson 07)"
     }
   }
 }

@@ -1,0 +1,15 @@
+
+== s2-snapshot-compaction-verified  (before S3: the test sends a GET, and a GET is replicated)
+   control (no mistake planted): test pass; RPCs the node tried to send: 2
+   with the busy-retry mistake planted: test FAIL -> mistake detected
+
+== 54ff116  (after S3, before the fix: the test sends a GET, a GET is a ReadIndex read)
+   control (no mistake planted): test pass; RPCs the node tried to send: 0
+   with the busy-retry mistake planted: test pass -> mistake NOT detected
+
+== HEAD  (current: the test sends a Put)
+   control (no mistake planted): test pass; RPCs the node tried to send: 2
+   with the busy-retry mistake planted: test FAIL -> mistake detected
+
+== RESULT
+The same test, unchanged between the first two versions, guarded the retry rule before S3 and not after.
