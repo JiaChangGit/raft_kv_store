@@ -70,6 +70,10 @@ def test_full_restart_recovers_from_snapshots_and_sessions(tmp_path):
         again=c.invoke(last)
         assert again["status"]=="OK" and again["result"]==original["result"]
         assert again["committed_index"]==original["committed_index"]
-        assert c.invoke(request(421,2,"Get","x"))["result"]=="v10"
         leader=c.wait_leader()
-        assert c.status(leader)["effect_count"]==effects+1, "only the new Get executed"
+        before=c.status(leader)["durable_sequence"]
+        assert c.invoke(request(421,2,"Get","x"))["result"]=="v10"
+        after=c.status(leader)
+        # S3: a GET executes nothing in the state machine and writes no WAL record.
+        assert after["effect_count"]==effects, "the retry and the GET executed nothing"
+        assert after["durable_sequence"]==before

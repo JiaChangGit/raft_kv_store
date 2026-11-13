@@ -9,6 +9,10 @@ def apply(model,sessions,operation):
     name,body=next(iter(operation["operation"].items()))
     if len(body["key"].encode("utf-8"))>256 or (name=="Put" and len(body["value"].encode("utf-8"))>4096):
         return model,sessions,("INVALID_ARGUMENT",None)
+    if name=="Get":
+        # S3: reads go through ReadIndex, never through the session table, so a
+        # retried GET is simply a new read (docs/READ_INDEX.md section 5).
+        return model,sessions,("OK",dict(model).get(body["key"]))
     # One remembered request per client: only its latest sequence can be answered
     # again; anything older is rejected without effect (docs/CLIENT_CONTRACT.md).
     client,sequence=operation["client_id"],operation["sequence"]

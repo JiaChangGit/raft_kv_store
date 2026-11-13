@@ -502,7 +502,7 @@
       "final_tests": [
         "replicated_get_linearizable"
       ],
-      "note": "unchanged"
+      "note": "unchanged; it shows core can replicate a GET as an ordinary command and that an isolated leader cannot apply it. Since S3 the node no longer proposes GETs (they use ReadIndex), so the read path itself is covered by phase 12"
     },
     "same_id_different_command_rejected": {
       "final_phase": "05",
@@ -516,7 +516,7 @@
       "final_tests": [
         "tests/integration/test_client_retry.py::test_retry_after_leader_crash"
       ],
-      "note": "same test; S2 decision D1 changed one assertion. v1 sent an older sequence with another command and expected REQUEST_ID_REUSE. It now checks both properties separately: the latest sequence with another command is REQUEST_ID_REUSE, an older sequence is INVALID_ARGUMENT, and a follow-up read confirms neither changed the value"
+      "note": "same test; changed twice by approved decisions. S2 D1: v1 sent an older sequence with another command and expected REQUEST_ID_REUSE; it now checks the latest sequence (REUSE) and an older one (INVALID_ARGUMENT) separately. S3 D3: GETs no longer enter the session table, so the latest remembered write is the Put at sequence 1; the REUSE case uses sequence 1 and the older case sequence 0. Each is followed by a read proving the value did not change"
     },
     "tests/integration/test_faults.py::test_partitioned_leader_cannot_commit_or_read": {
       "final_phase": "06",
@@ -593,6 +593,18 @@
       ],
       "replaced_in": "11",
       "note": "S1 required the WAL start fields to hold fixed values. S2 uses them for the snapshot position, so the replacement checks their relations instead: seven inconsistent combinations are each refused with the file unchanged, a consistent non-default start is accepted, and a base without its snapshot file is refused."
+    }
+  },
+  "modified_tests": {
+    "tests/integration/test_snapshot.py::test_full_restart_recovers_from_snapshots_and_sessions": {
+      "phase": "11",
+      "changed_in": "12",
+      "note": "S2 asserted a new GET raised effect_count by one. S3 D3 removes GETs from the state machine, so it now asserts effect_count is unchanged and additionally that the GET left the leader's durable_sequence unchanged"
+    },
+    "tests/history/test_checker.py::test_unseen_lower_sequence_is_rejected": {
+      "phase": "none (not in a phase)",
+      "changed_in": "12",
+      "note": "showed the rejection with a GET; GETs no longer pass the session table, so it uses a Put and adds a read"
     }
   }
 }

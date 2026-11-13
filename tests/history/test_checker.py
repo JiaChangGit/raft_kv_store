@@ -30,10 +30,20 @@ def test_concurrent_real_time_and_search_bound():
     assert check(h,max_states=0)["status"]=="INCONCLUSIVE"
 
 def test_unseen_lower_sequence_is_rejected():
-    h=[op(5,"Put",0,1,value="A"),op(3,"Get",2,3,status="INVALID_ARGUMENT")]
+    # S3: shown with a write; GETs no longer pass through the session table.
+    h=[op(5,"Put",0,1,value="A"),op(3,"Put",2,3,value="B",status="INVALID_ARGUMENT"),op(6,"Get",4,5,result="A")]
     assert check(h)["status"]=="PASS"
     h[1].update(status="OK",result="A")
     assert check(h)["status"]=="FAIL"
+
+def test_reads_ignore_sessions_and_a_retried_get_reads_again():
+    # A GET with an old sequence is still a read, and the retry of a GET may
+    # observe a newer value: it is a new read within the same operation.
+    h=[op(5,"Put",0,1,value="A"),op(3,"Get",2,3,result="A"),
+       op(6,"Get",4,5,result="A",client=2),op(7,"Put",6,7,value="B",result="A"),op(6,"Get",8,9,result="B",client=2)]
+    assert check(h)["status"]=="PASS"
+    h[4]["result"]="A"
+    assert check(h)["status"]=="FAIL", "the second read began after B was written"
 
 def test_invalid_argument_cannot_become_a_successful_effect():
     bad=op(1,"Put",0,1,value="A"*4097,status="INVALID_ARGUMENT")

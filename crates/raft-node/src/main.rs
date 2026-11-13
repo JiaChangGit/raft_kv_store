@@ -240,6 +240,12 @@ fn client_listener(listener: TcpListener, tx: SyncSender<Input>) {
 
 type RequestKey = (u128, u64);
 type Waiters = Vec<(ClientRequest, SyncSender<ClientResponse>)>;
+/// A GET waiting for ReadIndex (docs/READ_INDEX.md §6.4).
+struct WaitingRead {
+    key: String,
+    reply: SyncSender<ClientResponse>,
+    deadline: Instant,
+}
 struct Actor {
     core: Core,
     wal: Wal,
@@ -259,6 +265,10 @@ struct Actor {
     snapshots_taken: u64,
     snapshots_installed: u64,
     snapshot_too_large: bool,
+    reads: BTreeMap<u64, WaitingRead>,
+    next_read: u64,
+    reads_served: u64,
+    reads_failed: u64,
 }
 impl Actor {
     fn trace(&self, kind: &str, details: Value) {
@@ -293,6 +303,7 @@ impl Actor {
             "snapshot_bytes":self.core.snapshot().map_or(0,|s|s.data.len()),
             "wal_bytes":self.wal.wal_bytes().unwrap_or(0),
             "snapshots_taken":self.snapshots_taken,"snapshots_installed":self.snapshots_installed,
+            "reads_served":self.reads_served,"reads_failed":self.reads_failed,"reads_waiting":self.reads.len(),
             "debug_only":true})
     }
     fn reject_pending(&mut self, status: &str) {
@@ -463,8 +474,35 @@ impl Actor {
                 Effect::ResetHeartbeat { generation } => {
                     self.heartbeat = Some((Instant::now() + Duration::from_millis(100), generation))
                 }
-                // Not issued until S3 step 2 routes GETs through Event::Read.
-                Effect::ReadReady { .. } | Effect::ReadFailed { .. } => {}
+                Effect::ReadReady { id, read_index } => {
+                    if let Some(read) = self.reads.remove(&id) {
+                        assert!(
+                            self.kv.applied_index() >= read_index,
+                            "ReadIndex step 4: the state machine reached readIndex"
+                        );
+                        self.reads_served += 1;
+                        self.trace(
+                            "read_served",
+                            json!({"read_id":id,"read_index":read_index,
+                            "applied_index":self.kv.applied_index()}),
+                        );
+                        let _ = read.reply.try_send(ClientResponse {
+                            status: "OK".into(),
+                            result: self.kv.get(&read.key).map(str::to_owned),
+                            leader_hint: Some(self.core.id),
+                            committed_index: Some(self.kv.applied_index()),
+                        });
+                    }
+                }
+                Effect::ReadFailed { id, status } => {
+                    if let Some(read) = self.reads.remove(&id) {
+                        self.reads_failed += 1;
+                        self.trace("read_failed", json!({"read_id":id,"status":status}));
+                        let _ = read
+                            .reply
+                            .try_send(ClientResponse::error(status, self.core.leader_hint));
+                    }
+                }
                 Effect::Reject(request, status) => self.reply_request(
                     &request,
                     ClientResponse::error(status, self.core.leader_hint),
@@ -601,6 +639,18 @@ impl Actor {
                 self.step(Event::Heartbeat { generation })?;
                 continue;
             }
+            // A read whose client has given up is forgotten, so an isolated
+            // leader's waiting list cannot grow without bound.
+            if let Some(id) = self
+                .reads
+                .iter()
+                .find(|(_, read)| read.deadline <= now)
+                .map(|(id, _)| *id)
+            {
+                self.reads.remove(&id);
+                self.step(Event::CancelRead { id })?;
+                continue;
+            }
             let wait = self
                 .election
                 .into_iter()
@@ -609,6 +659,7 @@ impl Actor {
                 .chain(
                     self.rpc_deadlines
                         .values()
+                        .chain(self.reads.values().map(|read| &read.deadline))
                         .map(|deadline| deadline.saturating_duration_since(now)),
                 )
                 .min()
@@ -645,7 +696,9 @@ impl Actor {
                     }
                 }
                 Ok(Input::Client(request, reply)) => {
-                    if self.pending.values().map(Vec::len).sum::<usize>() >= QUEUE {
+                    if self.pending.values().map(Vec::len).sum::<usize>() + self.reads.len()
+                        >= QUEUE
+                    {
                         let _ = reply.try_send(ClientResponse::error(
                             "TIMEOUT_UNKNOWN",
                             self.core.leader_hint,
@@ -657,6 +710,21 @@ impl Actor {
                             "INVALID_ARGUMENT",
                             self.core.leader_hint,
                         ));
+                        continue;
+                    }
+                    // S3: a GET never enters the log (docs/READ_INDEX.md).
+                    if let Operation::Get { key } = request.operation {
+                        self.next_read += 1;
+                        let id = self.next_read;
+                        self.reads.insert(
+                            id,
+                            WaitingRead {
+                                key,
+                                reply,
+                                deadline: Instant::now() + CLIENT_TIMEOUT,
+                            },
+                        );
+                        self.step(Event::Read { id })?;
                         continue;
                     }
                     self.pending
@@ -753,6 +821,10 @@ fn main() -> io::Result<()> {
         snapshots_taken: 0,
         snapshots_installed: 0,
         snapshot_too_large: false,
+        reads: BTreeMap::new(),
+        next_read: 0,
+        reads_served: 0,
+        reads_failed: 0,
     }
     .run()
 }
@@ -807,6 +879,10 @@ mod tests {
             snapshots_taken: 0,
             snapshots_installed: 0,
             snapshot_too_large: false,
+            reads: BTreeMap::new(),
+            next_read: 0,
+            reads_served: 0,
+            reads_failed: 0,
         };
         let (client_tx, _client_rx) = mpsc::sync_channel(1);
         tx.send(Input::Client(

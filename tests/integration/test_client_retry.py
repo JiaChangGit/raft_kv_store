@@ -12,12 +12,13 @@ def test_retry_after_leader_crash(tmp_path):
         again=c.invoke(r)
         assert again["status"]=="OK" and again["result"] is None
         assert c.invoke(request(11,2,"Get","x"))["result"]=="A"
-        # S2 (D1): only the latest request per client is remembered. Reusing the
-        # latest sequence with another command is REQUEST_ID_REUSE; any older
-        # sequence is INVALID_ARGUMENT. Neither may change the stored value.
-        conflict=c.invoke(request(11,2,"Put","x","B"))
+        # S2 (D1): only the latest write per client is remembered. Reusing that
+        # sequence with another command is REQUEST_ID_REUSE; an older sequence is
+        # INVALID_ARGUMENT. S3 (D3): GETs are not remembered, so the latest
+        # remembered write is still sequence 1. Neither may change the value.
+        conflict=c.invoke(request(11,1,"Put","x","B"))
         assert conflict["status"]=="REQUEST_ID_REUSE"
-        older=c.invoke(request(11,1,"Put","x","B"))
+        older=c.invoke(request(11,0,"Put","x","B"))
         assert older["status"]=="INVALID_ARGUMENT"
         assert c.invoke(request(11,3,"Get","x"))["result"]=="A"
         c.start_node(old)
