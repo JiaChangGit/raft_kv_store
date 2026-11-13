@@ -26,9 +26,11 @@ def allocate_ports(count):
             s.close()
 
 class Cluster:
-    def __init__(self,directory,proxy=True,snapshot_every=None):
+    def __init__(self,directory,proxy=True,snapshot_every=None,binary=None):
         self.directory=Path(directory)
         self.snapshot_every=snapshot_every
+        # Another build of raft-node, e.g. an older tag for a before/after measurement.
+        self.binary=Path(binary) if binary else ROOT/"target/debug/raft-node"
         self.directory.mkdir(parents=True,exist_ok=True)
         ports=allocate_ports(12)
         self.peer={n:ports[n-1] for n in (1,2,3)}
@@ -62,7 +64,7 @@ class Cluster:
         merged["RAFT_FAILPOINT_FILE"]=str(self.directory/f"failpoint-{n}")
         if env:
             merged.update(env)
-        argv=[str(ROOT/"target/debug/raft-node"),"--id",str(n),"--config",str(self.config),"--data-dir",str(self.directory/f"node-{n}")]
+        argv=[str(self.binary),"--id",str(n),"--config",str(self.config),"--data-dir",str(self.directory/f"node-{n}")]
         if self.snapshot_every:
             argv+=["--snapshot-every",str(self.snapshot_every)]
         proc=subprocess.Popen(argv,stdout=out,stderr=err,env=merged)

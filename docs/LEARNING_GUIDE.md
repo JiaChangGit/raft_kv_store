@@ -96,8 +96,8 @@ Figure 3、§5.4.1、§5.4.2／Figure 8；專案材料則見原始
 | Figure 3 Log Matching | AE 的 prev term/index、衝突 suffix 修復 | 空 heartbeat 不驗證 follower 額外 suffix |
 | Figure 3 Leader Completeness | freshness＋current-term commit；跨 term checker | 只看當下 role 字串無法證明歷史 leader completeness |
 | Figure 3 State Machine Safety | committed-only、連續 Apply | WAL 長度可能包含未提交 suffix |
-| 專案 V1 read 決策 | 每個新 GET 都複製進 log | 舊 Leader cache 有值也不能直接回答新的 GET |
-| 專案 session 決策 | 完整 request→operation/result table | 多筆 retry log entry 仍只能有一次 logical effect |
+| 專案 read 決策 | V1：每個新 GET 都複製進 log；S3 起改用 ReadIndex（[規格](READ_INDEX.md)） | 舊 Leader 不能憑自己的 commit index 回答：要先 commit 本任期 entry，並以讀取到達後的一輪多數回覆確認仍是 leader |
+| 專案 session 決策 | V1：完整 request→operation/result table；S2 起每個 client 只記最新一筆寫入；S3 起 GET 不進 session | 多筆 retry log entry 仍只能有一次 logical effect |
 
 Figure 8 的五節點是論文用來展示反例的配置。正式專案始終維持三節點；閱讀或
 建立獨立反例 fixture，不代表應把正式 cluster 改成五節點。關鍵推理是：
@@ -161,9 +161,10 @@ Leader 相符。核對 AE 的 `matched` 與 commit 上限，並看 P02 的負向
 **練習 D：**沿用舊 GET 的 ID 得到 A，但其他 client 後來已寫入 B。這是否自動證明
 stale read？
 
-**解答：**先分辨 logical request。舊 ID 重試回原讀取結果是 duplicate semantics；
-要發起新讀取必須用新 sequence，且該 GET 必須重新走安全 committed/apply 路徑。
-不能把舊 ID 當作新的線性化讀取，也不能讓隔離 Leader 直接用 cache 回新成功。
+**解答：**（S3 起的語意）GET 不再去重，同一個 ID 重送就是再讀一次。讀到 B 不代表 stale read：
+只要 B 在這次讀取結束前已寫入，結果落在操作的開始與結束之間，就是線性一致的。真正的 stale read 是讀到「讀取開始之前就已被覆蓋」的值。
+不論哪種情況，都不能讓隔離的舊 Leader 直接用自己的狀態回答——它必須先以多數確認自己仍是 leader（見 [ReadIndex 規格](READ_INDEX.md) §6.3）。
+（V1 的解答是「舊 ID 重試回原讀取結果」，那是當時 GET 也經過 session 的語意。）
 
 **練習 E：**驗收腳本 exit 0，但 log 寫 running 0 tests。可以宣布協定正確嗎？
 

@@ -1,7 +1,7 @@
 # S3 規格：ReadIndex 讀取
 
-狀態：**已核准（2026-11-13），實作中。** 本文件沒有任何一項已被測試驗證；結果以驗收階段 12 為準。
-已確認的決定見 §12。
+狀態：**已核准（2026-11-13）並實作**，驗收結果以 `scripts/status.py` 與 `artifacts/acceptance-final/` 的階段 12 為準。
+下文保留核准時的原文；實作補記在 §13。
 
 用語：**ReadIndex** 是讓 GET 不寫進 log、仍保持線性一致的讀取方法。**readIndex** 是 leader 為某一批讀取記下的 commit index。
 **確認回合**（confirmation round）是 leader 為了確認自己仍是 leader 而送出的一輪 AppendEntries；只有「讀取到達之後才送出」的那一輪才算數。
@@ -191,3 +191,13 @@
 
 核准本規格後，`AGENTS.md` 在同一個 commit 修改：解除「不做 ReadIndex」；把「新的 GET 一律複製」改為本規格的讀取規則；
 去重規則註明只適用於寫入。lease 的禁止維持不變。
+
+## 13. 實作補記（2026-11-13）
+
+| 項目 | 結果 |
+|---|---|
+| 實作順序 | 照 §11 的四步完成，每步結束時全部測試通過。步驟 2 前先推演出 v1 的 `test_retry_after_leader_crash` 會被 D3 打破（它用 GET 的 sequence 接著做重複寫入），與節點的修改一起調整並記錄於契約 |
+| 產品程式的 bug | 這個階段沒有發現。core 的 9 個讀取測試第一次執行就全部通過；為了確認它們真的有效，5 個植入錯誤全部被抓到 |
+| 模擬器不變量 I8 | 在暫存副本中植入「不等確認就回覆」與「不等本任期 entry commit」兩種錯誤，I8 分別在第 266 與第 1 個種子抓到。第二個實驗第一次執行時，植入腳本因錨點不符而沒有真的植入，卻仍執行並回報全部通過；見教學 04 §8 的補記 |
+| 量測（§9） | 同一台機器、300 次連續 GET：S2 版每個 GET 讓三個節點各寫一筆 WAL record，S3 版為 0；延遲 p50 1.83 ms → 1.51 ms、p99 2.84 ms → 2.32 ms。延遲改善不大，因為這台機器的 `fsync` 很快，而 ReadIndex 仍需一輪 heartbeat。最新數字以 `artifacts/reports/read-benchmark.json` 為準 |
+| 回覆的 `committed_index` | 採用讀取當下狀態機已套用到的 index（不小於 readIndex），與 §5 相同 |

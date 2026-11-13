@@ -44,6 +44,9 @@ cargo build --workspace --locked
 | sequence 2：新 GET | `OK`，結果 `A`，committed index 5 |
 | 原節點重啟 | 節點 2 使用原資料目錄，以新 PID 62364 啟動；三個節點的 debug status 均顯示 `last_applied=5`、`lesson-x=A` |
 
+這是 V1 時期的實測。S3 起 GET 走 ReadIndex，不再寫進 log，所以 GET 不會讓 committed index 增加；
+重跑時 GET 回覆的 committed index 是讀取當下狀態機已套用到的位置。
+
 上表的 PUT 回傳 `null` 是「原本沒有值」；它不是 PUT 沒有寫入。三個節點的
 debug KV 供觀察恢復使用；新的客戶端讀取仍以通過共識的 GET 回覆為準。
 

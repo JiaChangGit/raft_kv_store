@@ -46,7 +46,7 @@ cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/no
 
 每個 client 同時只有一筆 logical request。TIMEOUT_UNKNOWN 使用相同 ID/sequence/content
 重試；新請求增加 sequence。Put/Delete 回傳先前值，Get 回傳當時值。
-所有新 GET 都進 Raft log；debug status 的 KV map 不提供線性化讀取契約。
+新的 GET 走 ReadIndex（[規格](docs/READ_INDEX.md)）：不寫進 Raft log，只由已在讀取到達後以多數確認自己仍是 leader 的節點，在狀態機套用到 readIndex 後回覆；debug status 的 KV map 不提供線性化讀取契約。
 停止節點可用 Ctrl-C；故障測試另外使用 SIGKILL，並保留原資料目錄重啟。
 
 重複執行上面的固定 client ID／sequence 時，既有資料目錄會保留 session，

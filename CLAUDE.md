@@ -20,7 +20,8 @@
 - S0（tag `s0-foundation-verified`）與 S1（tag `s1-storage-format-verified`）已完成。儲存層只有格式 2
   （`docs/STORAGE_FORMAT_V2.md`）；格式 1 的程式只存在於 tag `v1-baseline-verified-20261112`，`STORAGE_FORMAT_V1.md` 是歷史文件。
   S2（tag `s2-snapshot-compaction-verified`）已完成，規格與實作補記在 `docs/SNAPSHOT_COMPACTION.md`。
-  下一個階段是 S3（ReadIndex），開始前先寫規格並取得使用者同意。
+  S3（tag `s3-read-index-verified`）已完成，規格與補記在 `docs/READ_INDEX.md`；新的 GET 走 ReadIndex、不寫 log、不去重。
+  下一個階段是 S4（成員變更），開始前先寫規格並取得使用者同意；開始前要重讀 2015 年 raft-dev 郵件原文（見 `docs/reference/raft-notes.md`）。
 - 下方 `AGENTS.md` 仍記載 V1 的禁止事項（snapshot、membership change、ReadIndex、固定三節點）；
   依路線圖，各階段開始時才改寫對應條目，未到的階段仍須遵守。
 - 框架的增刪修候選與驗證方式另見 [框架改進建議](docs/FRAMEWORK_IMPROVEMENT_PROPOSALS.md)；

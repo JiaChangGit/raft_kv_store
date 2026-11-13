@@ -128,6 +128,27 @@ CASES=[
      "            if request.sequence < session.sequence {",
      "            if false && request.sequence < session.sequence {",
      "older_sequence_after_newer_is_rejected_without_effect","kv-state"),
+    # S3: ReadIndex (docs/READ_INDEX.md section 10).
+    ("s3_answer_without_confirmation","crates/raft-core/src/lib.rs",
+     "            Some(read_index) if read.round <= confirmed && last_applied >= read_index => {",
+     "            Some(read_index) if last_applied >= read_index => {",
+     "replies_to_requests_sent_before_the_read_do_not_confirm_it","raft-core"),
+    ("s3_round_not_advanced","crates/raft-core/src/lib.rs",
+     "        self.read_round += 1;\n",
+     "",
+     "replies_to_requests_sent_before_the_read_do_not_confirm_it","raft-core"),
+    ("s3_skip_current_term_commit_wait","crates/raft-core/src/lib.rs",
+     "        if self.role != Role::Leader\n            || self.state.term_at(self.commit_index) != Some(self.state.term)\n        {",
+     "        if self.role != Role::Leader {",
+     "read_waits_for_a_committed_entry_of_its_term","raft-core"),
+    ("s3_keep_reads_after_losing_leadership","crates/raft-core/src/lib.rs",
+     "        for read in self.pending_reads.drain(..) {",
+     "        for read in std::iter::empty::<PendingRead>() {",
+     "reads_fail_when_leadership_is_lost","raft-core"),
+    ("s3_answer_before_applied","crates/raft-core/src/lib.rs",
+     "            Some(read_index) if read.round <= confirmed && last_applied >= read_index => {",
+     "            Some(read_index) if read.round <= confirmed => {",
+     "read_waits_until_the_state_machine_reaches_read_index","raft-core"),
 ]
 
 def classify(test,stdout,stderr):
