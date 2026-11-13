@@ -242,7 +242,9 @@
         "tests/history/test_checker.py::test_only_the_latest_request_per_client_is_remembered",
         "tests/integration/test_snapshot.py::test_wal_stays_bounded_under_load",
         "tests/integration/test_snapshot.py::test_lagging_follower_catches_up_via_snapshot",
-        "tests/integration/test_snapshot.py::test_full_restart_recovers_from_snapshots_and_sessions"
+        "tests/integration/test_snapshot.py::test_full_restart_recovers_from_snapshots_and_sessions",
+        "scripts/test_mutation_check.py::ClassifyTests::test_failure_split_by_trace_output_is_still_detected",
+        "scripts/test_mutation_check.py::ClassifyTests::test_every_case_anchor_is_unique_in_the_current_source"
       ],
       "required_files": [
         "docs/SNAPSHOT_COMPACTION.md",
@@ -253,7 +255,10 @@
         "docs/lessons/03-compaction-without-install-snapshot/repro.sh",
         "docs/lessons/03-compaction-without-install-snapshot/expected-output.txt",
         "artifacts/reports/simulation.json",
-        "artifacts/reports/mutations.json"
+        "artifacts/reports/mutations.json",
+        "docs/lessons/04-mutation-checker-false-survivors/README.md",
+        "docs/lessons/04-mutation-checker-false-survivors/repro.sh",
+        "docs/lessons/04-mutation-checker-false-survivors/expected-output.txt"
       ]
     }
   },

@@ -8,8 +8,10 @@ import datetime
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
+import sys
 
 from verify_gate import snapshot
 
@@ -79,7 +81,7 @@ CASES=[
      "                    io::ErrorKind::NotFound,\n"
      "                    \"identity exists but raft.wal is missing; refusing to assume an empty node\",\n"
      "                ));",
-     "                write_atomically(&directory, \"raft.wal\", &file_header(node_id, PRISTINE))?;",
+     "                write_atomically(&directory, \"raft.wal\", &file_header(node_id, PRISTINE), \"init_before_rename_raft.wal\")?;",
      "existing_identity_without_wal_fails_closed","raft-storage"),
     # S2: snapshots and compaction (docs/SNAPSHOT_COMPACTION.md section 11).
     ("s2_compact_beyond_applied","crates/raft-core/src/lib.rs",
@@ -128,16 +130,41 @@ CASES=[
      "older_sequence_after_newer_is_rejected_without_effect","kv-state"),
 ]
 
+def classify(test,stdout,stderr):
+    """detected: the named test itself ran and failed. build_error and
+    test_not_run mean the test never ran, so they are not detections either;
+    survived means it ran and passed with the mistake in place."""
+    if re.search(r"^error(\[E\d+\])?: could not compile",stderr,re.MULTILINE):
+        return "build_error"
+    # The node's trace writes straight to the process's stdout, which libtest's
+    # capture does not intercept, so a trace line can split libtest's own
+    # "test NAME ... FAILED" line. Accept any of three signals that name the test:
+    # the result line, the panic message, or the closing "failures:" list.
+    name=rf"(\S+::)?{re.escape(test)}"
+    both=stdout+"\n"+stderr
+    signals=[rf"^test {name} \.\.\. FAILED$",rf"thread '{name}' (\(\d+\) )?panicked at",rf"^    {name}$"]
+    if any(re.search(signal,both,re.MULTILINE) for signal in signals):
+        return "detected"
+    # A misspelled or removed test name makes cargo run zero tests and succeed;
+    # that says nothing about the mutant, so do not call it a survivor.
+    if not re.search(rf"^test {name} \.\.\. ",both,re.MULTILINE):
+        return "test_not_run"
+    return "survived"
+
 def main():
+    only=set(sys.argv[1:])
+    unknown=only-{name for name,*_ in CASES}
+    if unknown: raise SystemExit(f"unknown mutation cases: {sorted(unknown)}")
+    cases=[case for case in CASES if not only or case[0] in only]
     # Fail before spending minutes on earlier cases if any anchor has drifted.
-    drifted=[name for name,file,original,*_ in CASES if (ROOT/file).read_text().count(original)!=1]
+    drifted=[name for name,file,original,*_ in cases if (ROOT/file).read_text().count(original)!=1]
     if drifted: raise RuntimeError(f"Mutation anchors missing or not unique: {drifted}")
     _,fingerprint=snapshot(ROOT)
     stamp=datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     destination=ROOT/"artifacts"/"mutations"/stamp
     destination.mkdir(parents=True)
     results=[]
-    for name,file,original,mutated,test,package in CASES:
+    for name,file,original,mutated,test,package in cases:
         work=destination/name
         shutil.copytree(ROOT/"crates",work/"crates")
         shutil.copytree(ROOT/"config",work/"config")
@@ -150,26 +177,28 @@ def main():
         env=dict(os.environ)
         env["CARGO_TARGET_DIR"]=str(destination/"build")
         scope=["-p",package] if package else ["--workspace"]
-        command=["cargo","test",*scope,test,"--","--nocapture"]
+        command=["cargo","test",*scope,test]
         result=subprocess.run(command,cwd=work,env=env,capture_output=True,timeout=300)
         (work/"stdout.txt").write_bytes(result.stdout)
         (work/"stderr.txt").write_bytes(result.stderr)
-        observed=result.stdout.decode(errors="replace")
-        # A build error is not a detection: the test itself must run and fail.
-        detected=result.returncode!=0 and "FAILED" in observed and f"{test} ... FAILED" in observed
-        results.append({"case":name,"test":test,"command":command,"exit_code":result.returncode,"detected":detected,"directory":str(work.relative_to(ROOT))})
-        print(f"{name}: {'detected' if detected else 'SURVIVED'} by {test}",flush=True)
+        outcome=classify(test,result.stdout.decode(errors="replace"),result.stderr.decode(errors="replace"))
+        detected=result.returncode!=0 and outcome=="detected"
+        results.append({"case":name,"test":test,"command":command,"exit_code":result.returncode,"outcome":outcome,"detected":detected,"directory":str(work.relative_to(ROOT))})
+        print(f"{name}: {outcome.upper() if not detected else 'detected'} ({test})",flush=True)
     if snapshot(ROOT)[1]!=fingerprint: raise RuntimeError("source changed while mutants were running")
     undetected=[r["case"] for r in results if not r["detected"]]
     report={"command":"python scripts/mutation_check.py","date":stamp,"source_fingerprint":fingerprint,
             "scope":"isolated source copies; original shipped code and acceptance unchanged",
             "case_count":len(results),"detected_count":len(results)-len(undetected),"undetected":undetected,
             "cases":results,"all_detected":not undetected}
+    report["partial"]=bool(only)
     text=json.dumps(report,indent=2)+"\n"
     (destination/"report.json").write_text(text)
-    latest=ROOT/"artifacts"/"reports"/"mutations.json"
-    latest.parent.mkdir(parents=True,exist_ok=True)
-    latest.write_text(text)
+    if not only:
+        # Only a full run may stand as the acceptance report.
+        latest=ROOT/"artifacts"/"reports"/"mutations.json"
+        latest.parent.mkdir(parents=True,exist_ok=True)
+        latest.write_text(text)
     print(json.dumps({k:v for k,v in report.items() if k!="cases"},indent=2))
     return 0 if report["all_detected"] else 1
 

@@ -1,0 +1,31 @@
+# Real output of the saturated_pool_spin mutant, run 20261112T172812Z (with --nocapture).
+# Kept: every line that does not start with '{' (the node's JSON trace lines were removed); each line cut to 200 characters.
+# Source: artifacts/mutations/20261112T172812Z/saturated_pool_spin/stdout.txt (git-ignored, local to the development machine).
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+running 1 test
+test tests::saturated_outbound_pool_does_not_starve_status ... {"commit_index":2,"details":{"event":"rpc_timeout","peer":2,"rpc_id":101615},"durable_index":2,"durable_sequence":1,"kind":"event","last_
+FAILED{"commit_index":2,"details":{"rpc_id":101617,"rpc_term":1,"to":2},"durable_index":2,"durable_sequence":1,"kind":"rpc_send","last_applied":2,"last_log_index":2,"node_id":1,"pid":94437,"role":"Lea
+
+
+failures:
+
+failures:
+    tests::saturated_outbound_pool_does_not_starve_status
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 1.01s
+

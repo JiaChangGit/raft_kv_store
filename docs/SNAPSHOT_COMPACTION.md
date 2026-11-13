@@ -322,4 +322,5 @@ InstallSnapshotResponse { term, success, last_included_index, next_offset }
 | §11 S1 被取代的測試 | `reserved_header_fields_must_be_pristine` 改為新測試 | 新測試是 `file_header_start_fields_validated`，記錄在契約的 `replaced_tests` |
 | 測試程式的偶發失敗 | 未預期 | 安裝快照的真實 process 測試與其他測試平行時偶發失敗，原因是 `flock` 被別的測試 fork 出的子程序暫時繼承。見 [教學 02](lessons/02-flaky-lock-inherited-by-child/README.md) |
 | 狀態機快照的驗證 | §6.2 列了 index 與大小限制 | 寫測試時發現 `restore` 沒有限制 session 中記住的回覆值大小，已補上 |
+| mutation 工具 | §11 只列出要植入的錯誤 | 完整執行時兩個案例被誤報為「存活」：一個因 trace 切開 libtest 的結果行，一個因植入的程式碼跟不上 S2 的修改而編譯失敗；另有一個錨點已失效。判定與錨點檢查已修正，見 [教學 04](lessons/04-mutation-checker-false-survivors/README.md) |
 | 模擬器的檢查範圍 | §10 列出 I6、I7 | 模擬器只檢查安全性，不檢查活性；拿掉 §9.4 的處理時模擬器仍全部通過，只有單元測試抓得到（教學 03 的練習） |

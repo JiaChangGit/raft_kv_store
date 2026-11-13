@@ -1,0 +1,29 @@
+
+== 1. A copy of the current code
+
+== 2a. The two real outputs captured during development (deterministic)
+   observed-1.txt: run 20261112T172812Z (with --nocapture).
+     test tests::saturated_outbound_pool_does_not_starve_status ... {"commit_index":2,"details":{"event":
+   old rule : SURVIVED
+   new rule : detected
+   observed-2.txt: run 20261113T012602Z (without --nocapture).
+     test tests::saturated_outbound_pool_does_not_starve_status ... {"commit_index":0,"details":{"rpc_id"
+   old rule : SURVIVED
+   new rule : detected
+
+== 2b. The same mutant run live now (interleaving is random; either outcome is possible)
+     test tests::saturated_outbound_pool_does_not_starve_status ... FAILED
+   old rule : detected
+   new rule : detected
+
+== 3. A mutant written for an older version of the code: it does not compile
+   compiler: error[E0061]: this function takes 4 arguments but 3 arguments were supplied
+   old rule : SURVIVED
+   new rule : build_error
+
+== 4. An anchor that drifted away
+   S1 anchor of wal_ignore_file_header occurs 0 times in the current source
+
+== RESULT
+2a and 3 are deterministic: the old rule says SURVIVED for a test that failed and for one that never ran;
+the current rule says 'detected' and 'build_error'. 2b depends on timing and is shown only for comparison.
