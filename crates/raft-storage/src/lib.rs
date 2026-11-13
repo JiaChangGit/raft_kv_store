@@ -874,14 +874,31 @@ fn failpoint(name: &str) {
     if !failpoint_selected(name) {
         return;
     }
-    if let Ok(marker) = std::env::var("RAFT_WAL_FAILPOINT_MARKER")
-        && let Ok(mut file) = File::create(marker)
-    {
-        let _ = file.write_all(name.as_bytes());
-        let _ = file.sync_all();
+    // Write, then rename: a test that sees the marker exist must also see its
+    // whole content. Creating it in place let a test read "" in between
+    // (docs/lessons/05-marker-seen-before-written/).
+    if let Ok(marker) = std::env::var("RAFT_WAL_FAILPOINT_MARKER") {
+        let temporary = format!("{marker}.tmp");
+        if let Ok(mut file) = File::create(&temporary) {
+            let _ = file.write_all(name.as_bytes());
+            let _ = file.sync_all();
+            marker_failpoint_gap();
+            let _ = fs::rename(&temporary, &marker);
+        }
     }
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+/// Lesson 05 widens the gap between writing the marker and publishing it, to
+/// show that a reader can never observe it half-written. Unset otherwise.
+fn marker_failpoint_gap() {
+    if let Some(millis) = std::env::var("RAFT_WAL_MARKER_GAP_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(millis));
     }
 }
 

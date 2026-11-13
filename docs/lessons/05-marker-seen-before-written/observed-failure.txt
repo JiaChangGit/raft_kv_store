@@ -1,0 +1,7 @@
+# stderr of acceptance phase 11, run P11-20261113T013940.571469Z (compiler progress lines removed).
+thread 'real_process_crash_during_initialization_recovers' (35105) panicked at crates/raft-storage/tests/crash_process.rs:130:5:
+assertion `left == right` failed
+  left: ""
+ right: "init_after_wal_before_identity"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p raft-storage --test crash_process`
