@@ -91,8 +91,49 @@ pub struct Oracle {
     pub election_count: u64,
     pub snapshots_taken: u64,
     pub snapshots_installed: u64,
+    /// Read id -> highest index known committed anywhere when the read began.
+    reads: BTreeMap<u64, u64>,
+    pub reads_served: u64,
+    pub reads_failed: u64,
 }
 impl Oracle {
+    fn read_started(&mut self, id: u64) {
+        let floor = self.committed.keys().next_back().copied().unwrap_or(0);
+        self.reads.insert(id, floor);
+    }
+    /// I8 Read Freshness (docs/READ_INDEX.md §8): the read reflects every entry
+    /// any node knew was committed when it began, and the node has applied it.
+    fn read_served(
+        &mut self,
+        node: usize,
+        id: u64,
+        read_index: u64,
+        applied: u64,
+    ) -> Result<(), String> {
+        let Some(floor) = self.reads.remove(&id) else {
+            return Err(format!("I8 read {id} answered twice or never issued"));
+        };
+        if read_index < floor {
+            return Err(format!(
+                "I8 Read Freshness node={} read={id} readIndex={read_index} < committed {floor} at start",
+                node + 1
+            ));
+        }
+        if applied < read_index {
+            return Err(format!(
+                "I8 read {id} answered before applying readIndex {read_index}"
+            ));
+        }
+        self.reads_served += 1;
+        Ok(())
+    }
+    fn read_failed(&mut self, id: u64) -> Result<(), String> {
+        self.reads
+            .remove(&id)
+            .ok_or_else(|| format!("I8 read {id} failed twice or never issued"))?;
+        self.reads_failed += 1;
+        Ok(())
+    }
     /// I6 Snapshot Safety: a snapshot at S must equal the committed prefix 1..=S.
     fn snapshot(&self, node: usize, snapshot: &Snapshot) -> Result<Model, String> {
         let model = Model::decode(snapshot)?;
@@ -517,8 +558,11 @@ impl Cluster {
                     self.timer(node, 100, Event::Heartbeat { generation })
                 }
                 Effect::Reject(_, _) => {}
-                // Not issued until S3 step 3 adds reads to the simulated workload.
-                Effect::ReadReady { .. } | Effect::ReadFailed { .. } => {}
+                Effect::ReadReady { id, read_index } => {
+                    let applied = self.models[node].index;
+                    self.oracle.read_served(node, id, read_index, applied)?;
+                }
+                Effect::ReadFailed { id, .. } => self.oracle.read_failed(id)?,
             }
         }
         Ok(())
@@ -638,22 +682,30 @@ impl Cluster {
             self.next_client += 1;
             let key = format!("k{}", self.next_client % 3);
             let operation = match self.next_client % 3 {
-                0 => Operation::Put {
+                0 => Some(Operation::Put {
                     key,
                     value: format!("v{}", self.next_client),
-                },
-                1 => Operation::Get { key },
-                _ => Operation::Delete { key },
-            };
-            self.event(
-                node,
-                Event::Propose(ClientRequest {
-                    client_id: self.next_client as u128,
-                    sequence: 1,
-                    operation,
                 }),
-                faults,
-            )?;
+                // S3: a GET is a ReadIndex read, never a log entry.
+                1 => None,
+                _ => Some(Operation::Delete { key }),
+            };
+            match operation {
+                Some(operation) => self.event(
+                    node,
+                    Event::Propose(ClientRequest {
+                        client_id: self.next_client as u128,
+                        sequence: 1,
+                        operation,
+                    }),
+                    faults,
+                )?,
+                None => {
+                    let id = self.next_client;
+                    self.oracle.read_started(id);
+                    self.event(node, Event::Read { id }, faults)?;
+                }
+            }
         }
         self.oracle
             .checkpoint(&self.nodes, &self.disks, &self.online)?;
@@ -692,6 +744,8 @@ pub struct Campaign {
     pub applies: u64,
     pub snapshots_taken: u64,
     pub snapshots_installed: u64,
+    pub reads_served: u64,
+    pub reads_failed: u64,
 }
 pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
     let mut report = Campaign {
@@ -709,11 +763,14 @@ pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
             "I5 State Machine Safety",
             "I6 Snapshot Safety",
             "I7 Compaction Only Covers Applied Entries",
+            "I8 Read Freshness",
         ],
         elections: 0,
         applies: 0,
         snapshots_taken: 0,
         snapshots_installed: 0,
+        reads_served: 0,
+        reads_failed: 0,
     };
     for seed in 0..seeds {
         let mut cluster = Cluster::new(seed);
@@ -731,6 +788,8 @@ pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
         report.applies += cluster.oracle.apply_count;
         report.snapshots_taken += cluster.oracle.snapshots_taken;
         report.snapshots_installed += cluster.oracle.snapshots_installed;
+        report.reads_served += cluster.oracle.reads_served;
+        report.reads_failed += cluster.oracle.reads_failed;
         if !report.failures.is_empty() {
             break;
         }
