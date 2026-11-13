@@ -279,13 +279,17 @@
       "pytest_nodes": [
         "tests/history/test_checker.py::test_reads_ignore_sessions_and_a_retried_get_reads_again",
         "tests/integration/test_read_index.py::test_reads_do_not_write_the_wal",
-        "tests/integration/test_read_index.py::test_new_leader_reads_the_latest_acknowledged_write"
+        "tests/integration/test_read_index.py::test_new_leader_reads_the_latest_acknowledged_write",
+        "scripts/test_mutation_check.py::IsolationTests::test_each_copy_builds_in_its_own_target_directory"
       ],
       "required_files": [
         "docs/READ_INDEX.md",
         "artifacts/reports/read-benchmark.json",
         "artifacts/reports/simulation.json",
-        "artifacts/reports/mutations.json"
+        "artifacts/reports/mutations.json",
+        "docs/lessons/06-mutants-sharing-a-build-directory/README.md",
+        "docs/lessons/06-mutants-sharing-a-build-directory/repro.sh",
+        "docs/lessons/06-mutants-sharing-a-build-directory/expected-output.txt"
       ]
     }
   },
@@ -436,11 +440,13 @@
       {
         "path": "artifacts/reports/mutations.json",
         "required_nonempty": [
-          "command"
+          "command",
+          "isolation"
         ],
         "required_positive_integer": [
           "case_count",
-          "detected_count"
+          "detected_count",
+          "control_count"
         ],
         "required_empty_array": [
           "undetected"
@@ -684,7 +690,8 @@
     "Snapshots are taken synchronously in the node's actor; their pause is traced but no availability bound is claimed.",
     "The key-value data and the number of clients are not bounded; compaction stops when a snapshot would exceed 64 MiB.",
     "ReadIndex reads are served by the leader only; there is no check-quorum, so an isolated leader's reads wait until they time out.",
-    "Read latency numbers in read-benchmark.json are recorded for comparison only and are not acceptance thresholds."
+    "Read latency numbers in read-benchmark.json are recorded for comparison only and are not acceptance thresholds.",
+    "Mutation reports before 2026-11-13 (S1, S2 tags) were produced with one shared cargo target directory and may mix mutants; only reports with an isolation field are isolated."
   ],
   "replaced_tests": {
     "reserved_header_fields_must_be_pristine": {

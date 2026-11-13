@@ -201,3 +201,5 @@
 | 模擬器不變量 I8 | 在暫存副本中植入「不等確認就回覆」與「不等本任期 entry commit」兩種錯誤，I8 分別在第 266 與第 1 個種子抓到。第二個實驗第一次執行時，植入腳本因錨點不符而沒有真的植入，卻仍執行並回報全部通過；見教學 04 §8 的補記 |
 | 量測（§9） | 同一台機器、300 次連續 GET：S2 版每個 GET 讓三個節點各寫一筆 WAL record，S3 版為 0；延遲 p50 1.83 ms → 1.51 ms、p99 2.84 ms → 2.32 ms。延遲改善不大，因為這台機器的 `fsync` 很快，而 ReadIndex 仍需一輪 heartbeat。最新數字以 `artifacts/reports/read-benchmark.json` 為準 |
 | 回覆的 `committed_index` | 採用讀取當下狀態機已套用到的 index（不小於 readIndex），與 §5 相同 |
+| mutation 工具的隔離 | 完整驗收前的 mutation 執行有 28/30 案例編譯失敗：所有案例共用一個 cargo 建置目錄，後面的案例沿用了 `quorum_one`（`QUORUM = 1`）的 `raft-protocol`，撞上本階段新增的 `QUORUM - 2`。改為每個案例獨立建置並先跑對照組；見 [教學 06](lessons/06-mutants-sharing-a-build-directory/README.md) |
+| 附帶修正的不安全預設值 | 計算「已確認回合」時，取不到值原本預設為 `u64::MAX`（全部確認）。固定三台節點時不會發生，但 S4 節點數可變後會讓 leader 未經多數確認就回覆。已改為 0（沒有確認）；對應的測試要等 S4 才寫得出來，已列入 S4 待辦 |

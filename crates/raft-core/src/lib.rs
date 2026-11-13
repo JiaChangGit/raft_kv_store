@@ -397,8 +397,13 @@ impl Core {
             .map(|peer| self.acked_round[peer as usize])
             .collect();
         acks.sort_unstable_by(|a, b| b.cmp(a));
-        // The leader counts itself; it needs quorum - 1 followers.
-        let confirmed = acks.get(QUORUM - 2).copied().unwrap_or(u64::MAX);
+        // The leader counts itself; it needs quorum - 1 followers. The highest
+        // round that many followers have acknowledged is confirmed. Too few
+        // followers means nothing is confirmed (0), never everything.
+        let confirmed = match QUORUM.saturating_sub(1) {
+            0 => u64::MAX,
+            needed => acks.get(needed - 1).copied().unwrap_or(0),
+        };
         let last_applied = self.last_applied;
         self.pending_reads.retain(|read| match read.read_index {
             Some(read_index) if read.round <= confirmed && last_applied >= read_index => {

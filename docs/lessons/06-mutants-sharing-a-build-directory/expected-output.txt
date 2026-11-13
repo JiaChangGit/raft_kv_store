@@ -1,0 +1,23 @@
+
+== 1. Copy 'mutant': QUORUM changed to 3 (file written now)
+   source: 6:pub const QUORUM: usize = 3;
+   copy mutant, target dir 'shared': cargo says 'Compiling raft-protocol'; test FAIL
+
+== 2. Copy 'clean': untouched, old modification times kept, SAME target directory
+   source: 6:pub const QUORUM: usize = 2;
+   copy clean, target dir 'shared': cargo says 'Fresh raft-protocol'; test FAIL
+   thread 'quorum_is_two_of_three' (149277) panicked at crates/raft-sim/tests/foundation.rs:35:9:
+   assertion failed: has_quorum(&pair)
+   note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+== 3. The same clean copy with its OWN target directory
+   copy clean, target dir 'own': cargo says 'Compiling raft-protocol'; test pass
+
+== 4. Why cargo reused it: both copies get the same -C metadata hash
+   mutant (step 1):         metadata=2ef2aa09102a885f
+   clean  (step 3, own dir): metadata=2ef2aa09102a885f
+   identical: in a shared target directory they occupy the same files
+
+== RESULT
+BUG REPRODUCED: the clean copy ran the mutant's raft-protocol and its quorum test failed.
+FIXED: with its own target directory the clean copy passes.

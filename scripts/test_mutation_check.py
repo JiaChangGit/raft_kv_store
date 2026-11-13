@@ -44,5 +44,34 @@ class ClassifyTests(unittest.TestCase):
             self.assertNotEqual(original, mutated, name)
 
 
+class IsolationTests(unittest.TestCase):
+    def test_each_copy_builds_in_its_own_target_directory(self):
+        # Lesson 06: a shared CARGO_TARGET_DIR let one mutant's crate leak into the next.
+        seen = []
+
+        class Done:
+            returncode, stdout, stderr = 0, b"", b""
+
+        def fake_run(command, cwd, env, capture_output, timeout):
+            seen.append((Path(cwd), Path(env["CARGO_TARGET_DIR"])))
+            return Done()
+
+        import tempfile
+        original = mutation.subprocess.run
+        mutation.subprocess.run = fake_run
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                for name in ("a", "b"):
+                    work = Path(tmp) / name
+                    work.mkdir()
+                    mutation.cargo_test(work, "some_test", "raft-core")
+        finally:
+            mutation.subprocess.run = original
+        (cwd_a, target_a), (cwd_b, target_b) = seen
+        self.assertNotEqual(target_a, target_b)
+        self.assertEqual(target_a.parent, cwd_a)
+        self.assertEqual(target_b.parent, cwd_b)
+
+
 if __name__ == "__main__":
     unittest.main()

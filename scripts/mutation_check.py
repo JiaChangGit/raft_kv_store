@@ -172,6 +172,27 @@ def classify(test,stdout,stderr):
         return "test_not_run"
     return "survived"
 
+def copy_source(work):
+    shutil.copytree(ROOT/"crates",work/"crates")
+    shutil.copytree(ROOT/"config",work/"config")
+    for f in ("Cargo.toml","Cargo.lock","rust-toolchain.toml"):
+        if (ROOT/f).exists(): shutil.copy2(ROOT/f,work/f)
+
+def cargo_test(work,test,package):
+    # Each copy builds in its own target directory. A shared one let cargo reuse
+    # another case's mutated crate: copies of the same workspace get the same
+    # metadata hash, and copied files keep their old modification times
+    # (docs/lessons/06-mutants-sharing-a-build-directory/).
+    env=dict(os.environ)
+    env["CARGO_TARGET_DIR"]=str(work/"target")
+    scope=["-p",package] if package else ["--workspace"]
+    command=["cargo","test",*scope,test]
+    result=subprocess.run(command,cwd=work,env=env,capture_output=True,timeout=600)
+    (work/"stdout.txt").write_bytes(result.stdout)
+    (work/"stderr.txt").write_bytes(result.stderr)
+    shutil.rmtree(work/"target",ignore_errors=True)  # created by this run only
+    return command,result
+
 def main():
     only=set(sys.argv[1:])
     unknown=only-{name for name,*_ in CASES}
@@ -184,24 +205,27 @@ def main():
     stamp=datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     destination=ROOT/"artifacts"/"mutations"/stamp
     destination.mkdir(parents=True)
+    # Control: without any mutation, every named test must run and pass;
+    # otherwise a later failure would say nothing about the planted mistake.
+    controls=[]
+    for test,package in sorted({(case[4],case[5] or "") for case in cases}):
+        work=destination/"control"/(package or "workspace")/test
+        copy_source(work)
+        command,result=cargo_test(work,test,package or None)
+        passed=result.returncode==0 and re.search(rf"^test (\S+::)?{re.escape(test)} \.\.\. ok$",result.stdout.decode(errors="replace"),re.MULTILINE) is not None
+        controls.append({"test":test,"package":package or None,"command":command,"exit_code":result.returncode,"passed":passed})
+        print(f"control {test}: {'ok' if passed else 'FAILED'}",flush=True)
+    if not all(c["passed"] for c in controls):
+        raise SystemExit(f"control runs failed: {[c['test'] for c in controls if not c['passed']]}")
     results=[]
     for name,file,original,mutated,test,package in cases:
         work=destination/name
-        shutil.copytree(ROOT/"crates",work/"crates")
-        shutil.copytree(ROOT/"config",work/"config")
-        for f in ("Cargo.toml","Cargo.lock","rust-toolchain.toml"):
-            if (ROOT/f).exists(): shutil.copy2(ROOT/f,work/f)
+        copy_source(work)
         path=work/file
         source=path.read_text()
         if source.count(original)!=1: raise RuntimeError(f"Mutation anchor not unique: {name}")
         path.write_text(source.replace(original,mutated,1))
-        env=dict(os.environ)
-        env["CARGO_TARGET_DIR"]=str(destination/"build")
-        scope=["-p",package] if package else ["--workspace"]
-        command=["cargo","test",*scope,test]
-        result=subprocess.run(command,cwd=work,env=env,capture_output=True,timeout=300)
-        (work/"stdout.txt").write_bytes(result.stdout)
-        (work/"stderr.txt").write_bytes(result.stderr)
+        command,result=cargo_test(work,test,package)
         outcome=classify(test,result.stdout.decode(errors="replace"),result.stderr.decode(errors="replace"))
         detected=result.returncode!=0 and outcome=="detected"
         results.append({"case":name,"test":test,"command":command,"exit_code":result.returncode,"outcome":outcome,"detected":detected,"directory":str(work.relative_to(ROOT))})
@@ -211,6 +235,8 @@ def main():
     report={"command":"python scripts/mutation_check.py","date":stamp,"source_fingerprint":fingerprint,
             "scope":"isolated source copies; original shipped code and acceptance unchanged",
             "case_count":len(results),"detected_count":len(results)-len(undetected),"undetected":undetected,
+            "isolation":"each copy builds in its own CARGO_TARGET_DIR (since 2026-11-13)",
+            "control_count":len(controls),"controls":controls,
             "cases":results,"all_detected":not undetected}
     report["partial"]=bool(only)
     text=json.dumps(report,indent=2)+"\n"

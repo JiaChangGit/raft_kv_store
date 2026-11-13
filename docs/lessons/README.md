@@ -12,6 +12,7 @@
 | 03 | [壓縮開了，leader 卻沒東西可送](03-compaction-without-install-snapshot/README.md) | 只做 log 壓縮、還沒有 InstallSnapshot，第一個落後的 follower 就讓 leader 停住 | 草稿（待有人照做一遍） |
 | 04 | [檢查測試的工具也會說錯話](04-mutation-checker-false-survivors/README.md) | mutation 工具把「已失敗」與「沒執行」的測試報成「存活」 | 草稿（待有人照做一遍） |
 | 05 | [檔案存在不代表內容寫好了](05-marker-seen-before-written/README.md) | 測試看到中斷點的標記檔就去讀，讀到空字串；從 V1 就有的潛在問題 | 草稿（待有人照做一遍） |
+| 06 | [原始碼寫 2，執行的卻是 3](06-mutants-sharing-a-build-directory/README.md) | mutation 案例共用 cargo 建置目錄，後面的案例悄悄執行前面案例植入錯誤的程式 | 草稿（待有人照做一遍） |
 
 ## 怎麼讀
 
