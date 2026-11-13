@@ -885,11 +885,18 @@ mod tests {
             reads_failed: 0,
         };
         let (client_tx, _client_rx) = mpsc::sync_channel(1);
+        // A write, so that the leader must replicate into the saturated pool.
+        // Until S3 this was a GET, which also replicated; since S3 a GET waits
+        // for ReadIndex and sends nothing, so the test stopped exercising the
+        // pool (docs/lessons/07-test-silently-stopped-testing/).
         tx.send(Input::Client(
             ClientRequest {
                 client_id: 1,
                 sequence: 1,
-                operation: Operation::Get { key: "x".into() },
+                operation: Operation::Put {
+                    key: "x".into(),
+                    value: "v".into(),
+                },
             },
             client_tx,
         ))
