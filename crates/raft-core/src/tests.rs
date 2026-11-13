@@ -7,6 +7,22 @@ fn entry(index: u64, term: u64) -> LogEntry {
         command: Command::NoOp,
     }
 }
+/// A configuration entry for nodes 1, 2 and 3 (docs/MEMBERSHIP.md §13).
+fn config(index: u64, term: u64) -> LogEntry {
+    LogEntry {
+        index,
+        term,
+        command: Command::Config {
+            voters: vec![1, 2, 3],
+        },
+    }
+}
+/// Test starting point: a three-node configuration at index 1, term 1. A node
+/// without any configuration does not campaign (S4), so tests that used to
+/// start from an empty log start here; their terms and indexes move up by one.
+fn three_nodes() -> DurableState {
+    DurableState::new(1, None, vec![config(1, 1)])
+}
 fn env(from: u8, to: u8, rpc_id: u64, body: Rpc) -> Envelope {
     Envelope {
         version: 1,
@@ -29,7 +45,7 @@ fn complete(n: &mut Core, effects: Vec<Effect>) -> Vec<Effect> {
     result
 }
 fn elected() -> (Core, Vec<Effect>) {
-    let mut n = Core::new(1, DurableState::default()).unwrap();
+    let mut n = Core::new(1, three_nodes()).unwrap();
     let fx = n.step(Event::ElectionTimeout { generation: 0 });
     let fx = complete(&mut n, fx);
     let request = fx
@@ -44,7 +60,7 @@ fn elected() -> (Core, Vec<Effect>) {
         1,
         request.rpc_id,
         Rpc::VoteResponse {
-            term: 1,
+            term: 2,
             granted: true,
         },
     )));
@@ -54,7 +70,7 @@ fn elected() -> (Core, Vec<Effect>) {
 }
 #[test]
 fn previous_term_entry_requires_current_term_commit() {
-    let state = DurableState::new(2, Some(1), vec![entry(1, 1), entry(2, 2)]);
+    let state = DurableState::new(2, Some(1), vec![config(1, 1), entry(2, 2)]);
     let mut n = Core::new(1, state).unwrap();
     n.role = Role::Leader;
     n.matches[1] = 2;
@@ -77,13 +93,16 @@ fn previous_term_entry_requires_current_term_commit() {
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
-    let mut before_sync = Core::new(1, DurableState::new(1, Some(1), vec![])).unwrap();
+    // Entry 1 is durable on the leader, entry 2 only in its RAM. Follower 2
+    // holds both: entry 1 is committed by {1, 2}, entry 2 is not.
+    let mut before_sync = Core::new(1, DurableState::new(1, Some(1), vec![config(1, 1)])).unwrap();
     before_sync.role = Role::Leader;
-    before_sync.state.push(entry(1, 1));
-    before_sync.matches[2] = 1;
+    before_sync.matches[1] = 1;
+    before_sync.state.push(entry(2, 1));
+    before_sync.matches[2] = 2;
     before_sync.advance_commit(&mut vec![]);
     assert_eq!(
-        before_sync.commit_index, 0,
+        before_sync.commit_index, 1,
         "RAM-only self match does not count"
     );
 }
@@ -109,7 +128,22 @@ fn conflicting_suffix_repaired() {
             leader_commit: 3,
         },
     )));
-    assert!(matches!(fx.first(), Some(Effect::Persist { .. })));
+    // The repair is durable before it is acknowledged. (Until S4 this checked
+    // that the barrier is the first effect; since lesson 09 the Applies of
+    // already committed entries come first, and only the reply must follow.)
+    let barrier = fx
+        .iter()
+        .position(|e| matches!(e, Effect::Persist { .. }))
+        .expect("the repair is a durability barrier");
+    let reply = fx
+        .iter()
+        .position(|e| matches!(e, Effect::Send(_)))
+        .expect("an AppendResponse");
+    assert!(barrier < reply, "{fx:?}");
+    assert!(
+        fx[barrier..].iter().all(|e| !matches!(e, Effect::Apply(_))),
+        "nothing is applied after the barrier"
+    );
     let fx = complete(&mut n, fx);
     assert_eq!(n.state.entries(), [entry(1, 1), entry(2, 3), entry(3, 3)]);
     assert_eq!(n.commit_index, 3);
@@ -196,9 +230,10 @@ fn append_response_cannot_inflate_match_index() {
         1,
         m.rpc_id,
         Rpc::AppendResponse {
-            term: 1,
+            term: 2,
             success: true,
             matched_through: 999,
+            last_log_index: 999,
         },
     )));
     assert_eq!(n.matched(2), 0);
@@ -218,9 +253,10 @@ fn append_response_cannot_inflate_match_index() {
         1,
         m.rpc_id,
         Rpc::AppendResponse {
-            term: 1,
+            term: 2,
             success: true,
-            matched_through: 1,
+            matched_through: 2,
+            last_log_index: 2,
         },
     )));
     assert_eq!(n.matched(2), 0, "retired correlation has no effect");
@@ -229,13 +265,14 @@ fn append_response_cannot_inflate_match_index() {
         1,
         current.rpc_id,
         Rpc::AppendResponse {
-            term: 1,
+            term: 2,
             success: true,
-            matched_through: 1,
+            matched_through: 2,
+            last_log_index: 2,
         },
     )));
-    assert_eq!(n.matched(2), 1);
-    assert_eq!(n.commit_index, 1);
+    assert_eq!(n.matched(2), 2);
+    assert_eq!(n.commit_index, 2);
     let heartbeat = fx
         .iter()
         .find_map(|e| match e {
@@ -249,12 +286,13 @@ fn append_response_cannot_inflate_match_index() {
         1,
         heartbeat.rpc_id,
         Rpc::AppendResponse {
-            term: 1,
+            term: 2,
             success: true,
             matched_through: 1000,
+            last_log_index: 1000,
         },
     )));
-    assert_eq!(n.matched(2), 1);
+    assert_eq!(n.matched(2), 2);
     let fx = n.step(Event::Message(env(
         2,
         1,
@@ -263,6 +301,7 @@ fn append_response_cannot_inflate_match_index() {
             term: 5,
             success: true,
             matched_through: 1000,
+            last_log_index: 1000,
         },
     )));
     assert_eq!(n.role, Role::Follower);
@@ -323,10 +362,11 @@ fn replicated_get_linearizable() {
             term: n.state.term,
             success: true,
             matched_through: end,
+            last_log_index: end,
         },
     )));
-    assert_eq!(n.commit_index, 2);
-    assert_eq!(n.last_applied, 2);
+    assert_eq!(n.commit_index, 3);
+    assert_eq!(n.last_applied, 3);
     assert!(fx.iter().any(|e| matches!(
         e,
         Effect::Apply(LogEntry {
@@ -362,12 +402,13 @@ fn heartbeat_does_not_retire_slow_valid_append() {
         1,
         request.rpc_id,
         Rpc::AppendResponse {
-            term: 1,
+            term: 2,
             success: true,
-            matched_through: 1,
+            matched_through: 2,
+            last_log_index: 2,
         },
     )));
-    assert_eq!(n.commit_index, 1);
+    assert_eq!(n.commit_index, 2);
     assert!(fx.iter().any(|e| matches!(e, Effect::Apply(_))));
     let before = n.matched(2);
     n.step(Event::RpcTimeout {

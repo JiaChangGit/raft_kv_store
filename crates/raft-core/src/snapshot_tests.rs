@@ -23,6 +23,9 @@ fn env(from: u8, to: u8, rpc_id: u64, body: Rpc) -> Envelope {
 fn base(index: u64, term: u64) -> LogBase {
     LogBase { index, term }
 }
+fn three() -> Voters {
+    Voters::from_ids(&[1, 2, 3]).unwrap()
+}
 fn sent(effects: &[Effect]) -> Vec<&Rpc> {
     effects
         .iter()
@@ -59,7 +62,7 @@ fn complete(n: &mut Core, effects: Vec<Effect>) -> Vec<Effect> {
 /// Node 1 as leader of term 4 whose log was compacted through index 5.
 fn compacted_leader(data: &[u8]) -> Core {
     let state = DurableState::with_base(3, Some(1), base(5, 2), vec![noop(6, 3), noop(7, 3)]);
-    let snapshot = Snapshot::new(base(5, 2), data.to_vec());
+    let snapshot = Snapshot::new(base(5, 2), three(), data.to_vec());
     let mut n = Core::restore(1, state, Some(snapshot)).unwrap();
     let fx = n.step(Event::ElectionTimeout { generation: 0 });
     let request = fx
@@ -115,16 +118,30 @@ fn restore_requires_the_snapshot_matching_the_base() {
         Core::restore(1, state.clone(), None).is_err(),
         "base without snapshot"
     );
-    let other = Snapshot::new(base(4, 2), b"x".to_vec());
+    let other = Snapshot::new(base(4, 2), three(), b"x".to_vec());
     assert!(Core::restore(1, state.clone(), Some(other)).is_err());
-    let core = Core::restore(1, state, Some(Snapshot::new(base(5, 2), b"x".to_vec()))).unwrap();
+    let core = Core::restore(
+        1,
+        state,
+        Some(Snapshot::new(base(5, 2), three(), b"x".to_vec())),
+    )
+    .unwrap();
     assert_eq!((core.commit_index, core.last_applied), (5, 5));
 }
 
 #[test]
 fn compaction_only_covers_applied_entries() {
-    let state = DurableState::new(2, Some(1), (1..=4).map(|i| noop(i, 2)).collect());
-    let mut n = Core::new(1, state).unwrap();
+    // Index 1 is the configuration (S4: a snapshot records the configuration
+    // at its position, so a log without one cannot be compacted).
+    let config = LogEntry {
+        index: 1,
+        term: 2,
+        command: Command::Config {
+            voters: vec![1, 2, 3],
+        },
+    };
+    let entries = std::iter::once(config).chain((2..=4).map(|i| noop(i, 2)));
+    let mut n = Core::new(1, DurableState::new(2, Some(1), entries.collect())).unwrap();
     n.commit_index = 3;
     n.last_applied = 3;
     for (what, index, data) in [
@@ -154,6 +171,11 @@ fn compaction_only_covers_applied_entries() {
     assert_eq!(state.base(), base(3, 2));
     assert_eq!(state.entries(), [noop(4, 2)]);
     assert_eq!(&*snapshot.data, b"state-3");
+    assert_eq!(
+        snapshot.voters,
+        three().bits(),
+        "the configuration at index 3"
+    );
     assert!(n.snapshot().is_none(), "not usable before it is durable");
     assert!(
         n.step(Event::Heartbeat { generation: 0 }).is_empty(),
@@ -290,7 +312,7 @@ fn install(rpc_id: u64, term: u64, at: LogBase, offset: u64, data: &[u8], whole:
             leader_id: 1,
             last_included_index: at.index,
             last_included_term: at.term,
-            voters: VOTERS,
+            voters: three().bits(),
             total_len: whole.len() as u64,
             total_crc: crc32c(whole),
             offset,
@@ -438,7 +460,7 @@ fn a_higher_term_install_persists_term_and_snapshot_together() {
 
 #[test]
 fn append_entries_that_start_before_the_base_count_as_matching() {
-    let snapshot = Snapshot::new(base(5, 2), b"s".to_vec());
+    let snapshot = Snapshot::new(base(5, 2), three(), b"s".to_vec());
     let state = DurableState::with_base(3, None, base(5, 2), vec![noop(6, 2)]);
     let append = |prev_log_index, prev_log_term, entries: Vec<LogEntry>| {
         Event::Message(env(

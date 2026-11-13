@@ -3,7 +3,7 @@ use raft_protocol::{DurableState, Snapshot, adopt_snapshot};
 use std::collections::BTreeMap;
 
 mod cluster;
-pub use cluster::{Campaign, Cluster, Oracle, TraceRow, run_campaign};
+pub use cluster::{Campaign, Cluster, Oracle, SLOTS, TraceRow, run_campaign};
 
 pub struct Random(u64);
 impl Random {

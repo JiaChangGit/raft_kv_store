@@ -58,6 +58,7 @@ fn answer(n: &mut Core, request: &Envelope, success: bool) -> Vec<Effect> {
             term: *term,
             success,
             matched_through: matched,
+            last_log_index: matched,
         },
     )));
     complete(n, fx)
@@ -81,10 +82,18 @@ fn failed(effects: &[Effect]) -> Vec<(u64, &'static str)> {
         .collect()
 }
 
-/// Node 1 just became leader of term 1. Its no-op (index 1) is not committed;
-/// returns the AppendEntries carrying it to nodes 2 and 3.
+/// Node 1 just became leader of term 2 in a three-node configuration (index 1,
+/// term 1). Its no-op (index 2) is not committed; returns the AppendEntries
+/// carrying it to nodes 2 and 3.
 fn new_leader() -> (Core, Envelope, Envelope) {
-    let mut n = Core::new(1, DurableState::default()).unwrap();
+    let three = LogEntry {
+        index: 1,
+        term: 1,
+        command: Command::Config {
+            voters: vec![1, 2, 3],
+        },
+    };
+    let mut n = Core::new(1, DurableState::new(1, None, vec![three])).unwrap();
     let fx = n.step(Event::ElectionTimeout { generation: 0 });
     let vote = fx
         .iter()
@@ -99,7 +108,7 @@ fn new_leader() -> (Core, Envelope, Envelope) {
         1,
         vote,
         Rpc::VoteResponse {
-            term: 1,
+            term: 2,
             granted: true,
         },
     )));
@@ -115,7 +124,7 @@ fn new_leader() -> (Core, Envelope, Envelope) {
 fn settled_leader() -> Core {
     let (mut n, to2, to3) = new_leader();
     let fx = answer(&mut n, &to2, true);
-    assert_eq!(n.commit_index, 1);
+    assert_eq!(n.commit_index, 2);
     if let Some(again) = append_to(&fx, 2) {
         answer(&mut n, &again, true);
     }
@@ -140,19 +149,19 @@ fn read_waits_for_a_committed_entry_of_its_term() {
         n.pending_reads[0].read_index, None,
         "step 1: no readIndex yet"
     );
-    // Node 2 acknowledges the no-op: it commits, and the read gets readIndex 1
+    // Node 2 acknowledges the no-op: it commits, and the read gets readIndex 2
     // and a new round. That same reply was sent before the round began, so it
     // does not confirm it.
     let fx = answer(&mut n, &to2, true);
-    assert_eq!(n.commit_index, 1);
-    assert_eq!(n.pending_reads[0].read_index, Some(1));
+    assert_eq!(n.commit_index, 2);
+    assert_eq!(n.pending_reads[0].read_index, Some(2));
     assert!(
         ready(&fx).is_empty(),
         "a reply from before the round cannot confirm it"
     );
     let round = append_to(&fx, 2).expect("a request of the new round goes to node 2");
     let fx = answer(&mut n, &round, true);
-    assert_eq!(ready(&fx), [(1, 1)]);
+    assert_eq!(ready(&fx), [(1, 2)]);
     assert!(n.pending_reads.is_empty());
 }
 
@@ -177,7 +186,7 @@ fn replies_to_requests_sent_before_the_read_do_not_confirm_it() {
     let fx = answer(&mut n, &new2, true);
     assert_eq!(
         ready(&fx),
-        [(5, 1)],
+        [(5, 2)],
         "one follower plus the leader is a majority"
     );
 }
@@ -193,7 +202,7 @@ fn one_round_confirms_every_waiting_read() {
     let fx = answer(&mut n, &round, true);
     assert_eq!(
         ready(&fx),
-        [(1, 1), (2, 1), (3, 1)],
+        [(1, 2), (2, 2), (3, 2)],
         "all three share one round"
     );
 }
@@ -205,7 +214,7 @@ fn a_same_term_rejection_still_confirms_leadership() {
     let request = append_to(&fx, 2).unwrap();
     // success = false (log mismatch) but in our term: still a vote of confidence.
     let fx = answer(&mut n, &request, false);
-    assert_eq!(ready(&fx), [(4, 1)]);
+    assert_eq!(ready(&fx), [(4, 2)]);
 }
 
 #[test]
@@ -213,19 +222,19 @@ fn read_waits_until_the_state_machine_reaches_read_index() {
     let mut n = settled_leader();
     let fx = n.step(Event::Read { id: 6 });
     let request = append_to(&fx, 2).unwrap();
-    n.last_applied = 0; // as if applying lagged behind the commit index
+    n.last_applied = 1; // as if applying lagged behind the commit index
     let fx = answer(&mut n, &request, true);
     assert!(
         ready(&fx).is_empty(),
         "confirmed but not yet applied through readIndex"
     );
-    n.last_applied = 1;
+    n.last_applied = 2;
     let fx = n.step(Event::Heartbeat {
         generation: n.heartbeat_generation,
     });
     let again = append_to(&fx, 2).unwrap();
     let fx = answer(&mut n, &again, true);
-    assert_eq!(ready(&fx), [(6, 1)]);
+    assert_eq!(ready(&fx), [(6, 2)]);
 }
 
 #[test]
@@ -234,19 +243,24 @@ fn reads_fail_when_leadership_is_lost() {
     let fx = n.step(Event::Read { id: 7 });
     let request = append_to(&fx, 2).unwrap();
     n.step(Event::Read { id: 8 });
-    // A higher term appears: node 1 steps down.
+    // A higher term appears: node 1 steps down. Since S4 a leader ignores a
+    // higher-term RequestVote (docs/MEMBERSHIP.md §9.4), so the higher term
+    // arrives the other way it can: from the leader of that term.
     let fx = n.step(Event::Message(env(
         3,
         1,
         77,
-        Rpc::RequestVote {
-            term: 2,
-            candidate_id: 3,
-            last_log_index: 1,
-            last_log_term: 1,
+        Rpc::AppendEntries {
+            term: 3,
+            leader_id: 3,
+            prev_log_index: 2,
+            prev_log_term: 2,
+            entries: vec![],
+            leader_commit: 2,
         },
     )));
     assert_eq!(n.role, Role::Follower);
+    assert_eq!(n.state.term, 3);
     assert_eq!(failed(&fx), [(7, "NOT_LEADER"), (8, "NOT_LEADER")]);
     // A late reply from the old term changes nothing.
     let late = n.step(Event::Message(env(
@@ -254,9 +268,10 @@ fn reads_fail_when_leadership_is_lost() {
         1,
         request.rpc_id,
         Rpc::AppendResponse {
-            term: 1,
+            term: 2,
             success: true,
-            matched_through: 1,
+            matched_through: 2,
+            last_log_index: 2,
         },
     )));
     assert!(ready(&late).is_empty());

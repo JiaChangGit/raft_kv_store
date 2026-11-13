@@ -24,26 +24,20 @@ fn simulation_seed_is_replayable() {
     assert_ne!(a, run(43));
     assert_eq!(a.len(), 5);
 }
+/// Replaces the V1 `quorum_is_two_of_three` together with raft-protocol's
+/// `majority_follows_the_configuration` (S4, docs/MEMBERSHIP.md §13): node IDs
+/// are 1..=7, and a core refuses any other identity.
 #[test]
-fn quorum_is_two_of_three() {
-    assert!(!has_quorum(&[]));
-    for id in NODES {
-        assert!(!has_quorum(&[id]));
-        assert!(!has_quorum(&[id, id]));
+fn node_ids_are_one_to_seven() {
+    for id in 1..=MAX_NODE {
+        assert!(valid_node(id));
+        assert!(raft_core::Core::new(id, DurableState::default()).is_ok());
     }
-    for pair in [[1, 2], [1, 3], [2, 3]] {
-        assert!(has_quorum(&pair));
+    for id in [0, MAX_NODE + 1, u8::MAX] {
+        assert!(!valid_node(id));
+        assert!(raft_core::Core::new(id, DurableState::default()).is_err());
     }
-    assert!(has_quorum(&NODES));
-    assert!(!has_quorum(&[1, 4]));
-    assert!(CoreIdCheck::invalid());
-}
-struct CoreIdCheck;
-impl CoreIdCheck {
-    fn invalid() -> bool {
-        raft_core::Core::new(0, DurableState::default()).is_err()
-            && raft_core::Core::new(4, DurableState::default()).is_err()
-    }
+    assert_eq!(raft_sim::SLOTS, 5, "the simulator uses five of them");
 }
 #[test]
 fn mock_disk_distinguishes_durable_and_volatile() {

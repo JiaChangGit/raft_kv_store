@@ -12,6 +12,21 @@ fn envelope(from: u8, to: u8, rpc_id: u64, body: Rpc) -> Envelope {
         body,
     }
 }
+/// Nodes 1, 2 and 3 configured at index 1, term 1. A node without any
+/// configuration never campaigns (docs/MEMBERSHIP.md §9.2).
+fn three_nodes() -> DurableState {
+    DurableState::new(
+        1,
+        None,
+        vec![LogEntry {
+            index: 1,
+            term: 1,
+            command: Command::Config {
+                voters: vec![1, 2, 3],
+            },
+        }],
+    )
+}
 fn execute(core: &mut Core, effects: Vec<Effect>) -> Vec<Envelope> {
     let mut output = vec![];
     for e in effects {
@@ -35,9 +50,9 @@ fn single_leader_per_term() {
             random ^= random << 17;
             random as usize % length
         };
-        let mut nodes: Vec<_> = NODES
+        let mut nodes: Vec<_> = [1, 2, 3]
             .into_iter()
-            .map(|id| Core::new(id, DurableState::default()).unwrap())
+            .map(|id| Core::new(id, three_nodes()).unwrap())
             .collect();
         let mut messages = VecDeque::new();
         for offset in 0..3 {
@@ -137,11 +152,11 @@ fn stale_candidate_rejected() {
 }
 #[test]
 fn vote_persist_intent_before_reply() {
-    let mut n = Core::new(1, DurableState::default()).unwrap();
+    let mut n = Core::new(1, three_nodes()).unwrap();
     let fx = n.step(Event::ElectionTimeout { generation: 0 });
     let barrier = match fx.first().unwrap() {
         Effect::Persist { barrier_id, state } => {
-            assert_eq!(state.term, 1);
+            assert_eq!(state.term, 2);
             assert_eq!(state.voted_for, Some(1));
             *barrier_id
         }
@@ -157,7 +172,7 @@ fn vote_persist_intent_before_reply() {
         })
         .is_empty()
     );
-    assert_eq!(n.state.term, 1);
+    assert_eq!(n.state.term, 2);
     assert!(n.persisted(barrier + 1).is_empty());
     assert!(
         n.step(Event::ElectionTimeout {

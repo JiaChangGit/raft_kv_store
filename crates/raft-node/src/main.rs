@@ -1,6 +1,6 @@
 //! One actor owns Raft + storage + state machine. Connection workers only move messages.
 use kv_state::StateMachine;
-use raft_core::{Core, Effect, Event, Role};
+use raft_core::{Change, Core, Effect, Event, Role, bootstrap_state};
 use raft_protocol::*;
 use raft_storage::Wal;
 use raft_transport::{DeadlineStream, correlated_response, read_frame, read_payload, write_frame};
@@ -19,6 +19,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const QUEUE: usize = 1024;
 const CONNECTIONS: usize = 128;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(3);
+/// docs/MEMBERSHIP.md §10: a catch-up may take about 10 s, plus the commit.
+const MEMBERSHIP_TIMEOUT: Duration = Duration::from_secs(15);
+/// The minimum election timeout (docs/MEMBERSHIP.md §9.4).
+const MIN_ELECTION: Duration = Duration::from_millis(400);
 const PEER_TIMEOUT: Duration = Duration::from_millis(350);
 /// Snapshot policy (dissertation section 5.1.2): compact once the WAL is larger
 /// than this many times the previous snapshot, and at least this large.
@@ -47,6 +51,8 @@ struct Config {
     #[serde(default)]
     routes: Vec<Route>,
 }
+/// The address book (docs/MEMBERSHIP.md §6): where nodes are, not who votes.
+/// Who votes is the configuration in the Raft log.
 impl Config {
     fn validate(&self) -> io::Result<()> {
         let ids: BTreeSet<_> = self.nodes.iter().map(|node| node.id).collect();
@@ -56,23 +62,19 @@ impl Config {
             .flat_map(|node| [node.peer_addr, node.client_addr])
             .collect();
         if self.cluster_id != CLUSTER
-            || self.nodes.len() != 3
-            || ids != BTreeSet::from(NODES)
-            || endpoints.len() != 6
+            || self.nodes.is_empty()
+            || !ids.iter().all(|id| valid_node(*id))
+            || ids.len() != self.nodes.len()
+            || endpoints.len() != 2 * self.nodes.len()
         {
             return Err(io::Error::other(
-                "config requires IDs 1/2/3 and six unique endpoints",
+                "config requires distinct node IDs 1..=7, each with two unique endpoints",
             ));
         }
         if !self.routes.is_empty() {
-            let expected: BTreeSet<_> = NODES
-                .into_iter()
-                .flat_map(|a| {
-                    NODES
-                        .into_iter()
-                        .filter(move |b| *b != a)
-                        .map(move |b| (a, b))
-                })
+            let expected: BTreeSet<_> = ids
+                .iter()
+                .flat_map(|a| ids.iter().filter(move |b| *b != a).map(move |b| (*a, *b)))
                 .collect();
             let actual: BTreeSet<_> = self
                 .routes
@@ -80,33 +82,48 @@ impl Config {
                 .map(|route| (route.from, route.to))
                 .collect();
             let addresses: BTreeSet<_> = self.routes.iter().map(|route| route.address).collect();
-            if self.routes.len() != 6
+            if self.routes.len() != expected.len()
                 || actual != expected
-                || addresses.len() != 6
+                || addresses.len() != expected.len()
                 || !addresses.is_disjoint(&endpoints)
             {
                 return Err(io::Error::other(
-                    "routed topology requires all six unique directional proxy endpoints",
+                    "routed topology requires a unique proxy endpoint for every direction",
                 ));
             }
         }
         Ok(())
     }
-    fn outbound(&self, from: NodeId, to: NodeId) -> SocketAddr {
+    fn has(&self, id: NodeId) -> bool {
+        self.nodes.iter().any(|node| node.id == id)
+    }
+    /// `None` for a node missing from this address book: it is unreachable.
+    fn outbound(&self, from: NodeId, to: NodeId) -> Option<SocketAddr> {
         if self.routes.is_empty() {
             self.nodes
                 .iter()
                 .find(|node| node.id == to)
-                .expect("validated peer")
-                .peer_addr
+                .map(|node| node.peer_addr)
         } else {
             self.routes
                 .iter()
                 .find(|route| route.from == from && route.to == to)
-                .expect("validated route; no direct fallback")
-                .address
+                .map(|route| route.address)
         }
     }
+}
+/// A membership request on the client port (docs/MEMBERSHIP.md §10).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MembershipWireRequest {
+    version: u8,
+    membership: MembershipWire,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+enum MembershipWire {
+    Add(NodeId),
+    Remove(NodeId),
 }
 
 enum Input {
@@ -115,6 +132,7 @@ enum Input {
     Peer(Envelope, Option<SyncSender<Envelope>>),
     RpcTimeout(NodeId, u64),
     Client(ClientRequest, SyncSender<ClientResponse>),
+    Membership(Change, SyncSender<ClientResponse>),
     Status(SyncSender<Value>),
 }
 
@@ -135,7 +153,12 @@ impl Drop for Active {
     }
 }
 
-fn peer_listener(listener: TcpListener, tx: SyncSender<Input>, id: NodeId) {
+fn peer_listener(
+    listener: TcpListener,
+    tx: SyncSender<Input>,
+    id: NodeId,
+    known: BTreeSet<NodeId>,
+) {
     let active = Arc::new(AtomicUsize::new(0));
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
@@ -143,6 +166,7 @@ fn peer_listener(listener: TcpListener, tx: SyncSender<Input>, id: NodeId) {
                 continue;
             };
             let tx = tx.clone();
+            let known = known.clone();
             thread::spawn(move || {
                 let _guard = guard;
                 let mut stream = stream;
@@ -162,7 +186,9 @@ fn peer_listener(listener: TcpListener, tx: SyncSender<Input>, id: NodeId) {
                         | Rpc::InstallSnapshot { leader_id, .. } => *leader_id == envelope.from,
                         _ => false,
                     };
-                    if !envelope.valid_for(id) || !sender_matches {
+                    // Only nodes in the address book may talk to us (§6).
+                    if !envelope.valid_for(id) || !sender_matches || !known.contains(&envelope.from)
+                    {
                         return;
                     }
                     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
@@ -217,6 +243,30 @@ fn client_listener(listener: TcpListener, tx: SyncSender<Input>) {
                             .unwrap_or_else(|_| ClientResponse::error("TIMEOUT_UNKNOWN", None))
                     };
                     let _ = write_frame(&mut stream, &reply);
+                } else if let Ok(wire) = serde_json::from_slice::<MembershipWireRequest>(&payload) {
+                    if wire.version != 1 {
+                        let _ = write_frame(
+                            &mut stream,
+                            &ClientResponse::error("INVALID_ARGUMENT", None),
+                        );
+                        return;
+                    }
+                    let change = match wire.membership {
+                        MembershipWire::Add(node) => Change::Add(node),
+                        MembershipWire::Remove(node) => Change::Remove(node),
+                    };
+                    let _ = stream.set_write_timeout(Some(MEMBERSHIP_TIMEOUT));
+                    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+                    let reply = if tx.try_send(Input::Membership(change, reply_tx)).is_err() {
+                        ClientResponse::error("TIMEOUT_UNKNOWN", None)
+                    } else {
+                        // The actor answers by its own deadline; this one only
+                        // guards against a stuck actor.
+                        reply_rx
+                            .recv_timeout(MEMBERSHIP_TIMEOUT + Duration::from_secs(1))
+                            .unwrap_or_else(|_| ClientResponse::error("TIMEOUT_UNKNOWN", None))
+                    };
+                    let _ = write_frame(&mut stream, &reply);
                 } else if serde_json::from_slice::<Value>(&payload)
                     .ok()
                     .is_some_and(|value| value.get("status") == Some(&Value::Bool(true)))
@@ -246,6 +296,11 @@ struct WaitingRead {
     reply: SyncSender<ClientResponse>,
     deadline: Instant,
 }
+/// A membership request waiting for the core (docs/MEMBERSHIP.md §7, §10).
+struct WaitingChange {
+    reply: SyncSender<ClientResponse>,
+    deadline: Instant,
+}
 struct Actor {
     core: Core,
     wal: Wal,
@@ -258,6 +313,8 @@ struct Actor {
     outbound_active: Arc<AtomicUsize>,
     rpc_deadlines: BTreeMap<(NodeId, u64), Instant>,
     election: Option<(Instant, u64)>,
+    /// When the minimum election timeout since the last reset ends (§9.4).
+    contact: Option<(Instant, u64)>,
     heartbeat: Option<(Instant, u64)>,
     random: u64,
     /// Test mode: compact every N applied entries instead of by WAL size.
@@ -269,6 +326,8 @@ struct Actor {
     next_read: u64,
     reads_served: u64,
     reads_failed: u64,
+    changes: BTreeMap<u64, WaitingChange>,
+    next_change: u64,
 }
 impl Actor {
     fn trace(&self, kind: &str, details: Value) {
@@ -291,6 +350,7 @@ impl Actor {
             Instant::now() + Duration::from_millis(400 + self.random % 401),
             generation,
         ));
+        self.contact = Some((Instant::now() + MIN_ELECTION, generation));
     }
     fn status(&self) -> Value {
         json!({"id":self.core.id,"pid":std::process::id(),"role":format!("{:?}",self.core.role),
@@ -304,6 +364,11 @@ impl Actor {
             "wal_bytes":self.wal.wal_bytes().unwrap_or(0),
             "snapshots_taken":self.snapshots_taken,"snapshots_installed":self.snapshots_installed,
             "reads_served":self.reads_served,"reads_failed":self.reads_failed,"reads_waiting":self.reads.len(),
+            "voters":self.core.configuration().map(|(_, voters)| voters.to_vec()),
+            "config_index":self.core.configuration().map(|(index, _)| index),
+            "config_committed":self.core.configuration().is_some_and(|(index, _)| index <= self.core.commit_index),
+            "member":self.core.configuration().is_some_and(|(_, voters)| voters.contains(self.core.id)),
+            "catching_up":self.core.catching_up(),"leader_contact":self.core.leader_contact(),
             "debug_only":true})
     }
     fn reject_pending(&mut self, status: &str) {
@@ -425,7 +490,11 @@ impl Actor {
                             (envelope.to, envelope.rpc_id),
                             Instant::now() + PEER_TIMEOUT + Duration::from_millis(25),
                         );
-                        let address = self.config.outbound(self.core.id, envelope.to);
+                        let Some(address) = self.config.outbound(self.core.id, envelope.to) else {
+                            // Not in our address book: retried at the same bounded
+                            // cadence as an unreachable peer.
+                            continue;
+                        };
                         let tx = self.tx.clone();
                         thread::spawn(move || {
                             let _guard = guard;
@@ -507,6 +576,28 @@ impl Actor {
                     &request,
                     ClientResponse::error(status, self.core.leader_hint),
                 ),
+                Effect::MembershipDone { id, voters, index } => {
+                    self.trace(
+                        "membership_done",
+                        json!({"change_id":id,"voters":voters.to_vec(),"index":index}),
+                    );
+                    if let Some(waiting) = self.changes.remove(&id) {
+                        let _ = waiting.reply.try_send(ClientResponse {
+                            status: "OK".into(),
+                            result: Some(voters.to_string()),
+                            leader_hint: Some(self.core.id),
+                            committed_index: Some(index),
+                        });
+                    }
+                }
+                Effect::MembershipFailed { id, status } => {
+                    self.trace("membership_failed", json!({"change_id":id,"status":status}));
+                    if let Some(waiting) = self.changes.remove(&id) {
+                        let _ = waiting
+                            .reply
+                            .try_send(ClientResponse::error(status, self.core.leader_hint));
+                    }
+                }
             }
         }
         Ok(())
@@ -542,6 +633,13 @@ impl Actor {
             }
             Event::Read { id } => json!({"event":"read","read_id":id}),
             Event::CancelRead { id } => json!({"event":"cancel_read","read_id":id}),
+            Event::ChangeMembership { id, change } => {
+                json!({"event":"change_membership","change_id":id,"change":format!("{change:?}")})
+            }
+            Event::CancelMembership { id } => json!({"event":"cancel_membership","change_id":id}),
+            Event::LeaderContactExpired { generation } => {
+                json!({"event":"leader_contact_expired","generation":generation})
+            }
         };
         self.trace("event", details);
         let effects = self.core.step(event);
@@ -612,7 +710,8 @@ impl Actor {
         self.reset_election(self.core.election_generation);
         self.trace(
             "started",
-            json!({"routed":!self.config.routes.is_empty(),"recovery_apply":0}),
+            json!({"routed":!self.config.routes.is_empty(),"recovery_apply":0,
+            "voters":self.core.configuration().map(|(_, voters)| voters.to_vec())}),
         );
         loop {
             let now = Instant::now();
@@ -639,6 +738,27 @@ impl Actor {
                 self.step(Event::Heartbeat { generation })?;
                 continue;
             }
+            if self.contact.is_some_and(|(deadline, _)| deadline <= now) {
+                let (_, generation) = self.contact.take().expect("checked timer");
+                self.step(Event::LeaderContactExpired { generation })?;
+                continue;
+            }
+            // A membership request whose deadline passed: the core forgets it
+            // and the administrator hears TIMEOUT_UNKNOWN (§7 step 10).
+            if let Some(id) = self
+                .changes
+                .iter()
+                .find(|(_, change)| change.deadline <= now)
+                .map(|(id, _)| *id)
+            {
+                let waiting = self.changes.remove(&id).expect("found");
+                let _ = waiting.reply.try_send(ClientResponse::error(
+                    "TIMEOUT_UNKNOWN",
+                    self.core.leader_hint,
+                ));
+                self.step(Event::CancelMembership { id })?;
+                continue;
+            }
             // A read whose client has given up is forgotten, so an isolated
             // leader's waiting list cannot grow without bound.
             if let Some(id) = self
@@ -655,11 +775,13 @@ impl Actor {
                 .election
                 .into_iter()
                 .chain(self.heartbeat)
+                .chain(self.contact)
                 .map(|(deadline, _)| deadline.saturating_duration_since(now))
                 .chain(
                     self.rpc_deadlines
                         .values()
                         .chain(self.reads.values().map(|read| &read.deadline))
+                        .chain(self.changes.values().map(|change| &change.deadline))
                         .map(|deadline| deadline.saturating_duration_since(now)),
                 )
                 .min()
@@ -695,8 +817,32 @@ impl Actor {
                         );
                     }
                 }
+                Ok(Input::Membership(change, reply)) => {
+                    // The leader must be able to reach a node it adds (§10).
+                    if let Change::Add(node) = change
+                        && !self.config.has(node)
+                    {
+                        let _ = reply.try_send(ClientResponse::error(
+                            "INVALID_ARGUMENT",
+                            self.core.leader_hint,
+                        ));
+                        continue;
+                    }
+                    self.next_change += 1;
+                    let id = self.next_change;
+                    self.changes.insert(
+                        id,
+                        WaitingChange {
+                            reply,
+                            deadline: Instant::now() + MEMBERSHIP_TIMEOUT,
+                        },
+                    );
+                    self.step(Event::ChangeMembership { id, change })?;
+                }
                 Ok(Input::Client(request, reply)) => {
-                    if self.pending.values().map(Vec::len).sum::<usize>() + self.reads.len()
+                    if self.pending.values().map(Vec::len).sum::<usize>()
+                        + self.reads.len()
+                        + self.changes.len()
                         >= QUEUE
                     {
                         let _ = reply.try_send(ClientResponse::error(
@@ -744,7 +890,7 @@ fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Usage: raft-node --id 1|2|3 --config FILE --data-dir PATH [--snapshot-every N]\n--snapshot-every N: test mode, compact after every N applied entries.\nDebug status: framed JSON {{\"status\":true}}; no local client GET."
+            "Usage: raft-node --id N --config FILE --data-dir PATH [--bootstrap] [--snapshot-every N]\n--id N: 1..=7, listed in the config's address book.\n--bootstrap: on an empty data directory only, start a new cluster whose\n  configuration is this node alone (docs/MEMBERSHIP.md §6). Bootstrap exactly\n  one node, once; add the others with tools/kv_admin.py.\n--snapshot-every N: test mode, compact after every N applied entries.\nDebug status: framed JSON {{\"status\":true}}; no local client GET."
         );
         return Ok(());
     }
@@ -752,16 +898,22 @@ fn main() -> io::Result<()> {
     let mut config_path = None;
     let mut data_dir = None;
     let mut snapshot_every = None;
-    for pair in args.chunks(2) {
-        if pair.len() != 2 {
-            return Err(io::Error::other("missing CLI argument value; see --help"));
+    let mut bootstrap = false;
+    let mut args = args.iter();
+    while let Some(flag) = args.next() {
+        if flag == "--bootstrap" {
+            bootstrap = true;
+            continue;
         }
-        match pair[0].as_str() {
-            "--id" => id = Some(pair[1].parse::<u8>().map_err(io::Error::other)?),
-            "--config" => config_path = Some(PathBuf::from(&pair[1])),
-            "--data-dir" => data_dir = Some(PathBuf::from(&pair[1])),
+        let value = args
+            .next()
+            .ok_or_else(|| io::Error::other("missing CLI argument value; see --help"))?;
+        match flag.as_str() {
+            "--id" => id = Some(value.parse::<u8>().map_err(io::Error::other)?),
+            "--config" => config_path = Some(PathBuf::from(value)),
+            "--data-dir" => data_dir = Some(PathBuf::from(value)),
             "--snapshot-every" => {
-                let every = pair[1].parse::<u64>().map_err(io::Error::other)?;
+                let every = value.parse::<u64>().map_err(io::Error::other)?;
                 if every == 0 {
                     return Err(io::Error::other("--snapshot-every must be at least 1"));
                 }
@@ -772,7 +924,7 @@ fn main() -> io::Result<()> {
     }
     let id = id
         .filter(|id| valid_node(*id))
-        .ok_or_else(|| io::Error::other("--id must be 1/2/3"))?;
+        .ok_or_else(|| io::Error::other("--id must be 1..=7"))?;
     let config_path = config_path.ok_or_else(|| io::Error::other("--config is required"))?;
     let data_dir = data_dir.ok_or_else(|| io::Error::other("--data-dir is required"))?;
     let config: Config =
@@ -782,10 +934,24 @@ fn main() -> io::Result<()> {
         .nodes
         .iter()
         .find(|node| node.id == id)
-        .expect("validated identity");
+        .ok_or_else(|| io::Error::other("--id is not in the config's address book"))?;
     let peer = TcpListener::bind(own.peer_addr)?;
     let client = TcpListener::bind(own.client_addr)?;
     let mut wal = Wal::open(data_dir, id)?;
+    // docs/MEMBERSHIP.md §6: only a never-used directory is bootstrapped, so the
+    // flag is harmless on restarts. The entry is durable before we serve.
+    let bootstrap = if !bootstrap {
+        "not_requested"
+    } else if *wal.state() == DurableState::default() && wal.snapshot().is_none() {
+        wal.save(&bootstrap_state(id))?;
+        "bootstrapped"
+    } else {
+        "ignored_existing_data"
+    };
+    println!(
+        "{}",
+        json!({"kind":"bootstrap","node_id":id,"outcome":bootstrap})
+    );
     wal.inject_sync_failure(std::env::var("RAFT_SYNC_FAILURE").ok().as_deref() == Some("1"));
     // Entries up to the snapshot are committed; everything after it is relearned.
     let kv = match wal.snapshot() {
@@ -796,7 +962,8 @@ fn main() -> io::Result<()> {
     let core = Core::restore(id, wal.state().clone(), wal.snapshot().cloned())
         .map_err(io::Error::other)?;
     let (tx, rx) = mpsc::sync_channel(QUEUE);
-    peer_listener(peer, tx.clone(), id);
+    let known = config.nodes.iter().map(|node| node.id).collect();
+    peer_listener(peer, tx.clone(), id, known);
     client_listener(client, tx.clone());
     let random = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -815,6 +982,7 @@ fn main() -> io::Result<()> {
         outbound_active: Arc::new(AtomicUsize::new(0)),
         rpc_deadlines: BTreeMap::new(),
         election: None,
+        contact: None,
         heartbeat: None,
         random,
         snapshot_every,
@@ -825,6 +993,8 @@ fn main() -> io::Result<()> {
         next_read: 0,
         reads_served: 0,
         reads_failed: 0,
+        changes: BTreeMap::new(),
+        next_change: 0,
     }
     .run()
 }
@@ -845,6 +1015,9 @@ mod tests {
                     .as_nanos()
             ));
         let wal = Wal::open(&dir, 1).unwrap();
+        // Index 1 configures nodes 1, 2 and 3: since S4 a leader replicates only
+        // to the voters of its configuration, and without one it would send
+        // nothing and the pool would never be exercised (lesson 07 again).
         let mut core = Core::new(
             1,
             DurableState::new(
@@ -853,7 +1026,9 @@ mod tests {
                 vec![LogEntry {
                     index: 1,
                     term: 1,
-                    command: Command::NoOp,
+                    command: Command::Config {
+                        voters: vec![1, 2, 3],
+                    },
                 }],
             ),
         )
@@ -873,6 +1048,7 @@ mod tests {
             outbound_active: Arc::new(AtomicUsize::new(CONNECTIONS)),
             rpc_deadlines: BTreeMap::new(),
             election: None,
+            contact: None,
             heartbeat: None,
             random: 1,
             snapshot_every: None,
@@ -883,6 +1059,8 @@ mod tests {
             next_read: 0,
             reads_served: 0,
             reads_failed: 0,
+            changes: BTreeMap::new(),
+            next_change: 0,
         };
         let (client_tx, _client_rx) = mpsc::sync_channel(1);
         // A write, so that the leader must replicate into the saturated pool.
@@ -917,7 +1095,7 @@ mod tests {
     fn config_rejects_partial_routes_and_wrong_cluster() {
         let mut config = Config {
             cluster_id: CLUSTER.into(),
-            nodes: NODES
+            nodes: [1, 2, 3]
                 .into_iter()
                 .map(|id| NodeConfig {
                     id,

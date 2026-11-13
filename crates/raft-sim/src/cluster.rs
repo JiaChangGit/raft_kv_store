@@ -1,12 +1,19 @@
 //! Independent observers check the production Core; no second election/replication implementation.
 use crate::{MockDisk, Random, Scheduler};
-use raft_core::{Core, Effect, Event, Role};
+use raft_core::{Change, Core, Effect, Event, Role, bootstrap_state};
 use raft_protocol::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Tiny chunks force every snapshot transfer to span several InstallSnapshot RPCs.
 const SIM_CHUNK: usize = 7;
+/// Node slots (IDs 1..=SLOTS). Five allow configurations of every size 1..=5,
+/// including the even sizes the 2015 counterexamples need (docs/MEMBERSHIP.md §12).
+pub const SLOTS: usize = 5;
+/// The minimum election timeout, as in the node program (§9.4).
+const MIN_ELECTION: u64 = 400;
+/// Virtual milliseconds the simulated administrator waits for an answer.
+const ADMIN_PATIENCE: u64 = 15_000;
 
 /// Stand-in state machine: the applied index and a CRC chained over every
 /// applied entry. Two nodes agree on it exactly when they applied the same
@@ -53,6 +60,10 @@ enum Scheduled {
     Deliver(Envelope),
     Restart(usize),
     Heal,
+    /// The administrator stops waiting for request `id` (§10).
+    AdminTimeout {
+        id: u64,
+    },
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct TraceRow {
@@ -64,6 +75,8 @@ pub struct TraceRow {
     pub commit: u64,
     pub applied: u64,
     pub durable: u64,
+    /// The node's configuration, e.g. "1,2,3"; empty if it has none.
+    pub voters: String,
 }
 
 /// Both logs hold indexes up to `end` and agree on every index both still hold.
@@ -79,14 +92,22 @@ fn extends(new: &DurableState, old: &DurableState) -> bool {
     agree_through(new, old, old.last_index())
 }
 
+/// The configuration at `index` of `core`'s log (the snapshot's if compacted).
+fn voters_at(core: &Core, index: LogIndex) -> Option<Voters> {
+    core.state
+        .config_at(index)
+        .map(|(_, voters)| voters)
+        .or_else(|| core.snapshot().and_then(|s| Voters::from_bits(s.voters)))
+}
+
 #[derive(Default)]
 pub struct Oracle {
     votes: BTreeMap<(u8, u64), u8>,
     leaders: BTreeMap<u64, u8>,
     committed: BTreeMap<u64, (LogEntry, u64)>,
     applied: BTreeMap<u64, LogEntry>,
-    actual_applied: [u64; 3],
-    observed_commit: [u64; 3],
+    actual_applied: [u64; SLOTS],
+    observed_commit: [u64; SLOTS],
     pub apply_count: u64,
     pub election_count: u64,
     pub snapshots_taken: u64,
@@ -95,6 +116,11 @@ pub struct Oracle {
     reads: BTreeMap<u64, u64>,
     pub reads_served: u64,
     pub reads_failed: u64,
+    /// Committed configurations seen, by size (index 0 unused).
+    pub configuration_sizes: [u64; SLOTS + 1],
+    pub membership_changes: u64,
+    pub membership_failures: BTreeMap<String, u64>,
+    pub leader_removals: u64,
 }
 impl Oracle {
     fn read_started(&mut self, id: u64) {
@@ -134,10 +160,12 @@ impl Oracle {
         self.reads_failed += 1;
         Ok(())
     }
-    /// I6 Snapshot Safety: a snapshot at S must equal the committed prefix 1..=S.
+    /// I6 Snapshot Safety: a snapshot at S must equal the committed prefix 1..=S,
+    /// and record the configuration in effect at S (docs/MEMBERSHIP.md §5).
     fn snapshot(&self, node: usize, snapshot: &Snapshot) -> Result<Model, String> {
         let model = Model::decode(snapshot)?;
         let mut digest = 0;
+        let mut voters = None;
         for index in 1..=snapshot.base.index {
             let Some((entry, _)) = self.committed.get(&index) else {
                 return Err(format!(
@@ -146,6 +174,7 @@ impl Oracle {
                 ));
             };
             digest = Model::fold(digest, entry);
+            voters = entry.command.config().or(voters);
             if index == snapshot.base.index && entry.term != snapshot.base.term {
                 return Err(format!("I6 snapshot node={} base term mismatch", node + 1));
             }
@@ -157,27 +186,49 @@ impl Oracle {
                 snapshot.base.index
             ));
         }
+        if voters.map(Voters::bits) != Some(snapshot.voters) {
+            return Err(format!(
+                "I6 snapshot node={} index={} records the wrong configuration",
+                node + 1,
+                snapshot.base.index
+            ));
+        }
         Ok(model)
     }
+    /// A new leader: elected by durable votes of a majority of its configuration
+    /// (its own vote counts only if it is a member), unique in its term (I1),
+    /// holding every entry committed in earlier terms (I4).
     fn leader_transition(&mut self, core: &Core) -> Result<(), String> {
         if core.role != Role::Leader {
             return Ok(());
         }
-        let votes = self
+        let term = core.state.term;
+        let Some((_, voters)) = core.configuration() else {
+            return Err(format!("leader without configuration node={}", core.id));
+        };
+        let granted = self
             .votes
             .iter()
-            .filter(|((_, term), candidate)| *term == core.state.term && **candidate == core.id)
-            .count();
-        if votes < 2 {
-            return Err("leader transition lacks durable vote quorum".into());
+            .filter(|((voter, at), candidate)| {
+                *at == term && **candidate == core.id && voters.contains(*voter)
+            })
+            .fold(Voters::default(), |set, ((voter, _), _)| set.with(*voter));
+        if !voters.is_quorum(granted) {
+            return Err(format!(
+                "leader node={} term={term} lacks a durable vote majority of {voters}",
+                core.id
+            ));
         }
-        if let Some(previous) = self.leaders.insert(core.state.term, core.id) {
+        if let Some(previous) = self.leaders.insert(term, core.id) {
             if previous != core.id {
-                return Err(format!("I1 Election Safety term={}", core.state.term));
+                return Err(format!("I1 Election Safety term={term}"));
             }
         } else {
             self.election_count += 1;
         }
+        self.completeness(core)
+    }
+    fn completeness(&self, core: &Core) -> Result<(), String> {
         for (index, (entry, commit_term)) in &self.committed {
             // Indexes the leader compacted are checked through its snapshot (I6).
             if *commit_term < core.state.term
@@ -185,8 +236,8 @@ impl Oracle {
                 && core.state.entry(*index) != Some(entry)
             {
                 return Err(format!(
-                    "I4 Leader Completeness transition node={} index={index}",
-                    core.id
+                    "I4 Leader Completeness node={} term={} index={index}",
+                    core.id, core.state.term
                 ));
             }
         }
@@ -201,6 +252,19 @@ impl Oracle {
         }
         Ok(())
     }
+    fn commit_observed(&mut self, entry: &LogEntry, term: u64) -> Result<(), String> {
+        if let Some((old, _)) = self.committed.get(&entry.index) {
+            if old != entry {
+                return Err(format!("committed conflict index={}", entry.index));
+            }
+        } else {
+            if let Some(voters) = entry.command.config() {
+                self.configuration_sizes[voters.len()] += 1;
+            }
+            self.committed.insert(entry.index, (entry.clone(), term));
+        }
+        Ok(())
+    }
     fn apply(&mut self, node: usize, core: &Core, entry: &LogEntry) -> Result<(), String> {
         if entry.index != self.actual_applied[node] + 1 || entry.index > core.commit_index {
             return Err(format!(
@@ -211,14 +275,7 @@ impl Oracle {
         }
         self.actual_applied[node] = entry.index;
         self.apply_count += 1;
-        if let Some((old, _)) = self.committed.get(&entry.index) {
-            if old != entry {
-                return Err(format!("committed apply conflict index={}", entry.index));
-            }
-        } else {
-            self.committed
-                .insert(entry.index, (entry.clone(), core.state.term));
-        }
+        self.commit_observed(entry, core.state.term)?;
         if let Some(old) = self.applied.insert(entry.index, entry.clone())
             && old != *entry
         {
@@ -226,11 +283,49 @@ impl Oracle {
         }
         Ok(())
     }
+    /// I9 (docs/MEMBERSHIP.md §12): every configuration entry a leader appends
+    /// (a) follows a committed entry of its term, (b) follows only committed
+    /// configurations, and (c) differs from the previous one by exactly one node.
+    /// `new` is the state the leader is about to persist; nothing else has
+    /// changed its commit index since it appended (see the barrier rule).
+    fn change_rule(
+        &self,
+        core: &Core,
+        old_last: LogIndex,
+        new: &DurableState,
+    ) -> Result<(), String> {
+        if core.role != Role::Leader {
+            return Ok(());
+        }
+        let first_new = old_last + 1;
+        for entry in new
+            .entries_from(first_new.max(new.base().index + 1))
+            .unwrap_or(&[])
+        {
+            let Some(voters) = entry.command.config() else {
+                continue;
+            };
+            let before = new
+                .config_at(entry.index - 1)
+                .or_else(|| voters_at(core, new.base().index).map(|v| (new.base().index, v)));
+            let committed_in_term = core.state.term_at(core.commit_index) == Some(core.state.term);
+            let previous_committed = before.is_some_and(|(index, _)| index <= core.commit_index);
+            let one_apart =
+                before.is_some_and(|(_, old)| (old.bits() ^ voters.bits()).count_ones() == 1);
+            if !(committed_in_term && previous_committed && one_apart) {
+                return Err(format!(
+                    "I9 change rule node={} index={} term-commit={committed_in_term} previous-committed={previous_committed} one-apart={one_apart}",
+                    core.id, entry.index
+                ));
+            }
+        }
+        Ok(())
+    }
     fn checkpoint(
         &mut self,
-        nodes: &[Core; 3],
-        disks: &[MockDisk; 3],
-        online: &[bool; 3],
+        nodes: &[Core; SLOTS],
+        disks: &[MockDisk; SLOTS],
+        online: &[bool; SLOTS],
     ) -> Result<(), String> {
         for (i, n) in nodes.iter().enumerate() {
             // I7: only applied entries may be compacted.
@@ -239,8 +334,8 @@ impl Oracle {
             }
         }
         // I3 is checked against independently stored durable logs, even for stopped nodes.
-        for a in 0..3 {
-            for b in a + 1..3 {
+        for a in 0..SLOTS {
+            for b in a + 1..SLOTS {
                 // Compare the indexes both disks still hold; compacted prefixes are
                 // covered by the snapshot check (I6).
                 let (left_log, right_log) = (&disks[a].durable, &disks[b].durable);
@@ -276,52 +371,25 @@ impl Oracle {
                 }
                 self.observed_commit[i] = n.commit_index;
                 if n.role == Role::Leader {
-                    let votes = self
-                        .votes
-                        .iter()
-                        .filter(|((_, term), candidate)| {
-                            *term == n.state.term && **candidate == n.id
-                        })
-                        .count();
-                    if votes < 2 {
-                        return Err(format!(
-                            "I1 leader without durable vote quorum node={} term={}",
-                            n.id, n.state.term
-                        ));
-                    }
-                    if let Some(old) = self.leaders.insert(n.state.term, n.id) {
-                        if old != n.id {
+                    match self.leaders.get(&n.state.term) {
+                        // A leader elected inside a durability barrier (a single-voter
+                        // configuration) is first seen here.
+                        None => self.leader_transition(n)?,
+                        Some(id) if *id != n.id => {
                             return Err(format!("I1 Election Safety term={}", n.state.term));
                         }
-                    } else {
-                        self.election_count += 1;
-                    }
-                    for (index, (entry, commit_term)) in &self.committed {
-                        if *commit_term < n.state.term
-                            && *index > n.state.base().index
-                            && n.state.entry(*index) != Some(entry)
-                        {
-                            return Err(format!(
-                                "I4 Leader Completeness node={} term={} index={index}",
-                                n.id, n.state.term
-                            ));
-                        }
+                        Some(_) => self.completeness(n)?,
                     }
                 }
-                for entry in n
+                let committed: Vec<LogEntry> = n
                     .state
                     .entries()
                     .iter()
                     .take_while(|entry| entry.index <= n.commit_index)
-                {
-                    if let Some((old, _)) = self.committed.get(&entry.index) {
-                        if old != entry {
-                            return Err(format!("committed conflict index={}", entry.index));
-                        }
-                    } else {
-                        self.committed
-                            .insert(entry.index, (entry.clone(), n.state.term));
-                    }
+                    .cloned()
+                    .collect();
+                for entry in committed {
+                    self.commit_observed(&entry, n.state.term)?;
                 }
             }
         }
@@ -329,20 +397,30 @@ impl Oracle {
     }
 }
 
+/// The simulated administrator's outstanding request.
+#[derive(Clone, Copy)]
+struct AdminRequest {
+    id: u64,
+    node: usize,
+    incarnation: u64,
+}
+
 pub struct Cluster {
-    pub nodes: [Core; 3],
-    pub disks: [MockDisk; 3],
-    pub online: [bool; 3],
+    pub nodes: [Core; SLOTS],
+    pub disks: [MockDisk; SLOTS],
+    pub online: [bool; SLOTS],
     queue: Scheduler<Scheduled>,
     random: Random,
-    incarnation: [u64; 3],
-    blocked: [[bool; 3]; 3],
+    incarnation: [u64; SLOTS],
+    blocked: [[bool; SLOTS]; SLOTS],
     pub oracle: Oracle,
     pub trace: Vec<TraceRow>,
     next_client: u64,
+    next_admin: u64,
+    admin: Option<AdminRequest>,
     pub seed: u64,
     pub processed: u64,
-    pub models: [Model; 3],
+    pub models: [Model; SLOTS],
     /// Compact after this many applied entries; `None` never compacts (control group).
     pub snapshot_every: Option<u64>,
 }
@@ -350,29 +428,42 @@ impl Cluster {
     pub fn new(seed: u64) -> Self {
         let mut s = Self {
             nodes: std::array::from_fn(|i| {
-                let mut core = Core::new(i as u8 + 1, DurableState::default()).unwrap();
+                let id = i as u8 + 1;
+                // Dissertation §4.4: node 1 bootstraps alone; the rest start empty
+                // and are added by the simulated administrator.
+                let state = if id == 1 {
+                    bootstrap_state(1)
+                } else {
+                    DurableState::default()
+                };
+                let mut core = Core::new(id, state).unwrap();
                 core.set_chunk_size(SIM_CHUNK);
                 core
             }),
             disks: std::array::from_fn(|_| MockDisk::default()),
-            online: [true; 3],
+            online: [true; SLOTS],
             queue: Scheduler::default(),
             random: Random::new(seed),
-            incarnation: [0; 3],
-            blocked: [[false; 3]; 3],
+            incarnation: [0; SLOTS],
+            blocked: [[false; SLOTS]; SLOTS],
             oracle: Oracle::default(),
             trace: vec![],
             next_client: 0,
+            next_admin: 0,
+            admin: None,
             seed,
             processed: 0,
-            models: [Model::default(); 3],
+            models: [Model::default(); SLOTS],
             // Dissertation 5.1.3 recommends snapshotting after every entry while
             // developing; include that, a few small intervals and a control group.
             snapshot_every: [None, Some(1), Some(2), Some(3), Some(5), Some(8)]
                 [(seed % 6) as usize],
         };
-        for i in 0..3 {
-            let duration = 400 + s.random.next_u64() % 401;
+        // The bootstrap entry is durable before the node starts (§6).
+        s.disks[0].write(s.nodes[0].state.clone());
+        s.disks[0].sync().expect("no fault injected yet");
+        for i in 0..SLOTS {
+            let duration = MIN_ELECTION + s.random.next_u64() % 401;
             s.timer(i, duration, Event::ElectionTimeout { generation: 0 });
         }
         s
@@ -398,18 +489,24 @@ impl Cluster {
             commit: n.commit_index,
             applied: n.last_applied,
             durable: n.durable_index,
+            voters: n
+                .configuration()
+                .map(|(_, voters)| voters.to_string())
+                .unwrap_or_default(),
         });
     }
-    pub fn partition(&mut self, node: usize) {
-        for peer in 0..3 {
-            if peer != node {
-                self.blocked[node][peer] = true;
-                self.blocked[peer][node] = true;
+    /// Cut every link between the nodes in `side` and the rest.
+    pub fn partition(&mut self, side: [bool; SLOTS]) {
+        for a in 0..SLOTS {
+            for b in 0..SLOTS {
+                if side[a] != side[b] {
+                    self.blocked[a][b] = true;
+                }
             }
         }
     }
     pub fn heal(&mut self) {
-        self.blocked = [[false; 3]; 3];
+        self.blocked = [[false; SLOTS]; SLOTS];
     }
     fn crash(&mut self, node: usize, survives: bool) -> Result<(), String> {
         self.disks[node].crash(survives);
@@ -428,7 +525,13 @@ impl Cluster {
                 "crash"
             },
         );
-        let delay = 50 + self.random.next_u64() % 300;
+        // One crash in eight is a long outage, longer than a catch-up may take,
+        // so adding a node that is down fails (docs/MEMBERSHIP.md §8).
+        let delay = if self.random.next_u64().is_multiple_of(8) {
+            11_000 + self.random.next_u64() % 2_000
+        } else {
+            50 + self.random.next_u64() % 300
+        };
         self.queue.schedule(delay, Scheduled::Restart(node));
         Ok(())
     }
@@ -439,6 +542,11 @@ impl Cluster {
             }
             match effect {
                 Effect::Persist { barrier_id, state } => {
+                    self.oracle.change_rule(
+                        &self.nodes[node],
+                        self.disks[node].volatile.last_index(),
+                        &state,
+                    )?;
                     let old_term = self.disks[node].durable.term;
                     self.disks[node].write(state);
                     // Crash between write and sync permits either complete survival or loss.
@@ -551,8 +659,13 @@ impl Cluster {
                     self.models[node].apply(&entry)?;
                 }
                 Effect::ResetElection { generation } => {
-                    let duration = 400 + self.random.next_u64() % 401;
+                    let duration = MIN_ELECTION + self.random.next_u64() % 401;
                     self.timer(node, duration, Event::ElectionTimeout { generation });
+                    self.timer(
+                        node,
+                        MIN_ELECTION,
+                        Event::LeaderContactExpired { generation },
+                    );
                 }
                 Effect::ResetHeartbeat { generation } => {
                     self.timer(node, 100, Event::Heartbeat { generation })
@@ -563,17 +676,43 @@ impl Cluster {
                     self.oracle.read_served(node, id, read_index, applied)?;
                 }
                 Effect::ReadFailed { id, .. } => self.oracle.read_failed(id)?,
+                Effect::MembershipDone { id, .. } => self.admin_answered(id, None),
+                Effect::MembershipFailed { id, status } => self.admin_answered(id, Some(status)),
             }
         }
         Ok(())
+    }
+    fn admin_answered(&mut self, id: u64, failure: Option<&str>) {
+        if self.admin.is_some_and(|request| request.id == id) {
+            self.admin = None;
+        }
+        match failure {
+            None => self.oracle.membership_changes += 1,
+            Some(status) => {
+                *self
+                    .oracle
+                    .membership_failures
+                    .entry(status.to_string())
+                    .or_default() += 1
+            }
+        }
     }
     fn event(&mut self, node: usize, event: Event, faults: bool) -> Result<(), String> {
         if !self.online[node] {
             return Ok(());
         }
         let was_leader = self.nodes[node].role == Role::Leader;
+        let was_candidate = self.nodes[node].role == Role::Candidate;
         let old_term = self.nodes[node].state.term;
         let old_log = self.nodes[node].state.clone();
+        // I10 (docs/MEMBERSHIP.md §12): a node without configuration, or one
+        // that knows it was removed, never becomes a candidate.
+        let must_not_campaign = match self.nodes[node].configuration() {
+            None => true,
+            Some((index, voters)) => {
+                !voters.contains(node as u8 + 1) && self.nodes[node].commit_index >= index
+            }
+        };
         let kind = match &event {
             Event::ElectionTimeout { .. } => "election-timer",
             Event::Heartbeat { .. } => "heartbeat",
@@ -583,8 +722,14 @@ impl Cluster {
             Event::Compact { .. } => "compact",
             Event::Read { .. } => "read",
             Event::CancelRead { .. } => "cancel-read",
+            Event::ChangeMembership { .. } => "change-membership",
+            Event::CancelMembership { .. } => "cancel-membership",
+            Event::LeaderContactExpired { .. } => "leader-contact-expired",
         };
         let effects = self.nodes[node].step(event);
+        if must_not_campaign && !was_candidate && self.nodes[node].role == Role::Candidate {
+            return Err(format!("I10 campaign without the right node={}", node + 1));
+        }
         // Observe election before a crash-prone NoOp persist can hide the transition.
         if !was_leader && self.nodes[node].role == Role::Leader {
             self.oracle.leader_transition(&self.nodes[node])?;
@@ -598,9 +743,19 @@ impl Cluster {
         }
         self.execute(node, effects, faults)?;
         if was_leader && self.online[node] && self.nodes[node].role != Role::Leader {
+            if self.nodes[node].state.term == old_term {
+                // Stepped down without a higher term: removed from its committed
+                // configuration (§9.3).
+                self.oracle.leader_removals += 1;
+            }
             let generation = self.nodes[node].election_generation;
-            let delay = 400 + self.random.next_u64() % 401;
+            let delay = MIN_ELECTION + self.random.next_u64() % 401;
             self.timer(node, delay, Event::ElectionTimeout { generation });
+            self.timer(
+                node,
+                MIN_ELECTION,
+                Event::LeaderContactExpired { generation },
+            );
         }
         self.record(node, kind);
         self.maybe_compact(node, faults)
@@ -623,6 +778,52 @@ impl Cluster {
         let data = self.models[node].bytes();
         let effects = self.nodes[node].step(Event::Compact { index, data });
         self.execute(node, effects, faults)
+    }
+    /// The leader with the highest term among online nodes, if any.
+    fn leader(&self) -> Option<usize> {
+        (0..SLOTS)
+            .filter(|i| self.online[*i] && self.nodes[*i].role == Role::Leader)
+            .max_by_key(|i| self.nodes[*i].state.term)
+    }
+    /// The simulated administrator (docs/MEMBERSHIP.md §12): add nodes 2 and 3
+    /// first, then add or remove a random node, one request at a time.
+    fn administer(&mut self, faults: bool) -> Result<(), String> {
+        if self.admin.is_some() {
+            return Ok(());
+        }
+        let Some(node) = self.leader() else {
+            return Ok(());
+        };
+        let Some((_, voters)) = self.nodes[node].configuration() else {
+            return Ok(());
+        };
+        let pick = |random: &mut Random, from: Vec<NodeId>| {
+            from[(random.next_u64() % from.len() as u64) as usize]
+        };
+        let absent: Vec<NodeId> = (1..=SLOTS as u8)
+            .filter(|id| !voters.contains(*id))
+            .collect();
+        let change = if !voters.contains(2) {
+            Change::Add(2)
+        } else if !voters.contains(3) {
+            Change::Add(3)
+        } else if voters.len() == SLOTS
+            || (voters.len() > 1 && self.random.next_u64().is_multiple_of(2))
+        {
+            Change::Remove(pick(&mut self.random, voters.to_vec()))
+        } else {
+            Change::Add(pick(&mut self.random, absent))
+        };
+        self.next_admin += 1;
+        let id = self.next_admin;
+        self.admin = Some(AdminRequest {
+            id,
+            node,
+            incarnation: self.incarnation[node],
+        });
+        self.queue
+            .schedule(ADMIN_PATIENCE, Scheduled::AdminTimeout { id });
+        self.event(node, Event::ChangeMembership { id, change }, faults)
     }
     pub fn advance(&mut self, faults: bool) -> Result<bool, String> {
         let Some((_, scheduled)) = self.queue.pop() else {
@@ -653,31 +854,46 @@ impl Cluster {
                 self.nodes[node] = Core::restore(node as u8 + 1, state, snapshot)?;
                 self.nodes[node].set_chunk_size(SIM_CHUNK);
                 self.online[node] = true;
-                let duration = 400 + self.random.next_u64() % 401;
+                let duration = MIN_ELECTION + self.random.next_u64() % 401;
                 self.timer(node, duration, Event::ElectionTimeout { generation: 0 });
                 self.record(node, "restart");
             }
             Scheduled::Heal => self.heal(),
+            Scheduled::AdminTimeout { id } => {
+                if let Some(request) = self.admin.filter(|request| request.id == id) {
+                    self.admin = None;
+                    if request.incarnation == self.incarnation[request.node] {
+                        self.event(request.node, Event::CancelMembership { id }, faults)?;
+                    }
+                    *self
+                        .oracle
+                        .membership_failures
+                        .entry("ADMIN_TIMEOUT".into())
+                        .or_default() += 1;
+                }
+            }
             _ => {}
         }
         if faults {
             let roll = self.random.next_u64() % 1000;
             if roll == 0 {
-                let node = (self.random.next_u64() % 3) as usize;
+                let node = (self.random.next_u64() % SLOTS as u64) as usize;
                 if self.online[node] {
                     self.crash(node, false)?;
                 }
             }
             if roll == 1 {
-                let node = (self.random.next_u64() % 3) as usize;
-                self.partition(node);
+                let side = std::array::from_fn(|_| self.random.next_u64().is_multiple_of(2));
+                self.partition(side);
                 self.queue.schedule(700, Scheduled::Heal);
             }
         }
+        if self.random.next_u64().is_multiple_of(150) {
+            self.administer(faults)?;
+        }
         if self.next_client < 64
             && self.random.next_u64().is_multiple_of(40)
-            && let Some(node) =
-                (0..3).find(|i| self.online[*i] && self.nodes[*i].role == Role::Leader)
+            && let Some(node) = self.leader()
         {
             self.next_client += 1;
             let key = format!("k{}", self.next_client % 3);
@@ -746,6 +962,18 @@ pub struct Campaign {
     pub snapshots_installed: u64,
     pub reads_served: u64,
     pub reads_failed: u64,
+    /// Completed membership changes (including ones already in effect).
+    pub membership_changes: u64,
+    /// Failed or abandoned membership requests, by status.
+    pub membership_failures: BTreeMap<String, u64>,
+    /// Requests that failed with CATCH_UP_FAILED (also counted above).
+    pub catch_up_failures: u64,
+    /// Leaders that stepped down because their committed configuration excluded them.
+    pub leader_removals: u64,
+    /// Committed configurations by size: `configuration_sizes[n]` is the count of size n.
+    pub configuration_sizes: Vec<u64>,
+    /// Committed configurations of even size (2 or 4).
+    pub even_configurations: u64,
 }
 pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
     let mut report = Campaign {
@@ -764,6 +992,8 @@ pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
             "I6 Snapshot Safety",
             "I7 Compaction Only Covers Applied Entries",
             "I8 Read Freshness",
+            "I9 Membership Change Rule",
+            "I10 No Campaign Without Configuration Or After Known Removal",
         ],
         elections: 0,
         applies: 0,
@@ -771,6 +1001,12 @@ pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
         snapshots_installed: 0,
         reads_served: 0,
         reads_failed: 0,
+        membership_changes: 0,
+        membership_failures: BTreeMap::new(),
+        catch_up_failures: 0,
+        leader_removals: 0,
+        configuration_sizes: vec![0; SLOTS + 1],
+        even_configurations: 0,
     };
     for seed in 0..seeds {
         let mut cluster = Cluster::new(seed);
@@ -783,16 +1019,34 @@ pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
                 trace: std::mem::take(&mut cluster.trace),
             }),
         }
+        let oracle = &cluster.oracle;
         report.event_count += cluster.processed;
-        report.elections += cluster.oracle.election_count;
-        report.applies += cluster.oracle.apply_count;
-        report.snapshots_taken += cluster.oracle.snapshots_taken;
-        report.snapshots_installed += cluster.oracle.snapshots_installed;
-        report.reads_served += cluster.oracle.reads_served;
-        report.reads_failed += cluster.oracle.reads_failed;
+        report.elections += oracle.election_count;
+        report.applies += oracle.apply_count;
+        report.snapshots_taken += oracle.snapshots_taken;
+        report.snapshots_installed += oracle.snapshots_installed;
+        report.reads_served += oracle.reads_served;
+        report.reads_failed += oracle.reads_failed;
+        report.membership_changes += oracle.membership_changes;
+        for (status, count) in &oracle.membership_failures {
+            *report
+                .membership_failures
+                .entry(status.clone())
+                .or_default() += count;
+        }
+        report.leader_removals += oracle.leader_removals;
+        for (size, count) in oracle.configuration_sizes.iter().enumerate() {
+            report.configuration_sizes[size] += count;
+        }
         if !report.failures.is_empty() {
             break;
         }
     }
+    report.catch_up_failures = report
+        .membership_failures
+        .get("CATCH_UP_FAILED")
+        .copied()
+        .unwrap_or(0);
+    report.even_configurations = report.configuration_sizes[2] + report.configuration_sizes[4];
     report
 }

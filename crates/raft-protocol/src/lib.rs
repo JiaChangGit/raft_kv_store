@@ -1,15 +1,12 @@
 //! Wire data and immutable bounds; no consensus algorithm or I/O.
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 
-pub const NODES: [u8; 3] = [1, 2, 3];
-pub const QUORUM: usize = 2;
+/// Node IDs are 1..=MAX_NODE (docs/MEMBERSHIP.md §5).
+pub const MAX_NODE: NodeId = 7;
 pub const MAX_FRAME: usize = 1024 * 1024;
 pub const MAX_KEY: usize = 256;
 pub const MAX_VALUE: usize = 4096;
 pub const CLUSTER: &str = "raft-kv-v1";
-/// Snapshot membership: bit n set means node n votes. Fixed to nodes 1, 2, 3 until S4.
-pub const VOTERS: u32 = 0b1110;
 /// Largest snapshot a node writes, loads or accepts from a leader.
 pub const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
 /// Largest snapshot chunk per InstallSnapshot. Hex doubles it to 512 KiB,
@@ -47,11 +44,78 @@ pub type Term = u64;
 pub type LogIndex = u64;
 
 pub fn valid_node(id: NodeId) -> bool {
-    NODES.contains(&id)
+    (1..=MAX_NODE).contains(&id)
 }
-pub fn has_quorum(voters: &[NodeId]) -> bool {
-    voters.iter().all(|id| valid_node(*id))
-        && voters.iter().copied().collect::<BTreeSet<_>>().len() >= QUORUM
+
+/// A set of node IDs; bit n set means node n is in the set. As a configuration
+/// (docs/MEMBERSHIP.md §5) it lists the voters and must be non-empty.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Voters(u32);
+impl Voters {
+    const ALLOWED: u32 = ((1 << (MAX_NODE as u32 + 1)) - 1) & !1;
+    /// A valid configuration: non-empty, only bits 1..=MAX_NODE.
+    pub fn from_bits(bits: u32) -> Option<Self> {
+        (bits != 0 && bits & !Self::ALLOWED == 0).then_some(Self(bits))
+    }
+    /// A valid configuration from strictly ascending, valid IDs.
+    pub fn from_ids(ids: &[NodeId]) -> Option<Self> {
+        if ids.is_empty()
+            || !ids.iter().all(|id| valid_node(*id))
+            || !ids.windows(2).all(|pair| pair[0] < pair[1])
+        {
+            return None;
+        }
+        Some(Self(ids.iter().fold(0, |bits, id| bits | 1 << id)))
+    }
+    pub fn bits(self) -> u32 {
+        self.0
+    }
+    pub fn contains(self, id: NodeId) -> bool {
+        valid_node(id) && self.0 & (1 << id) != 0
+    }
+    pub fn len(self) -> usize {
+        self.0.count_ones() as usize
+    }
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+    /// More than half: 1 of 1, 2 of 2, 2 of 3, 3 of 4, 3 of 5 ...
+    pub fn majority(self) -> usize {
+        self.len() / 2 + 1
+    }
+    /// Whether `members` holds a majority of this configuration; members
+    /// outside it do not count.
+    pub fn is_quorum(self, members: Voters) -> bool {
+        !self.is_empty() && (self.0 & members.0).count_ones() as usize >= self.majority()
+    }
+    pub fn with(self, id: NodeId) -> Self {
+        if valid_node(id) {
+            Self(self.0 | 1 << id)
+        } else {
+            self
+        }
+    }
+    pub fn without(self, id: NodeId) -> Self {
+        if valid_node(id) {
+            Self(self.0 & !(1 << id))
+        } else {
+            self
+        }
+    }
+    /// Members in ascending order.
+    pub fn ids(self) -> impl Iterator<Item = NodeId> {
+        (1..=MAX_NODE).filter(move |id| self.contains(*id))
+    }
+    pub fn to_vec(self) -> Vec<NodeId> {
+        self.ids().collect()
+    }
+}
+impl std::fmt::Display for Voters {
+    /// `1,2,3`: the form used in client responses and traces.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ids: Vec<String> = self.ids().map(|id| id.to_string()).collect();
+        f.write_str(&ids.join(","))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,9 +166,31 @@ impl ClientWireRequest {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Command {
     NoOp,
     Client(ClientRequest),
+    /// A cluster configuration (docs/MEMBERSHIP.md §5): the voters, ascending.
+    /// It takes effect as soon as it is in a log; the state machine ignores it.
+    Config {
+        voters: Vec<NodeId>,
+    },
+}
+impl Command {
+    /// The one validity rule for commands, from the WAL or from a leader.
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::NoOp => true,
+            Self::Client(request) => request.operation.valid(),
+            Self::Config { voters } => Voters::from_ids(voters).is_some(),
+        }
+    }
+    pub fn config(&self) -> Option<Voters> {
+        match self {
+            Self::Config { voters } => Voters::from_ids(voters),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -131,6 +217,10 @@ pub struct DurableState {
     pub voted_for: Option<NodeId>,
     base: LogBase,
     entries: Vec<LogEntry>,
+    /// Indexes of the configuration entries in `entries`, ascending. Derived
+    /// from `entries` (so equality is unaffected); finding the configuration
+    /// then never scans the whole log (docs/MEMBERSHIP.md §5).
+    configs: Vec<LogIndex>,
 }
 impl DurableState {
     /// A log that starts at index 1 (no snapshot).
@@ -144,11 +234,17 @@ impl DurableState {
         base: LogBase,
         entries: Vec<LogEntry>,
     ) -> Self {
+        let configs = entries
+            .iter()
+            .filter(|entry| matches!(entry.command, Command::Config { .. }))
+            .map(|entry| entry.index)
+            .collect();
         Self {
             term,
             voted_for,
             base,
             entries,
+            configs,
         }
     }
     pub fn base(&self) -> LogBase {
@@ -184,9 +280,27 @@ impl DurableState {
         assert!(index > self.base.index, "cannot truncate compacted entries");
         self.entries
             .truncate((index - self.base.index - 1) as usize);
+        // Falling back to the previous configuration (dissertation §4.1).
+        self.configs.retain(|config| *config < index);
     }
     pub fn push(&mut self, entry: LogEntry) {
+        if matches!(entry.command, Command::Config { .. }) {
+            self.configs.push(entry.index);
+        }
         self.entries.push(entry);
+    }
+    /// The latest configuration entry held after the base, as (index, voters).
+    /// `None` when the log holds none; the snapshot's voters then apply.
+    pub fn latest_config(&self) -> Option<(LogIndex, Voters)> {
+        self.configs
+            .last()
+            .and_then(|index| Some((*index, self.entry(*index)?.command.config()?)))
+    }
+    /// The latest configuration entry held at or before `index`.
+    pub fn config_at(&self, index: LogIndex) -> Option<(LogIndex, Voters)> {
+        let count = self.configs.partition_point(|config| *config <= index);
+        let at = *self.configs.get(count.checked_sub(1)?)?;
+        Some((at, self.entry(at)?.command.config()?))
     }
     pub fn valid(&self) -> bool {
         self.voted_for.is_none_or(valid_node)
@@ -197,10 +311,7 @@ impl DurableState {
                     && e.term > 0
                     && e.term >= self.base.term
                     && e.term <= self.term
-                    && match &e.command {
-                        Command::NoOp => true,
-                        Command::Client(r) => r.operation.valid(),
-                    }
+                    && e.command.valid()
             })
             && self
                 .entries
@@ -231,10 +342,11 @@ pub struct Snapshot {
     pub data: std::sync::Arc<[u8]>,
 }
 impl Snapshot {
-    pub fn new(base: LogBase, data: Vec<u8>) -> Self {
+    /// `voters` is the configuration at `base` (docs/MEMBERSHIP.md §5).
+    pub fn new(base: LogBase, voters: Voters, data: Vec<u8>) -> Self {
         Self {
             base,
-            voters: VOTERS,
+            voters: voters.bits(),
             data: data.into(),
         }
     }
@@ -244,7 +356,7 @@ impl Snapshot {
     pub fn valid(&self) -> bool {
         self.base.index > 0
             && self.base.term > 0
-            && self.voters == VOTERS
+            && Voters::from_bits(self.voters).is_some()
             && !self.data.is_empty()
             && self.data.len() <= MAX_SNAPSHOT
     }
@@ -286,10 +398,13 @@ pub enum Rpc {
         entries: Vec<LogEntry>,
         leader_commit: LogIndex,
     },
+    /// `last_log_index` is the follower's last index; on failure the leader
+    /// caps nextIndex with it (dissertation §4.2.1).
     AppendResponse {
         term: Term,
         success: bool,
         matched_through: LogIndex,
+        last_log_index: LogIndex,
     },
     /// Figure 13, plus `voters`, `total_len` and `total_crc` so a follower can
     /// bound memory on the first chunk and verify the whole on the last.
@@ -383,7 +498,7 @@ impl Envelope {
                         && *last_included_index > 0
                         && *last_included_term > 0
                         && last_included_term <= term
-                        && *voters == VOTERS
+                        && Voters::from_bits(*voters).is_some()
                         && (1..=MAX_SNAPSHOT as u64).contains(total_len)
                         && data.len() <= 2 * MAX_CHUNK
                         && from_hex(data).is_some()
@@ -519,7 +634,7 @@ mod tests {
                 leader_id: 1,
                 last_included_index: 5,
                 last_included_term: 2,
-                voters: VOTERS,
+                voters: 0b1110,
                 total_len,
                 total_crc: 0,
                 offset,
@@ -579,6 +694,132 @@ mod tests {
         assert_eq!(beyond.last_index(), 9);
         let at_end = adopt_snapshot(&log, LogBase { index: 3, term: 3 });
         assert!(at_end.entries().is_empty() && at_end.last_index() == 3);
+    }
+
+    fn config(index: LogIndex, term: Term, voters: &[NodeId]) -> LogEntry {
+        LogEntry {
+            index,
+            term,
+            command: Command::Config {
+                voters: voters.to_vec(),
+            },
+        }
+    }
+
+    /// docs/MEMBERSHIP.md §5: configurations are validated in one place.
+    #[test]
+    fn voters_validate_ids_and_bits() {
+        assert_eq!(Voters::from_ids(&[1, 2, 3]).unwrap().bits(), 0b1110);
+        assert_eq!(Voters::from_ids(&[7]).unwrap().bits(), 1 << 7);
+        for (what, ids) in [
+            ("empty", &[][..]),
+            ("node 0", &[0, 1][..]),
+            ("node 8", &[1, 8][..]),
+            ("duplicate", &[1, 1][..]),
+            ("not ascending", &[2, 1][..]),
+        ] {
+            assert_eq!(Voters::from_ids(ids), None, "{what}");
+            let command = Command::Config {
+                voters: ids.to_vec(),
+            };
+            assert!(!command.valid(), "{what}");
+        }
+        assert_eq!(
+            Voters::from_bits(0b1110).map(Voters::to_vec),
+            Some(vec![1, 2, 3])
+        );
+        for bits in [0, 1, 1 << 8, 1 << 31, 0b1_0000_0010] {
+            assert_eq!(Voters::from_bits(bits), None, "{bits:#b}");
+        }
+        let three = Voters::from_ids(&[1, 2, 3]).unwrap();
+        assert_eq!(three.to_string(), "1,2,3");
+        assert_eq!(three.with(5).to_vec(), vec![1, 2, 3, 5]);
+        assert_eq!(three.without(2).to_vec(), vec![1, 3]);
+        assert_eq!(three.with(8), three, "invalid IDs are never added");
+        assert!(three.contains(3) && !three.contains(4) && !three.contains(0));
+        let bad = serde_json::from_str::<Command>(r#"{"Config":{"voters":[1],"extra":1}}"#);
+        assert!(bad.is_err(), "unknown fields are refused");
+        let good: Command = serde_json::from_str(r#"{"Config":{"voters":[1,2]}}"#).unwrap();
+        assert_eq!(good.config(), Voters::from_ids(&[1, 2]));
+    }
+
+    /// Commit, election and ReadIndex all use this one rule; it replaces the
+    /// fixed "two of three" (docs/MEMBERSHIP.md §13).
+    #[test]
+    fn majority_follows_the_configuration() {
+        // Any set of nodes 1..=n, including the empty one (n = 0).
+        let first_n = |n: u8| (1..=n).fold(Voters::default(), Voters::with);
+        for (size, majority) in [(1, 1), (2, 2), (3, 2), (4, 3), (5, 3), (6, 4), (7, 4)] {
+            let voters = first_n(size);
+            assert_eq!(voters.majority(), majority, "size {size}");
+            let just_enough = first_n(majority as u8);
+            assert!(voters.is_quorum(just_enough), "size {size}");
+            let one_short = first_n(majority as u8 - 1);
+            assert!(!voters.is_quorum(one_short), "size {size}");
+        }
+        // Members outside the configuration never count towards its majority.
+        let three = first_n(3);
+        let outsiders = Voters::from_ids(&[4, 5, 6, 7]).unwrap();
+        assert!(!three.is_quorum(outsiders));
+        assert!(three.is_quorum(outsiders.with(1).with(3)));
+        assert!(
+            !Voters::default().is_quorum(three),
+            "no configuration, no quorum"
+        );
+        // A set cannot hold a member twice, so a duplicate cannot inflate a count.
+        assert_eq!(Voters::default().with(2).with(2).len(), 1);
+    }
+
+    /// Dissertation §4.1: the latest configuration in the log applies, and a
+    /// truncated configuration entry falls back to the previous one.
+    #[test]
+    fn latest_configuration_tracks_appends_and_truncation() {
+        let mut log = DurableState::new(
+            3,
+            None,
+            vec![config(1, 1, &[1]), noop(2, 2), config(3, 2, &[1, 2])],
+        );
+        assert!(log.valid());
+        assert_eq!(
+            log.latest_config(),
+            Some((3, Voters::from_ids(&[1, 2]).unwrap()))
+        );
+        log.push(config(4, 3, &[1, 2, 3]));
+        log.push(noop(5, 3));
+        assert_eq!(log.latest_config().map(|(i, v)| (i, v.len())), Some((4, 3)));
+        assert_eq!(log.config_at(3).map(|(i, _)| i), Some(3));
+        assert_eq!(log.config_at(2).map(|(i, _)| i), Some(1), "the earlier one");
+        assert_eq!(log.config_at(9).map(|(i, _)| i), Some(4));
+        log.truncate_from(4);
+        assert_eq!(
+            log.latest_config(),
+            Some((3, Voters::from_ids(&[1, 2]).unwrap()))
+        );
+        log.truncate_from(2);
+        assert_eq!(
+            log.latest_config(),
+            Some((1, Voters::from_ids(&[1]).unwrap()))
+        );
+        let compacted = adopt_snapshot(&log, LogBase { index: 1, term: 1 });
+        assert_eq!(compacted.latest_config(), None, "now only in the snapshot");
+        let rebuilt = DurableState::with_base(
+            3,
+            None,
+            LogBase { index: 1, term: 1 },
+            vec![config(2, 2, &[1, 2])],
+        );
+        assert_eq!(rebuilt.latest_config().map(|(i, _)| i), Some(2));
+        assert_eq!(rebuilt, {
+            let mut pushed =
+                DurableState::with_base(3, None, LogBase { index: 1, term: 1 }, vec![]);
+            pushed.push(config(2, 2, &[1, 2]));
+            pushed
+        });
+        let invalid = DurableState::new(1, None, vec![config(1, 1, &[2, 1])]);
+        assert!(
+            !invalid.valid(),
+            "an invalid configuration is an invalid log"
+        );
     }
 
     #[test]

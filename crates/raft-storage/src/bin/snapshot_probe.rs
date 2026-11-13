@@ -1,7 +1,7 @@
 //! Real-process fixture for snapshot installation; never implements Raft.
 //! Writes entries 1..=3 in term 1 if the directory is new, then installs a
 //! snapshot covering entry 2. Opt-in failpoints stop it inside the install.
-use raft_protocol::{Command, LogBase, LogEntry, Snapshot, adopt_snapshot};
+use raft_protocol::{Command, LogBase, LogEntry, Snapshot, Voters, adopt_snapshot};
 use raft_storage::Wal;
 use std::io::Write;
 
@@ -25,7 +25,12 @@ fn main() -> std::io::Result<()> {
         wal.save(&state)?;
     }
     if state.base().index == 0 {
-        let snapshot = Snapshot::new(LogBase { index: 2, term: 1 }, b"state-at-2".to_vec());
+        let voters = Voters::from_ids(&[1, 2, 3]).expect("valid");
+        let snapshot = Snapshot::new(
+            LogBase { index: 2, term: 1 },
+            voters,
+            b"state-at-2".to_vec(),
+        );
         wal.install(&adopt_snapshot(&state, snapshot.base), &snapshot)?;
     }
     println!("INSTALLED {}", wal.state().base().index);

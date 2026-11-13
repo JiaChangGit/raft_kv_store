@@ -195,6 +195,7 @@ mod tests {
                 term: 4,
                 success: true,
                 matched_through: 8,
+                last_log_index: 8,
             },
         };
         assert!(correlated_response(&request, &response));

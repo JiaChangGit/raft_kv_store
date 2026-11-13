@@ -1,7 +1,9 @@
 //! Pure event-driven Raft. Complete every ordered durability barrier before the next event.
 use raft_protocol::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
+#[cfg(test)]
+mod membership_tests;
 #[cfg(test)]
 mod read_tests;
 #[cfg(test)]
@@ -14,6 +16,36 @@ pub enum Role {
     Follower,
     Candidate,
     Leader,
+}
+/// Per-node arrays are indexed by node ID (1..=MAX_NODE).
+const SLOTS: usize = MAX_NODE as usize + 1;
+/// docs/MEMBERSHIP.md §8: catch-up runs this many rounds ...
+pub const CATCH_UP_ROUNDS: u32 = 10;
+/// ... and the last one must see fewer heartbeats than this (the minimum
+/// election timeout, 400 ms, is four 100 ms heartbeats) ...
+pub const CATCH_UP_SHORT_ROUND: u32 = 4;
+/// ... and the whole catch-up may not see more heartbeats than this.
+pub const CATCH_UP_MAX_HEARTBEATS: u32 = 100;
+
+/// One membership change (docs/MEMBERSHIP.md §7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    Add(NodeId),
+    Remove(NodeId),
+}
+/// The first configuration of a new cluster (dissertation §4.4): term 1 and a
+/// configuration entry listing only `id`. The host writes it to an empty data
+/// directory when asked to bootstrap.
+pub fn bootstrap_state(id: NodeId) -> DurableState {
+    DurableState::new(
+        1,
+        None,
+        vec![LogEntry {
+            index: 1,
+            term: 1,
+            command: Command::Config { voters: vec![id] },
+        }],
+    )
 }
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -43,6 +75,22 @@ pub enum Event {
     /// The host gave up on a read (its client timed out); forget it.
     CancelRead {
         id: u64,
+    },
+    /// docs/MEMBERSHIP.md §7. Answered by exactly one `MembershipDone` or
+    /// `MembershipFailed`, unless cancelled.
+    ChangeMembership {
+        id: u64,
+        change: Change,
+    },
+    /// The host gave up waiting; forget the request (a catch-up stops, an
+    /// appended configuration entry stays in the log).
+    CancelMembership {
+        id: u64,
+    },
+    /// The minimum election timeout passed since the `ResetElection` with this
+    /// generation (docs/MEMBERSHIP.md §9.4).
+    LeaderContactExpired {
+        generation: u64,
     },
 }
 #[derive(Clone, Debug)]
@@ -81,6 +129,18 @@ pub enum Effect {
         id: u64,
         status: &'static str,
     },
+    /// The configuration entry for request `id` is committed at `index`.
+    MembershipDone {
+        id: u64,
+        voters: Voters,
+        index: LogIndex,
+    },
+    /// Request `id` failed. `TIMEOUT_UNKNOWN` means its configuration entry was
+    /// appended and may still be committed; every other status means no change.
+    MembershipFailed {
+        id: u64,
+        status: &'static str,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +167,30 @@ struct PendingRead {
     round: u64,
 }
 
+/// The membership request a leader is working on (docs/MEMBERSHIP.md §7).
+#[derive(Clone, Debug)]
+struct PendingChange {
+    id: u64,
+    change: Change,
+    phase: Phase,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// Waiting until an entry of this term is committed (the 2015 fix).
+    WaitForTermCommit,
+    /// docs/MEMBERSHIP.md §8. `target` is the leader's last index when the
+    /// round started; `round_beats` counts heartbeats within it.
+    CatchingUp {
+        node: NodeId,
+        round: u32,
+        target: LogIndex,
+        round_beats: u32,
+        total_beats: u32,
+    },
+    /// The configuration entry is in the log at `index`.
+    Appended { index: LogIndex },
+}
+
 /// A snapshot a follower is receiving chunk by chunk (Figure 13 steps 2-5).
 #[derive(Clone, Debug)]
 struct Receiving {
@@ -127,11 +211,11 @@ pub struct Core {
     pub heartbeat_generation: u64,
     pub leader_hint: Option<NodeId>,
     pub durable_index: u64,
-    votes: BTreeSet<NodeId>,
+    votes: Voters,
     vote_requests: BTreeMap<NodeId, u64>,
-    next: [u64; 4],
-    matches: [u64; 4],
-    inflight: [Option<Inflight>; 4],
+    next: [u64; SLOTS],
+    matches: [u64; SLOTS],
+    inflight: [Option<Inflight>; SLOTS],
     epoch: u64,
     serial: u64,
     barrier_serial: u64,
@@ -139,16 +223,23 @@ pub struct Core {
     /// The latest durable snapshot; leaders send it to followers that need
     /// entries already compacted away.
     snapshot: Option<Snapshot>,
+    /// The configuration at the log base, from the snapshot there (None
+    /// without a snapshot). It applies when the log holds no configuration.
+    base_voters: Option<Voters>,
     pending_snapshot: Option<Snapshot>,
     /// Requested during this step; becomes a PersistSnapshot barrier at its end.
     requested_snapshot: Option<(Snapshot, bool)>,
     /// Leader: snapshot being sent to each follower, and the next offset.
-    transfer: [Option<(LogBase, u64)>; 4],
+    transfer: [Option<(LogBase, u64)>; SLOTS],
     receiving: Option<Receiving>,
     chunk_size: usize,
     read_round: u64,
-    acked_round: [u64; 4],
+    acked_round: [u64; SLOTS],
     pending_reads: Vec<PendingRead>,
+    /// Heard from the leader of this term within the minimum election timeout
+    /// (docs/MEMBERSHIP.md §9.4); a leader always has.
+    leader_contact: bool,
+    pending_change: Option<PendingChange>,
     failed: bool,
 }
 impl Core {
@@ -169,6 +260,7 @@ impl Core {
         if state.base() != snapshot_base || snapshot.as_ref().is_some_and(|s| !s.valid()) {
             return Err("log base must equal the durable snapshot's position".into());
         }
+        let base_voters = snapshot.as_ref().and_then(|s| Voters::from_bits(s.voters));
         let durable_index = state.last_index();
         // Entries up to the base are inside a durable snapshot, hence committed and applied.
         let snapshot_index = state.base().index;
@@ -182,26 +274,89 @@ impl Core {
             heartbeat_generation: 0,
             leader_hint: None,
             durable_index,
-            votes: BTreeSet::new(),
+            votes: Voters::default(),
             vote_requests: BTreeMap::new(),
-            next: [1; 4],
-            matches: [0; 4],
+            next: [1; SLOTS],
+            matches: [0; SLOTS],
             inflight: std::array::from_fn(|_| None),
             epoch: 0,
             serial: 0,
             barrier_serial: 0,
             pending_barrier: None,
             snapshot,
+            base_voters,
             pending_snapshot: None,
             requested_snapshot: None,
-            transfer: [None; 4],
+            transfer: [None; SLOTS],
             receiving: None,
             chunk_size: MAX_CHUNK,
             read_round: 0,
-            acked_round: [0; 4],
+            acked_round: [0; SLOTS],
             pending_reads: vec![],
+            leader_contact: false,
+            pending_change: None,
             failed: false,
         })
+    }
+    /// The configuration in effect: the latest one in the log, else the
+    /// snapshot's (at the base index); `None` for a node never configured.
+    pub fn configuration(&self) -> Option<(LogIndex, Voters)> {
+        self.state.latest_config().or_else(|| {
+            self.base_voters
+                .map(|voters| (self.state.base().index, voters))
+        })
+    }
+    fn voters(&self) -> Voters {
+        self.configuration()
+            .map(|(_, voters)| voters)
+            .unwrap_or_default()
+    }
+    /// The configuration at `index` (which must not be compacted).
+    fn voters_at(&self, index: LogIndex) -> Option<Voters> {
+        self.state
+            .config_at(index)
+            .map(|(_, voters)| voters)
+            .or(self.base_voters)
+    }
+    /// The node being caught up before it is added (docs/MEMBERSHIP.md §8).
+    pub fn catching_up(&self) -> Option<NodeId> {
+        match self.pending_change.as_ref()?.phase {
+            Phase::CatchingUp { node, .. } => Some(node),
+            _ => None,
+        }
+    }
+    pub fn leader_contact(&self) -> bool {
+        self.leader_contact
+    }
+    /// docs/MEMBERSHIP.md §9.2: no configuration, no election; a node outside
+    /// its configuration campaigns only until it knows that one is committed.
+    fn may_campaign(&self) -> bool {
+        match self.configuration() {
+            None => false,
+            Some((index, voters)) => voters.contains(self.id) || self.commit_index < index,
+        }
+    }
+    /// Whom the leader replicates to: the other voters and a catching-up node.
+    fn targets(&self) -> Voters {
+        let voters = self.voters().without(self.id);
+        match self.catching_up() {
+            Some(node) => voters.with(node),
+            None => voters,
+        }
+    }
+    /// Forget what the leader tracked for `peer` and start over (§8, §9.5).
+    fn reset_peer(&mut self, peer: NodeId) {
+        let p = peer as usize;
+        self.next[p] = self.state.last_index() + 1;
+        self.matches[p] = 0;
+        self.inflight[p] = None;
+        self.transfer[p] = None;
+        self.acked_round[p] = 0;
+    }
+    /// The leader has committed an entry of its own term (dissertation §6.4
+    /// step 1 and the 2015 membership fix).
+    fn committed_in_term(&self) -> bool {
+        self.state.term_at(self.commit_index) == Some(self.state.term)
     }
     /// Snapshot chunk size in bytes, at most [`MAX_CHUNK`]. The simulator uses
     /// tiny chunks so that multi-chunk transfers are exercised.
@@ -233,17 +388,23 @@ impl Core {
             self.snapshot = Some(snapshot);
         }
         self.durable_index = self.state.last_index();
-        if self.role == Role::Candidate && self.state.voted_for == Some(self.id) {
-            self.votes.insert(self.id);
-        }
+        let old = self.state.clone();
         let mut effects = vec![];
+        if self.role == Role::Candidate && self.state.voted_for == Some(self.id) {
+            // Our own vote counts once it is durable, and only if we vote; a
+            // single-voter configuration is won right here.
+            self.votes = self.votes.with(self.id);
+            if self.voters().is_quorum(self.votes) {
+                self.become_leader(&mut effects);
+            }
+        }
         if self.role == Role::Leader {
             self.matches[self.id as usize] = self.durable_index;
             self.advance_commit(&mut effects);
             self.start_read_round(&mut effects);
             self.finish_reads(&mut effects);
         }
-        effects
+        self.seal(old, effects)
     }
     pub fn step(&mut self, event: Event) -> Vec<Effect> {
         if self.failed || self.pending_barrier.is_some() {
@@ -255,7 +416,16 @@ impl Core {
             Event::ElectionTimeout { generation }
                 if generation == self.election_generation && self.role != Role::Leader =>
             {
-                self.begin_election(&mut effects)
+                // An ineligible node stays quiet until a leader contacts it,
+                // which is the only way its eligibility can change.
+                if self.may_campaign() {
+                    self.begin_election(&mut effects)
+                }
+            }
+            Event::LeaderContactExpired { generation }
+                if generation == self.election_generation && self.role != Role::Leader =>
+            {
+                self.leader_contact = false;
             }
             Event::Heartbeat { generation }
                 if generation == self.heartbeat_generation && self.role == Role::Leader =>
@@ -265,6 +435,19 @@ impl Core {
                 effects.push(Effect::ResetHeartbeat {
                     generation: self.heartbeat_generation,
                 });
+                self.catch_up_heartbeat(&mut effects);
+            }
+            Event::ChangeMembership { id, change } => {
+                self.change_membership(id, change, &mut effects)
+            }
+            Event::CancelMembership { id } => {
+                if self.pending_change.as_ref().is_some_and(|c| c.id == id) {
+                    let node = self.catching_up();
+                    self.pending_change = None;
+                    if let Some(node) = node {
+                        self.reset_peer(node);
+                    }
+                }
             }
             Event::Message(message) if message.valid_for(self.id) => {
                 self.message(message, &mut effects)
@@ -297,33 +480,44 @@ impl Core {
             }
             _ => {}
         }
-        if let Some((snapshot, restore)) = self.requested_snapshot.take() {
+        self.seal(old, effects)
+    }
+    /// End of a step: one durability barrier for whatever changed (or none).
+    ///
+    /// The barrier precedes everything that may depend on it (messages and
+    /// answers), but not the `Apply`s: those cover entries committed before
+    /// this barrier, and the barrier's completion may commit and apply more.
+    /// Hosts run that completion before the rest of this list, so an `Apply`
+    /// left behind the barrier would be applied after a later index (lesson 09).
+    fn seal(&mut self, old: DurableState, effects: Vec<Effect>) -> Vec<Effect> {
+        let barrier = if let Some((snapshot, restore)) = self.requested_snapshot.take() {
             // One barrier writes the snapshot and the new WAL, which also carries
             // any term or vote change made in this step.
             self.barrier_serial += 1;
             self.pending_barrier = Some(self.barrier_serial);
             self.pending_snapshot = Some(snapshot.clone());
-            effects.insert(
-                0,
-                Effect::PersistSnapshot {
-                    barrier_id: self.barrier_serial,
-                    state: self.state.clone(),
-                    snapshot,
-                    restore,
-                },
-            );
+            Effect::PersistSnapshot {
+                barrier_id: self.barrier_serial,
+                state: self.state.clone(),
+                snapshot,
+                restore,
+            }
         } else if self.state != old {
             self.barrier_serial += 1;
             self.pending_barrier = Some(self.barrier_serial);
-            effects.insert(
-                0,
-                Effect::Persist {
-                    barrier_id: self.barrier_serial,
-                    state: self.state.clone(),
-                },
-            );
-        }
-        effects
+            Effect::Persist {
+                barrier_id: self.barrier_serial,
+                state: self.state.clone(),
+            }
+        } else {
+            return effects;
+        };
+        let (mut sealed, rest): (Vec<_>, Vec<_>) = effects
+            .into_iter()
+            .partition(|effect| matches!(effect, Effect::Apply(_)));
+        sealed.push(barrier);
+        sealed.extend(rest);
+        sealed
     }
     /// Local compaction (docs/SNAPSHOT_COMPACTION.md §8). Only applied entries
     /// may be covered; anything else is ignored and the host simply keeps its log.
@@ -334,11 +528,17 @@ impl Core {
         if index != self.last_applied || index <= self.state.base().index {
             return;
         }
-        let snapshot = Snapshot::new(LogBase { index, term }, data);
+        // The snapshot records the configuration at its position (§5); it is
+        // committed, since only applied entries are covered.
+        let Some(voters) = self.voters_at(index) else {
+            return;
+        };
+        let snapshot = Snapshot::new(LogBase { index, term }, voters, data);
         if !snapshot.valid() {
             return;
         }
         self.state = adopt_snapshot(&self.state, snapshot.base);
+        self.base_voters = Some(voters);
         self.requested_snapshot = Some((snapshot, false));
     }
     /// docs/READ_INDEX.md §6.2 step 1-3.
@@ -361,9 +561,7 @@ impl Core {
     fn start_read_round(&mut self, effects: &mut Vec<Effect>) {
         // Step 1: a new leader does not know what is committed until an entry
         // of its own term is (the no-op appended on election).
-        if self.role != Role::Leader
-            || self.state.term_at(self.commit_index) != Some(self.state.term)
-        {
+        if self.role != Role::Leader || !self.committed_in_term() {
             return;
         }
         if self
@@ -391,18 +589,27 @@ impl Core {
         if self.role != Role::Leader || self.pending_reads.is_empty() {
             return;
         }
-        let mut acks: Vec<u64> = NODES
-            .into_iter()
+        // Only voters of the current configuration confirm (§9.1); the leader
+        // counts itself only if it votes.
+        let voters = self.voters();
+        let mut acks: Vec<u64> = voters
+            .ids()
             .filter(|peer| *peer != self.id)
             .map(|peer| self.acked_round[peer as usize])
             .collect();
         acks.sort_unstable_by(|a, b| b.cmp(a));
-        // The leader counts itself; it needs quorum - 1 followers. The highest
-        // round that many followers have acknowledged is confirmed. Too few
-        // followers means nothing is confirmed (0), never everything.
-        let confirmed = match QUORUM.saturating_sub(1) {
-            0 => u64::MAX,
-            needed => acks.get(needed - 1).copied().unwrap_or(0),
+        // The highest round that `needed` followers have acknowledged is
+        // confirmed. Too few followers means nothing is confirmed (0), never everything.
+        let needed = voters
+            .majority()
+            .saturating_sub(usize::from(voters.contains(self.id)));
+        let confirmed = if voters.is_empty() {
+            0
+        } else {
+            match needed {
+                0 => u64::MAX,
+                needed => acks.get(needed - 1).copied().unwrap_or(0),
+            }
         };
         let last_applied = self.last_applied;
         self.pending_reads.retain(|read| match read.read_index {
@@ -436,7 +643,20 @@ impl Core {
                 status: "NOT_LEADER",
             });
         }
-        self.acked_round = [0; 4];
+        self.acked_round = [0; SLOTS];
+    }
+    /// A former leader answers its membership request (§7 step 9).
+    fn fail_change(&mut self, effects: &mut Vec<Effect>) {
+        if let Some(change) = self.pending_change.take() {
+            let status = match change.phase {
+                Phase::Appended { .. } => "TIMEOUT_UNKNOWN",
+                _ => "NOT_LEADER",
+            };
+            effects.push(Effect::MembershipFailed {
+                id: change.id,
+                status,
+            });
+        }
     }
     fn reset_election(&mut self, effects: &mut Vec<Effect>) {
         self.election_generation += 1;
@@ -468,11 +688,12 @@ impl Core {
         }
         self.role = Role::Follower;
         self.leader_hint = None;
-        self.votes.clear();
+        self.votes = Voters::default();
         self.vote_requests.clear();
         self.inflight = std::array::from_fn(|_| None);
-        self.transfer = [None; 4];
+        self.transfer = [None; SLOTS];
         self.fail_reads(effects);
+        self.fail_change(effects);
         self.heartbeat_generation += 1;
         // A former leader has no active election timer; this starts one without
         // resetting an already running follower timer on arbitrary higher terms.
@@ -491,17 +712,16 @@ impl Core {
         self.state.voted_for = Some(self.id);
         self.role = Role::Candidate;
         self.leader_hint = None;
-        self.votes.clear();
+        self.leader_contact = false;
+        self.votes = Voters::default();
         self.vote_requests.clear();
         self.inflight = std::array::from_fn(|_| None);
-        self.transfer = [None; 4];
+        self.transfer = [None; SLOTS];
         self.fail_reads(effects);
         self.reset_election(effects);
-        for peer in NODES
-            .into_iter()
-            .filter(|n| *n != self.id)
-            .collect::<Vec<_>>()
-        {
+        // Ask the other voters of our configuration (§9.2); our own vote is
+        // counted in `persisted`, once durable.
+        for peer in self.voters().without(self.id).to_vec() {
             let id = self.send(
                 peer,
                 Rpc::RequestVote {
@@ -518,15 +738,17 @@ impl Core {
     fn become_leader(&mut self, effects: &mut Vec<Effect>) {
         self.role = Role::Leader;
         self.leader_hint = Some(self.id);
+        self.leader_contact = true;
+        self.pending_change = None;
         self.election_generation += 1;
         self.heartbeat_generation += 1;
         self.epoch += 1;
-        self.next = [self.state.last_index() + 1; 4];
-        self.matches = [0; 4];
+        self.next = [self.state.last_index() + 1; SLOTS];
+        self.matches = [0; SLOTS];
         self.matches[self.id as usize] = self.durable_index;
         self.inflight = std::array::from_fn(|_| None);
-        self.transfer = [None; 4];
-        self.acked_round = [0; 4];
+        self.transfer = [None; SLOTS];
+        self.acked_round = [0; SLOTS];
         self.state.push(LogEntry {
             index: self.state.last_index() + 1,
             term: self.state.term,
@@ -538,15 +760,14 @@ impl Core {
         });
     }
     fn replicate_all(&mut self, effects: &mut Vec<Effect>) {
-        for peer in NODES {
-            if peer != self.id {
-                self.replicate(peer, effects);
-            }
+        for peer in self.targets().to_vec() {
+            self.replicate(peer, effects);
         }
     }
     fn replicate(&mut self, peer: NodeId, effects: &mut Vec<Effect>) {
         let p = peer as usize;
-        if self.role != Role::Leader || self.inflight[p].is_some() {
+        if self.role != Role::Leader || self.inflight[p].is_some() || !self.targets().contains(peer)
+        {
             return;
         }
         let next = self.next[p].clamp(1, self.state.last_index() + 1);
@@ -631,18 +852,214 @@ impl Core {
         });
     }
     fn advance_commit(&mut self, effects: &mut Vec<Effect>) {
+        // A majority of the current configuration (§9.1): the leader's own
+        // durable index counts only if it is a voter.
+        let voters = self.voters();
         for n in (self.commit_index + 1..=self.durable_index).rev() {
-            let count = NODES
-                .into_iter()
+            let holders = voters
+                .ids()
                 .filter(|id| self.matches[*id as usize] >= n)
-                .count();
+                .fold(Voters::default(), Voters::with);
             // Figure 2 / §5.4.2: previous-term majority alone cannot directly commit.
-            if self.state.term_at(n) == Some(self.state.term) && count >= QUORUM {
+            if self.state.term_at(n) == Some(self.state.term) && voters.is_quorum(holders) {
                 self.commit_index = n;
                 break;
             }
         }
         self.apply_committed(effects);
+        if self.role == Role::Leader {
+            self.after_commit(effects);
+        }
+    }
+    /// What a leader does once more is committed (docs/MEMBERSHIP.md §7, §9.3).
+    fn after_commit(&mut self, effects: &mut Vec<Effect>) {
+        match self.pending_change.as_ref().map(|c| c.phase) {
+            Some(Phase::WaitForTermCommit) => self.proceed_change(effects),
+            Some(Phase::Appended { index }) if self.commit_index >= index => {
+                let change = self.pending_change.take().expect("present");
+                effects.push(Effect::MembershipDone {
+                    id: change.id,
+                    voters: self.voters_at(index).unwrap_or_default(),
+                    index,
+                });
+            }
+            _ => {}
+        }
+        // A leader outside its own committed configuration steps down.
+        if let Some((index, voters)) = self.configuration()
+            && !voters.contains(self.id)
+            && self.commit_index >= index
+        {
+            let term = self.state.term;
+            self.step_down(term, effects);
+        }
+    }
+    /// docs/MEMBERSHIP.md §7 steps 1-3; the rest waits for the term commit.
+    fn change_membership(&mut self, id: u64, change: Change, effects: &mut Vec<Effect>) {
+        let fail = |status| Effect::MembershipFailed { id, status };
+        if self.role != Role::Leader {
+            return effects.push(fail("NOT_LEADER"));
+        }
+        let voters = self.voters();
+        let (node, wanted) = match change {
+            Change::Add(node) => (node, voters.with(node)),
+            Change::Remove(node) => (node, voters.without(node)),
+        };
+        if !valid_node(node) || wanted.is_empty() {
+            return effects.push(fail("INVALID_ARGUMENT"));
+        }
+        if self.pending_change.is_some() {
+            return effects.push(fail("CHANGE_IN_PROGRESS"));
+        }
+        self.pending_change = Some(PendingChange {
+            id,
+            change,
+            phase: Phase::WaitForTermCommit,
+        });
+        self.proceed_change(effects);
+    }
+    /// Steps 4-8: once this term has a committed entry, check what is
+    /// committed, then remove at once or start catching the new node up.
+    fn proceed_change(&mut self, effects: &mut Vec<Effect>) {
+        // The 2015 fix: a leader that has committed an entry of its own term
+        // knows the latest committed configuration, and no uncommitted one
+        // from an earlier term can be committed any more. Before that, its
+        // commit index lags, so nothing below can be judged (lesson 08).
+        if !self.committed_in_term() {
+            return;
+        }
+        let Some(pending) = self.pending_change.as_ref() else {
+            return;
+        };
+        let (id, change) = (pending.id, pending.change);
+        let (index, voters) = self.configuration().expect("a leader has a configuration");
+        // Only an entry this leader appended for an earlier (cancelled)
+        // request can still be uncommitted now.
+        if index > self.commit_index {
+            self.pending_change = None;
+            return effects.push(Effect::MembershipFailed {
+                id,
+                status: "CHANGE_IN_PROGRESS",
+            });
+        }
+        let wanted = match change {
+            Change::Add(node) => voters.with(node),
+            Change::Remove(node) => voters.without(node),
+        };
+        if wanted == voters {
+            self.pending_change = None;
+            return effects.push(Effect::MembershipDone { id, voters, index });
+        }
+        let change = self.pending_change.as_mut().expect("present");
+        match change.change {
+            Change::Remove(node) => {
+                let voters = self.voters().without(node);
+                self.append_config(voters, effects);
+            }
+            Change::Add(node) => {
+                change.phase = Phase::CatchingUp {
+                    node,
+                    round: 1,
+                    target: self.state.last_index(),
+                    round_beats: 0,
+                    total_beats: 0,
+                };
+                self.reset_peer(node);
+                self.catch_up_progress(effects);
+                self.replicate(node, effects);
+            }
+        }
+    }
+    /// Append the configuration entry for the pending change (§7 steps 6-7).
+    fn append_config(&mut self, voters: Voters, effects: &mut Vec<Effect>) {
+        let before = self.targets();
+        let index = self.state.last_index() + 1;
+        self.state.push(LogEntry {
+            index,
+            term: self.state.term,
+            command: Command::Config {
+                voters: voters.to_vec(),
+            },
+        });
+        if let Some(change) = self.pending_change.as_mut() {
+            change.phase = Phase::Appended { index };
+        }
+        // A node that is no longer a target gets nothing more (§9.5).
+        let after = self.targets();
+        for peer in before.ids().filter(|peer| !after.contains(*peer)) {
+            self.inflight[peer as usize] = None;
+            self.transfer[peer as usize] = None;
+        }
+        for peer in after.ids().filter(|peer| !before.contains(*peer)) {
+            self.reset_peer(peer);
+        }
+        self.replicate_all(effects);
+    }
+    /// §8: finish every round the new node has reached; after the last one,
+    /// add it if that round was short, otherwise give up.
+    fn catch_up_progress(&mut self, effects: &mut Vec<Effect>) {
+        let last = self.state.last_index();
+        let Some(PendingChange {
+            phase:
+                Phase::CatchingUp {
+                    node,
+                    round,
+                    target,
+                    round_beats,
+                    ..
+                },
+            ..
+        }) = self.pending_change.as_mut()
+        else {
+            return;
+        };
+        let node = *node;
+        while self.matches[node as usize] >= *target {
+            if *round == CATCH_UP_ROUNDS {
+                if *round_beats < CATCH_UP_SHORT_ROUND {
+                    let voters = self.voters().with(node);
+                    self.append_config(voters, effects);
+                } else {
+                    self.abort_catch_up(effects);
+                }
+                return;
+            }
+            *round += 1;
+            *target = last;
+            *round_beats = 0;
+        }
+    }
+    /// A heartbeat passed during catch-up (§8).
+    fn catch_up_heartbeat(&mut self, effects: &mut Vec<Effect>) {
+        let Some(PendingChange {
+            phase:
+                Phase::CatchingUp {
+                    round_beats,
+                    total_beats,
+                    ..
+                },
+            ..
+        }) = self.pending_change.as_mut()
+        else {
+            return;
+        };
+        *round_beats += 1;
+        *total_beats += 1;
+        if *total_beats > CATCH_UP_MAX_HEARTBEATS {
+            self.abort_catch_up(effects);
+        }
+    }
+    fn abort_catch_up(&mut self, effects: &mut Vec<Effect>) {
+        let node = self.catching_up();
+        if let Some(change) = self.pending_change.take() {
+            effects.push(Effect::MembershipFailed {
+                id: change.id,
+                status: "CATCH_UP_FAILED",
+            });
+        }
+        if let Some(node) = node {
+            self.reset_peer(node);
+        }
     }
     fn apply_committed(&mut self, effects: &mut Vec<Effect>) {
         while self.last_applied < self.commit_index {
@@ -656,6 +1073,20 @@ impl Core {
     }
     fn message(&mut self, message: Envelope, effects: &mut Vec<Effect>) {
         let term = message.body.term();
+        // §9.4 (dissertation §4.2.3): within the minimum election timeout of
+        // hearing from a leader, a RequestVote neither updates our term nor
+        // gets our vote. A leader always counts as having heard one.
+        if self.leader_contact && matches!(message.body, Rpc::RequestVote { .. }) {
+            return self.reply(
+                message.from,
+                message.rpc_id,
+                Rpc::VoteResponse {
+                    term: self.state.term,
+                    granted: false,
+                },
+                effects,
+            );
+        }
         if term > self.state.term {
             self.step_down(term, effects);
         }
@@ -700,8 +1131,9 @@ impl Core {
                     && self.vote_requests.get(&from) == Some(&rpc_id)
                     && granted
                 {
-                    self.votes.insert(from);
-                    if self.votes.len() >= QUORUM {
+                    // Only voters of our configuration count (§9.2).
+                    self.votes = self.votes.with(from);
+                    if self.voters().is_quorum(self.votes) {
                         self.become_leader(effects);
                     }
                 }
@@ -720,10 +1152,7 @@ impl Core {
                         e.index == prev_log_index + i as u64 + 1
                             && e.term > 0
                             && e.term <= term
-                            && match &e.command {
-                                Command::NoOp => true,
-                                Command::Client(r) => r.operation.valid(),
-                            }
+                            && e.command.valid()
                     });
                 if term == 0 || term != self.state.term || leader_id != from || !valid_entries {
                     self.reply(
@@ -733,6 +1162,7 @@ impl Core {
                             term: self.state.term,
                             success: false,
                             matched_through: 0,
+                            last_log_index: self.state.last_index(),
                         },
                         effects,
                     );
@@ -740,6 +1170,7 @@ impl Core {
                 }
                 self.step_down(term, effects);
                 self.leader_hint = Some(from);
+                self.leader_contact = true;
                 self.reset_election(effects);
                 // §9.4: entries up to our snapshot are committed, and a legitimate
                 // leader holds the same ones, so they count as matching. Only the
@@ -788,6 +1219,7 @@ impl Core {
                         term: self.state.term,
                         success,
                         matched_through: matched,
+                        last_log_index: self.state.last_index(),
                     },
                     effects,
                 );
@@ -828,6 +1260,7 @@ impl Core {
                 }
                 self.step_down(term, effects);
                 self.leader_hint = Some(from);
+                self.leader_contact = true;
                 self.reset_election(effects);
                 // §9.3 step 2: we already hold and have committed everything it covers.
                 if last_included_index <= self.commit_index {
@@ -878,6 +1311,7 @@ impl Core {
                 // Figure 13 steps 6-8. Commit and apply jump to the snapshot; the
                 // reply below is executed only after the PersistSnapshot barrier.
                 self.state = adopt_snapshot(&self.state, base);
+                self.base_voters = Voters::from_bits(voters);
                 self.commit_index = last_included_index;
                 self.last_applied = last_included_index;
                 self.requested_snapshot = Some((snapshot, true));
@@ -915,6 +1349,7 @@ impl Core {
                     self.transfer[p] = None;
                     self.matches[p] = self.matches[p].max(last_included_index);
                     self.next[p] = self.matches[p] + 1;
+                    self.catch_up_progress(effects);
                 } else if let Some((base, _)) = self.transfer[p] {
                     // Continue (or resend) from where the follower says it is.
                     self.transfer[p] = Some((base, next_offset));
@@ -926,6 +1361,7 @@ impl Core {
                 term,
                 success,
                 matched_through,
+                last_log_index,
             } => {
                 if term != self.state.term || self.role != Role::Leader {
                     return;
@@ -952,6 +1388,7 @@ impl Core {
                     }
                     self.matches[p] = self.matches[p].max(confirmed);
                     self.next[p] = self.matches[p] + 1;
+                    self.catch_up_progress(effects);
                     let old_commit = self.commit_index;
                     self.advance_commit(effects);
                     if self.commit_index > old_commit {
@@ -964,8 +1401,11 @@ impl Core {
                         self.replicate(from, effects);
                     }
                 } else {
+                    // §4.2.1: the follower's log length caps nextIndex, so an
+                    // empty new node is found in one round trip.
                     self.next[p] = self.next[p]
                         .saturating_sub(1)
+                        .min(last_log_index.saturating_add(1))
                         .max(self.matches[p] + 1)
                         .max(1);
                     self.replicate(from, effects);

@@ -3,7 +3,7 @@
 use super::*;
 use kv_state::StateMachine;
 use raft_core::Core;
-use raft_protocol::{ClientRequest, Command, Operation};
+use raft_protocol::{ClientRequest, Command, Operation, Voters};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -325,8 +325,9 @@ fn file_header_start_fields_validated() {
         ),
         ("first sequence 0", vec![(64, 0_u64.to_le_bytes().to_vec())]),
         (
-            "vote for node 4",
-            vec![(56, 1_u64.to_le_bytes().to_vec()), (72, vec![4])],
+            // S4: IDs 1..=7 are valid, so the first invalid one is 8.
+            "vote for node 8",
+            vec![(56, 1_u64.to_le_bytes().to_vec()), (72, vec![8])],
         ),
         ("vote in term 0", vec![(72, vec![2])]),
     ];
@@ -815,7 +816,8 @@ fn boundary_truncation_is_documented_as_undetected() {
 // ---- S2: snapshots ------------------------------------------------------------
 
 fn snap(index: u64, term: u64, text: &str) -> Snapshot {
-    Snapshot::new(LogBase { index, term }, text.as_bytes().to_vec())
+    let voters = Voters::from_ids(&[1, 2, 3]).unwrap();
+    Snapshot::new(LogBase { index, term }, voters, text.as_bytes().to_vec())
 }
 
 /// Five entries in term 2, then a snapshot covering the first three.
@@ -916,8 +918,12 @@ fn install_rejects_invalid_requests_without_writing() {
     let mismatched = snap(4, 2, "four");
     let mut other_vote = adopt_snapshot(&next, LogBase { index: 4, term: 2 });
     other_vote.voted_for = Some(3);
-    let mut members = snap(4, 2, "members");
-    members.voters = 0b0110;
+    // S4: any non-empty set of nodes 1..=7 is a configuration; these are not.
+    let members = |voters: u32| {
+        let mut snapshot = snap(4, 2, "members");
+        snapshot.voters = voters;
+        snapshot
+    };
     for (what, state, snapshot) in [
         ("older base", adopt_snapshot(&next, older.base), older),
         ("same base", next.clone(), same),
@@ -932,9 +938,19 @@ fn install_rejects_invalid_requests_without_writing() {
             snap(4, 2, "vote"),
         ),
         (
-            "membership other than 1, 2, 3",
-            adopt_snapshot(&next, members.base),
-            members,
+            "empty membership",
+            adopt_snapshot(&next, members(0).base),
+            members(0),
+        ),
+        (
+            "membership naming node 0",
+            adopt_snapshot(&next, members(0b1).base),
+            members(0b1),
+        ),
+        (
+            "membership naming node 8",
+            adopt_snapshot(&next, members(1 << 8).base),
+            members(1 << 8),
         ),
     ] {
         assert!(wal.install(&state, &snapshot).is_err(), "{what}");
