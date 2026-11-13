@@ -324,4 +324,5 @@ InstallSnapshotResponse { term, success, last_included_index, next_offset }
 | 狀態機快照的驗證 | §6.2 列了 index 與大小限制 | 寫測試時發現 `restore` 沒有限制 session 中記住的回覆值大小，已補上 |
 | mutation 工具 | §11 只列出要植入的錯誤 | 完整執行時兩個案例被誤報為「存活」：一個因 trace 切開 libtest 的結果行，一個因植入的程式碼跟不上 S2 的修改而編譯失敗；另有一個錨點已失效。判定與錨點檢查已修正，見 [教學 04](lessons/04-mutation-checker-false-survivors/README.md) |
 | 中斷點標記檔 | 未涉及 | 完整驗收時一個 S1 的 crash 測試偶發失敗：標記檔原地建立再寫入，測試在兩者之間讀到空字串。從 V1 就存在。改為先寫暫存檔再 rename，見 [教學 05](lessons/05-marker-seen-before-written/README.md) |
+| 測試寫法與驗收程式 | 未涉及 | 一個 `#[should_panic]` 測試的結果行是 `... - should panic ... ok`，驗收程式只認 `... ok`，完整驗收到階段 11 才報錯。改用 `catch_unwind` 檢查 panic 訊息；新增 `scripts/preflight_phase.py`，開跑完整驗收前先用同一套規則跑該階段的測試 |
 | 模擬器的檢查範圍 | §10 列出 I6、I7 | 模擬器只檢查安全性，不檢查活性；拿掉 §9.4 的處理時模擬器仍全部通過，只有單元測試抓得到（教學 03 的練習） |

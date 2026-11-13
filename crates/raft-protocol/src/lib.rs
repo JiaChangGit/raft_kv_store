@@ -442,12 +442,26 @@ mod tests {
         assert_eq!(empty.entries_from(1), Some(&[][..]));
     }
 
+    /// Written without #[should_panic]: the acceptance checker requires the plain
+    /// "test NAME ... ok" result line, which libtest prints differently for it.
     #[test]
-    #[should_panic(expected = "cannot truncate compacted entries")]
     fn truncating_into_the_base_is_refused() {
-        let mut log =
-            DurableState::with_base(2, None, LogBase { index: 3, term: 2 }, vec![noop(4, 2)]);
-        log.truncate_from(3);
+        let base = LogBase { index: 3, term: 2 };
+        let log = DurableState::with_base(2, None, base, vec![noop(4, 2)]);
+        let panic = std::panic::catch_unwind(|| log.clone().truncate_from(3))
+            .expect_err("truncating at the base must panic");
+        let message = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        assert!(
+            message.contains("cannot truncate compacted entries"),
+            "{message}"
+        );
+        let mut held = log.clone();
+        held.truncate_from(4);
+        assert_eq!(held.last_index(), 3, "truncating after the base is fine");
     }
 
     #[test]
