@@ -25,14 +25,15 @@ git status --short && git log --oneline -3 && git tag
 |---|---|
 | S0 基礎、S1 儲存格式、S2 快照與壓縮、S3 ReadIndex、S4 成員變更 | 已完成，各有 tag（`s0-…` 到 `s4-membership-verified`） |
 | S1～S4 的獨立審查 | 2026-11-14 補做並修正；S1 只做到「不同 session」（見下） |
-| **S5 效能** | **下一個階段，尚未開始**。開始前先寫規格並取得使用者同意 |
+| **S5 效能** | 規格 `docs/PERFORMANCE.md` 已於 2026-11-14 核准，實作中 |
 | S6 整體強化、S7 公開整理 | 未開始 |
 
 ## 版本與未提交的變更
 
-- `HEAD` 是 `513cd58`（tag `s4-membership-verified`）。**獨立審查之後的所有修正都還在工作樹，沒有 commit，也沒有新的 tag。**
-  使用者還沒有指示 commit；這個 session 的宿主規則是「使用者要求才 commit」。
-- 未提交的內容（`git status --short` 應該看到這些；多了或少了就先弄清楚原因）：
+- **2026-11-14 更新**：下面這批修正已由使用者 commit 為 `b3e73f1`，並加上本機 tag `s1-s4-review-verified`（當時 P00～P13 皆為 `PASS [current source]`）。
+  之後開始 S5：規格草稿 `docs/PERFORMANCE.md`（待核准時尚未 commit）。以下兩段是寫交接當時的狀態，保留作為紀錄。
+- （當時）`HEAD` 是 `513cd58`（tag `s4-membership-verified`），獨立審查之後的所有修正都還在工作樹。
+- （當時）未提交的內容：
 
 | 類別 | 檔案 |
 |---|---|

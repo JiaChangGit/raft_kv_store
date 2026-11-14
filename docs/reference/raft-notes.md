@@ -167,6 +167,19 @@ server; it alone forms a majority of its configuration"，其他節點以空 log
 n 為奇數時三種組合都必然重疊，與郵件的 "Starting from an even-sized cluster" 一致。S4 模擬器只有 5 個槽位，所以能出現的是 n = 2 與 n = 4 的組合
 （n = 4 的「兩次加入」需要 6 台，模擬器做不到）。
 
+## 效能（S5）
+
+博論 §10.2（頁 141～144；2026-11-14 重新下載 PDF 並以 `pdftotext` 轉出後逐段讀過）：
+
+- 最花時間的步驟通常是 "writing the new log entry to disk and replicating it across the network"。
+- §10.2.1 leader 平行寫入：leader 可以邊寫自己的磁碟邊複製給 follower，以自己的 match index 表示已落盤的位置；
+  "The leader may even commit an entry before it has been written to its own disk, if a majority of followers have written it to their disks; this is still safe"。本專案 S5 不採用。
+- §10.2.2 批次："Many of the costs of request processing are amortized when multiple requests are collected into a batch"；
+  "Batching is very natural to implement in Raft, since AppendEntries supports sending multiple consecutive entries in one RPC"；LogCabin 每次最多送 "up to one megabyte in size"；
+  follower "writes all the new entries from a single AppendEntries request to its disk at once"。
+- §10.2.2 pipelining：leader 送出後就先把 next index 往前推，失敗時要退回；"The AppendEntries consistency check guarantees that pipelining is safe"。本專案 S5 不採用。
+- double-buffering（LogCabin 做 pipelining 之前的做法）：每個 follower 只保留一個進行中的 RPC，回覆後把累積的 entry 一次送出；"it dynamically adjusts to load"。本專案從 V1 起即如此。
+
 ## 各功能之間的交會點
 
 以下是我讀完後的整理，屬於推論，各階段規格需逐條確認：
