@@ -42,3 +42,33 @@ def test_new_leader_reads_the_latest_acknowledged_write(tmp_path):
         result=check(c.history)
         (c.directory/"checker.json").write_text(json.dumps(result,indent=2))
         assert result["status"]=="PASS",(result,c.history)
+
+def test_a_leader_left_with_a_minority_does_not_answer_reads(tmp_path):
+    """Five nodes. The leader keeps one follower and loses the other three, who
+    elect a new leader and accept a write. The one follower still acknowledges
+    the old leader in its term, so the old leader keeps getting replies: the
+    only thing between a client and the old value is that one follower plus
+    itself is not a majority of five (READ_INDEX.md G3, lesson 12). A leader
+    that is cut off from everybody gets no replies at all and proves less."""
+    with Cluster(tmp_path,nodes=5) as c:
+        assert c.invoke(request(520,1,"Put","x","old"))["status"]=="OK"
+        old=c.wait_leader()
+        friend=next(n for n in c.ids if n!=old)
+        minority={old,friend}
+        for a,b,_,_ in c.routes:
+            if (a in minority)!=(b in minority): c.proxy.set_rule(a,b,"drop")
+        new=c.wait_leader(exclude=minority)
+        assert c.invoke(request(521,1,"Put","x","new"),node=new)["status"]=="OK"
+        before=c.status(old)
+        assert before["role"]=="Leader" and c.status(friend)["term"]==before["term"], "the old leader still has a follower"
+        answer=c.invoke(request(522,1,"Get","x"),node=old,timeout=1.0)
+        after=c.status(old)
+        (c.directory/"old-leader.json").write_text(json.dumps({"before":before,"answer":answer,"after":after},indent=2))
+        assert answer["status"]!="OK",answer
+        assert after["role"]=="Leader" and after["reads_served"]==before["reads_served"]
+        c.proxy.heal()
+        done=c.invoke(request(522,2,"Get","x"))
+        assert done["status"]=="OK" and done["result"]=="new",done
+        result=check(c.history)
+        (c.directory/"checker.json").write_text(json.dumps(result,indent=2))
+        assert result["status"]=="PASS",(result,c.history)

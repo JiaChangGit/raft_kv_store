@@ -24,6 +24,9 @@
   S4（tag `s4-membership-verified`）已完成，規格與補記在 `docs/MEMBERSHIP.md`：節點編號 1～7、設定在 log 中、一次一台；
   叢集由一台 `--bootstrap`、其他以 `tools/kv_admin.py` 逐一加入（`tools/cluster.py` 自動這樣做）。論文第 4 章與 2015 年郵件的摘錄在 `docs/reference/raft-notes.md`。
   下一個階段是 S5（效能），開始前先寫規格並取得使用者同意。
+- S1～S4 的獨立審查已於 2026-11-14 補做並修正（紀錄 `docs/INDEPENDENT_REVIEW_S1_S4.md`，教學 11～13）；S1 的審查只做到不同 session。
+  改模擬器的工作負載或設定前，先讀教學 11、12：固定的參數與「挑最合理的對象」都曾讓整條路徑測不到。
+  寫任何「逐一植入錯誤再建置」的腳本前，先讀教學 06（共用建置目錄會互相污染）。
 - `AGENTS.md` 的 V1 禁止事項依路線圖在各階段開始時改寫（S2 snapshot、S3 ReadIndex、S4 成員變更已改）；
   仍有效的是不使用既有 Raft 函式庫、不用 unsafe、不做 lease。
 - 框架的增刪修候選與驗證方式另見 [框架改進建議](docs/FRAMEWORK_IMPROVEMENT_PROPOSALS.md)；

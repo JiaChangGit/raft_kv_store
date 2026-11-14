@@ -1096,11 +1096,16 @@ fn snapshot_and_wal_consistency_rules() {
     assert!(wal.state().entries().is_empty());
     assert_eq!((wal.state().term, wal.state().voted_for), (4, None));
 
-    // A snapshot newer than the durable term cannot be adopted.
+    // B < S and the snapshot's term is newer than the WAL's: an install that
+    // also raised the term was interrupted. This row was refused as impossible
+    // until the independent review of 2026-11-14 produced it with a real
+    // process (lesson 11); see interrupted_install_from_a_newer_term_raises_the_term.
     let dir = TestDir::new();
     installed(&dir);
-    write(&dir, &snap(9, 7, "too-new"));
-    refused_unchanged(&dir, "newer than the durable term");
+    write(&dir, &snap(9, 7, "from-a-newer-term"));
+    let wal = Wal::open(&dir.0, 1).unwrap();
+    assert_eq!(wal.state().base(), LogBase { index: 9, term: 7 });
+    assert_eq!((wal.state().term, wal.state().voted_for), (7, None));
 }
 
 #[test]
@@ -1131,6 +1136,73 @@ fn interrupted_install_rolls_forward_idempotently() {
         first,
         "a second restart changes nothing"
     );
+}
+
+/// docs/SNAPSHOT_COMPACTION.md §7.3 (lesson 11). A follower raises its term and
+/// installs a whole snapshot in one barrier; if it dies after the snapshot file
+/// is durable and before the WAL is rewritten, the snapshot's term is newer
+/// than the WAL's. Recovery adopts that term, without a vote.
+#[test]
+fn interrupted_install_from_a_newer_term_raises_the_term() {
+    let dir = TestDir::new();
+    let mut old = state(3, Some(2));
+    old.push(entry(1, 1, "A"));
+    old.push(entry(2, 3, "B"));
+    {
+        let mut wal = Wal::open(&dir.0, 1).unwrap();
+        wal.save(&old).unwrap();
+    }
+    let newer = snap(6, 5, "state-at-6-from-term-5");
+    fs::write(dir.0.join("snapshot"), encode_snapshot(&newer)).unwrap();
+    let first = {
+        let wal = Wal::open(&dir.0, 1)
+            .unwrap_or_else(|error| panic!("a node must start after this interruption: {error}"));
+        let recovered = wal.state();
+        assert_eq!(recovered.base(), newer.base);
+        assert_eq!(
+            recovered.last_index(),
+            6,
+            "the old log ended before the snapshot"
+        );
+        assert_eq!(
+            recovered.term, 5,
+            "the snapshot's term, the least that is valid"
+        );
+        assert_eq!(
+            recovered.voted_for, None,
+            "the vote of term 3 is not a vote of term 5"
+        );
+        assert!(recovered.valid());
+        assert_eq!(wal.snapshot(), Some(&newer));
+        fs::read(dir.wal()).unwrap()
+    };
+    assert_eq!(
+        first[56..64],
+        5_u64.to_le_bytes(),
+        "start_term in the file header"
+    );
+    assert_eq!(first[72..76], [0; 4], "no vote in the file header");
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    assert_eq!((wal.state().term, wal.state().voted_for), (5, None));
+    // The recovered node works: it can vote in a later term and append.
+    let mut next = wal.state().clone();
+    next.term = 6;
+    next.voted_for = Some(3);
+    next.push(entry(7, 6, "G"));
+    wal.save(&next).unwrap();
+    drop(wal);
+    assert_eq!(Wal::open(&dir.0, 1).unwrap().state(), &next);
+
+    // A snapshot that is not newer than the WAL's term changes neither term nor vote.
+    let dir = TestDir::new();
+    {
+        let mut wal = Wal::open(&dir.0, 1).unwrap();
+        wal.save(&old).unwrap();
+    }
+    let same = snap(6, 3, "state-at-6-from-term-3");
+    fs::write(dir.0.join("snapshot"), encode_snapshot(&same)).unwrap();
+    let wal = Wal::open(&dir.0, 1).unwrap();
+    assert_eq!((wal.state().term, wal.state().voted_for), (3, Some(2)));
 }
 
 #[test]

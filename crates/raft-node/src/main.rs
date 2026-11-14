@@ -321,7 +321,14 @@ struct Actor {
     snapshot_every: Option<u64>,
     snapshots_taken: u64,
     snapshots_installed: u64,
-    snapshot_too_large: bool,
+    /// Largest state machine image this node turns into a snapshot
+    /// ([`MAX_SNAPSHOT`]; tests use a small one).
+    snapshot_limit: usize,
+    /// Times the state machine was serialized for a snapshot, kept or not.
+    snapshot_attempts: u64,
+    /// After an image that exceeded the limit: the applied index before which
+    /// no new attempt is made (0 when the last attempt fitted).
+    oversize_retry_at: u64,
     reads: BTreeMap<u64, WaitingRead>,
     next_read: u64,
     reads_served: u64,
@@ -363,6 +370,7 @@ impl Actor {
             "snapshot_bytes":self.core.snapshot().map_or(0,|s|s.data.len()),
             "wal_bytes":self.wal.wal_bytes().unwrap_or(0),
             "snapshots_taken":self.snapshots_taken,"snapshots_installed":self.snapshots_installed,
+            "snapshot_attempts":self.snapshot_attempts,"snapshot_retry_at":self.oversize_retry_at,
             "reads_served":self.reads_served,"reads_failed":self.reads_failed,"reads_waiting":self.reads.len(),
             "voters":self.core.configuration().map(|(_, voters)| voters.to_vec()),
             "config_index":self.core.configuration().map(|(index, _)| index),
@@ -457,6 +465,8 @@ impl Actor {
                     }
                     if let Some(kv) = restored {
                         self.kv = kv;
+                        // A leader's snapshot fitted; ours may fit again too.
+                        self.oversize_retry_at = 0;
                         self.snapshots_installed += 1;
                     } else {
                         self.snapshots_taken += 1;
@@ -675,7 +685,7 @@ impl Actor {
                 self.wal.wal_bytes()? >= SNAPSHOT_MIN_WAL_BYTES.max(SNAPSHOT_EXPANSION * previous)
             }
         };
-        if !due {
+        if !due || applied < self.oversize_retry_at {
             return Ok(());
         }
         assert_eq!(
@@ -684,17 +694,25 @@ impl Actor {
             "state machine and Raft disagree"
         );
         let started = Instant::now();
+        self.snapshot_attempts += 1;
         let data = self.kv.snapshot();
-        if data.len() > MAX_SNAPSHOT {
-            if !self.snapshot_too_large {
-                self.snapshot_too_large = true;
-                self.trace(
-                    "snapshot_too_large",
-                    json!({"bytes":data.len(),"limit":MAX_SNAPSHOT}),
-                );
-            }
+        if data.len() > self.snapshot_limit {
+            // N1: this node stops compacting and its log grows again. Finding
+            // that out costs a full serialization (50 to 100 ms at the limit),
+            // and "due" stays true from here on, so without a pause it would
+            // be paid after every single event (lesson 13). Try again only
+            // when the log since the last snapshot has doubled; deletes may
+            // have made the state fit by then.
+            self.oversize_retry_at = applied + (applied - base);
+            self.trace(
+                "snapshot_too_large",
+                json!({"bytes":data.len(),"limit":self.snapshot_limit,"index":applied,
+                "retry_at":self.oversize_retry_at,
+                "serialize_us":started.elapsed().as_micros() as u64}),
+            );
             return Ok(());
         }
+        self.oversize_retry_at = 0;
         self.trace(
             "snapshot_serialized",
             json!({"index":applied,"bytes":data.len(),
@@ -988,7 +1006,9 @@ fn main() -> io::Result<()> {
         snapshot_every,
         snapshots_taken: 0,
         snapshots_installed: 0,
-        snapshot_too_large: false,
+        snapshot_limit: MAX_SNAPSHOT,
+        snapshot_attempts: 0,
+        oversize_retry_at: 0,
         reads: BTreeMap::new(),
         next_read: 0,
         reads_served: 0,
@@ -1054,7 +1074,9 @@ mod tests {
             snapshot_every: None,
             snapshots_taken: 0,
             snapshots_installed: 0,
-            snapshot_too_large: false,
+            snapshot_limit: MAX_SNAPSHOT,
+            snapshot_attempts: 0,
+            oversize_retry_at: 0,
             reads: BTreeMap::new(),
             next_read: 0,
             reads_served: 0,
@@ -1088,6 +1110,133 @@ mod tests {
         assert_eq!(status["role"], "Leader");
         tx.send(Input::Stop).unwrap();
         worker.join().unwrap().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// docs/SNAPSHOT_COMPACTION.md N1 (lesson 13): once the state machine no
+    /// longer fits a snapshot, the node must not serialize it after every
+    /// event just to find that out again. The limit is 64 bytes here so that
+    /// ten small entries exceed it.
+    #[test]
+    fn an_oversize_state_is_not_serialized_again_until_the_log_doubles() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/node-pool-tests")
+            .join(format!(
+                "oversize-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        let put = |index: u64| LogEntry {
+            index,
+            term: 1,
+            command: Command::Client(ClientRequest {
+                client_id: 7,
+                sequence: index,
+                operation: Operation::Put {
+                    key: format!("key-{index}"),
+                    value: "v".repeat(16),
+                },
+            }),
+        };
+        let mut core = Core::new(
+            1,
+            DurableState::new(
+                1,
+                Some(1),
+                vec![LogEntry {
+                    index: 1,
+                    term: 1,
+                    command: Command::Config {
+                        voters: vec![1, 2, 3],
+                    },
+                }],
+            ),
+        )
+        .unwrap();
+        let mut kv = StateMachine::default();
+        kv.apply(core.state.entry(1).unwrap());
+        core.commit_index = 1;
+        core.last_applied = 1;
+        let config: Config = toml::from_str(include_str!("../../../config/cluster.toml")).unwrap();
+        let (tx, rx) = mpsc::sync_channel(QUEUE);
+        let mut actor = Actor {
+            core,
+            wal: Wal::open(&dir, 1).unwrap(),
+            kv,
+            config,
+            tx,
+            rx,
+            incoming: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            outbound_active: Arc::new(AtomicUsize::new(0)),
+            rpc_deadlines: BTreeMap::new(),
+            election: None,
+            contact: None,
+            heartbeat: None,
+            random: 1,
+            snapshot_every: Some(1),
+            snapshots_taken: 0,
+            snapshots_installed: 0,
+            snapshot_limit: 64,
+            snapshot_attempts: 0,
+            oversize_retry_at: 0,
+            reads: BTreeMap::new(),
+            next_read: 0,
+            reads_served: 0,
+            reads_failed: 0,
+            changes: BTreeMap::new(),
+            next_change: 0,
+        };
+        // What the actor does between events: apply what is committed, then
+        // look whether a snapshot is due.
+        let apply_through = |actor: &mut Actor, last: u64| {
+            for index in actor.core.last_applied + 1..=last {
+                actor.core.state.push(put(index));
+                actor.kv.apply(&put(index));
+                actor.core.commit_index = index;
+                actor.core.last_applied = index;
+                actor.maybe_compact().unwrap();
+            }
+        };
+        // The assertions below do not depend on which index first exceeds the
+        // limit, only on what happens after one did.
+        apply_through(&mut actor, 10);
+        assert!(
+            actor.kv.snapshot().len() > 64,
+            "ten entries exceed the limit"
+        );
+        let first_failure = actor.oversize_retry_at;
+        assert!(first_failure > 0, "an oversize image was met");
+        let attempts = actor.snapshot_attempts;
+        let base = actor.core.state.base().index;
+        // Events that apply nothing new: no further serialization at all.
+        for _ in 0..50 {
+            actor.maybe_compact().unwrap();
+        }
+        assert_eq!(
+            actor.snapshot_attempts, attempts,
+            "an oversize state is not serialized again after every event"
+        );
+        // Not before the retry index either ...
+        let retry_at = actor.oversize_retry_at;
+        apply_through(&mut actor, retry_at - 1);
+        assert_eq!(actor.snapshot_attempts, attempts);
+        // ... and exactly once when it is reached; the gap then doubles.
+        apply_through(&mut actor, retry_at);
+        assert_eq!(actor.snapshot_attempts, attempts + 1);
+        assert_eq!(actor.oversize_retry_at, retry_at + (retry_at - base));
+        assert_eq!(actor.core.state.base().index, base, "nothing was compacted");
+        // When the image fits again, compaction resumes at the next attempt.
+        actor.snapshot_limit = MAX_SNAPSHOT;
+        let retry_at = actor.oversize_retry_at;
+        apply_through(&mut actor, retry_at);
+        assert_eq!(actor.core.state.base().index, retry_at);
+        assert_eq!(actor.oversize_retry_at, 0);
+        assert!(actor.snapshots_taken >= 1);
+        drop(actor);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

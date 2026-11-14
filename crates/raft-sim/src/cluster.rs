@@ -5,8 +5,13 @@ use raft_protocol::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Tiny chunks force every snapshot transfer to span several InstallSnapshot RPCs.
-const SIM_CHUNK: usize = 7;
+/// Snapshot chunk sizes in bytes; the seed picks one. The model's snapshot is
+/// about 30 bytes, so 7 and 13 make every transfer span several InstallSnapshot
+/// RPCs and 4096 delivers it in a single message. Until the independent review
+/// of 2026-11-14 the size was always 7, and the one-message path (where a
+/// follower may raise its term and install in one barrier) was never taken
+/// (docs/lessons/11-install-from-a-newer-term/).
+const SIM_CHUNKS: [usize; 3] = [7, 4096, 13];
 /// Node slots (IDs 1..=SLOTS). Five allow configurations of every size 1..=5,
 /// including the even sizes the 2015 counterexamples need (docs/MEMBERSHIP.md §12).
 pub const SLOTS: usize = 5;
@@ -121,6 +126,12 @@ pub struct Oracle {
     pub membership_changes: u64,
     pub membership_failures: BTreeMap<String, u64>,
     pub leader_removals: u64,
+    /// Client or administrator requests given to a node that believed it was
+    /// leader while another online node led a higher term. Zero would mean the
+    /// workload no longer tests deposed leaders (lesson 12).
+    pub stale_leader_requests: u64,
+    /// Whole snapshots delivered in one InstallSnapshot message (lesson 11).
+    pub one_message_snapshots: u64,
 }
 impl Oracle {
     fn read_started(&mut self, id: u64) {
@@ -416,6 +427,7 @@ pub struct Cluster {
     pub oracle: Oracle,
     pub trace: Vec<TraceRow>,
     next_client: u64,
+    next_stale_read: u64,
     next_admin: u64,
     admin: Option<AdminRequest>,
     pub seed: u64,
@@ -423,9 +435,13 @@ pub struct Cluster {
     pub models: [Model; SLOTS],
     /// Compact after this many applied entries; `None` never compacts (control group).
     pub snapshot_every: Option<u64>,
+    /// This seed's snapshot chunk size, one of [`SIM_CHUNKS`].
+    pub chunk: usize,
 }
 impl Cluster {
     pub fn new(seed: u64) -> Self {
+        // Independent of `snapshot_every` (seed % 6): every pair occurs.
+        let chunk = SIM_CHUNKS[((seed / 6) % SIM_CHUNKS.len() as u64) as usize];
         let mut s = Self {
             nodes: std::array::from_fn(|i| {
                 let id = i as u8 + 1;
@@ -437,7 +453,7 @@ impl Cluster {
                     DurableState::default()
                 };
                 let mut core = Core::new(id, state).unwrap();
-                core.set_chunk_size(SIM_CHUNK);
+                core.set_chunk_size(chunk);
                 core
             }),
             disks: std::array::from_fn(|_| MockDisk::default()),
@@ -449,6 +465,7 @@ impl Cluster {
             oracle: Oracle::default(),
             trace: vec![],
             next_client: 0,
+            next_stale_read: 0,
             next_admin: 0,
             admin: None,
             seed,
@@ -458,6 +475,7 @@ impl Cluster {
             // developing; include that, a few small intervals and a control group.
             snapshot_every: [None, Some(1), Some(2), Some(3), Some(5), Some(8)]
                 [(seed % 6) as usize],
+            chunk,
         };
         // The bootstrap entry is durable before the node starts (§6).
         s.disks[0].write(s.nodes[0].state.clone());
@@ -636,7 +654,11 @@ impl Cluster {
                     restore,
                 } => {
                     let model = self.oracle.snapshot(node, &snapshot)?;
-                    let stop_between = faults && self.random.next_u64().is_multiple_of(100);
+                    // A follower's install is interrupted ten times as often as a
+                    // local compaction: it is rarer, and it is the one that can
+                    // carry a new term in the same barrier (lesson 11).
+                    let odds = if restore { 10 } else { 100 };
+                    let stop_between = faults && self.random.next_u64().is_multiple_of(odds);
                     self.disks[node].install(state, snapshot, stop_between);
                     if stop_between {
                         self.crash(node, false)?;
@@ -779,11 +801,34 @@ impl Cluster {
         let effects = self.nodes[node].step(Event::Compact { index, data });
         self.execute(node, effects, faults)
     }
-    /// The leader with the highest term among online nodes, if any.
-    fn leader(&self) -> Option<usize> {
-        (0..SLOTS)
+    /// Any online node that believes it is leader, chosen at random: possibly
+    /// one that was deposed and has not noticed. Real clients cannot tell the
+    /// difference either, and a deposed leader is exactly whom ReadIndex must
+    /// stop from answering. S4 always chose the highest term here, which made
+    /// I8 blind to a missing confirmation round (lesson 12).
+    fn some_leader(&mut self) -> Option<usize> {
+        let leaders: Vec<usize> = (0..SLOTS)
             .filter(|i| self.online[*i] && self.nodes[*i].role == Role::Leader)
-            .max_by_key(|i| self.nodes[*i].state.term)
+            .collect();
+        if leaders.is_empty() {
+            return None;
+        }
+        let chosen = leaders[(self.random.next_u64() % leaders.len() as u64) as usize];
+        let term = |i: usize| self.nodes[i].state.term;
+        if leaders.iter().any(|other| term(*other) > term(chosen)) {
+            self.oracle.stale_leader_requests += 1;
+        }
+        Some(chosen)
+    }
+    /// An online node that believes it is leader although another online node
+    /// leads a higher term: the one with the lowest term, if there is any.
+    fn deposed_leader(&self) -> Option<usize> {
+        let leaders =
+            || (0..SLOTS).filter(|i| self.online[*i] && self.nodes[*i].role == Role::Leader);
+        let newest = leaders().map(|i| self.nodes[i].state.term).max()?;
+        leaders()
+            .filter(|i| self.nodes[*i].state.term < newest)
+            .min_by_key(|i| self.nodes[*i].state.term)
     }
     /// The simulated administrator (docs/MEMBERSHIP.md §12): add nodes 2 and 3
     /// first, then add or remove a random node, one request at a time.
@@ -791,7 +836,7 @@ impl Cluster {
         if self.admin.is_some() {
             return Ok(());
         }
-        let Some(node) = self.leader() else {
+        let Some(node) = self.some_leader() else {
             return Ok(());
         };
         let Some((_, voters)) = self.nodes[node].configuration() else {
@@ -840,6 +885,16 @@ impl Cluster {
                 let a = (message.from - 1) as usize;
                 let b = (message.to - 1) as usize;
                 if self.online[b] && !self.blocked[a][b] {
+                    if matches!(
+                        message.body,
+                        Rpc::InstallSnapshot {
+                            offset: 0,
+                            done: true,
+                            ..
+                        }
+                    ) {
+                        self.oracle.one_message_snapshots += 1;
+                    }
                     self.event(b, Event::Message(message), faults)?;
                 }
             }
@@ -852,7 +907,7 @@ impl Cluster {
                 };
                 self.oracle.actual_applied[node] = state.base().index;
                 self.nodes[node] = Core::restore(node as u8 + 1, state, snapshot)?;
-                self.nodes[node].set_chunk_size(SIM_CHUNK);
+                self.nodes[node].set_chunk_size(self.chunk);
                 self.online[node] = true;
                 let duration = MIN_ELECTION + self.random.next_u64() % 401;
                 self.timer(node, duration, Event::ElectionTimeout { generation: 0 });
@@ -893,7 +948,7 @@ impl Cluster {
         }
         if self.next_client < 64
             && self.random.next_u64().is_multiple_of(40)
-            && let Some(node) = self.leader()
+            && let Some(node) = self.some_leader()
         {
             self.next_client += 1;
             let key = format!("k{}", self.next_client % 3);
@@ -922,6 +977,19 @@ impl Cluster {
                     self.event(node, Event::Read { id }, faults)?;
                 }
             }
+        }
+        // Two leaders at once are rare and brief, so the ordinary workload
+        // seldom meets a deposed one. Ask it for a read on purpose: it must
+        // never answer with less than what was committed when the read began
+        // (I8). These reads are extra and have their own id range.
+        if let Some(node) = self.deposed_leader()
+            && self.random.next_u64().is_multiple_of(4)
+        {
+            self.next_stale_read += 1;
+            let id = 1_000_000 + self.next_stale_read;
+            self.oracle.stale_leader_requests += 1;
+            self.oracle.read_started(id);
+            self.event(node, Event::Read { id }, faults)?;
         }
         self.oracle
             .checkpoint(&self.nodes, &self.disks, &self.online)?;
@@ -974,6 +1042,10 @@ pub struct Campaign {
     pub configuration_sizes: Vec<u64>,
     /// Committed configurations of even size (2 or 4).
     pub even_configurations: u64,
+    /// Requests given to a self-believed leader of an older term (lesson 12).
+    pub stale_leader_requests: u64,
+    /// Whole snapshots delivered in one message (lesson 11).
+    pub one_message_snapshots: u64,
 }
 pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
     let mut report = Campaign {
@@ -1007,6 +1079,8 @@ pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
         leader_removals: 0,
         configuration_sizes: vec![0; SLOTS + 1],
         even_configurations: 0,
+        stale_leader_requests: 0,
+        one_message_snapshots: 0,
     };
     for seed in 0..seeds {
         let mut cluster = Cluster::new(seed);
@@ -1035,6 +1109,8 @@ pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
                 .or_default() += count;
         }
         report.leader_removals += oracle.leader_removals;
+        report.stale_leader_requests += oracle.stale_leader_requests;
+        report.one_message_snapshots += oracle.one_message_snapshots;
         for (size, count) in oracle.configuration_sizes.iter().enumerate() {
             report.configuration_sizes[size] += count;
         }

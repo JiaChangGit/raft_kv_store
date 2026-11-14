@@ -1,160 +1,127 @@
-# Claude Code 接手與未來計畫
+# 接手文件
 
-更新日期：2026-11-10。此文件交接 Rust Raft KV Store 的已知狀況、專案約定與後續
-討論方向。使用者希望從 Codex 轉交 Claude Code；請先核對現況，不要把此文件當成
-永久不變的狀態。**下一步是與使用者討論 V2 設計，並非直接開始 V2 實作。**
+更新日期：2026-11-14。這份文件取代 2026-11-10 從 Codex 轉交時寫的版本（舊版在 Git 歷史中，`git show 513cd58:docs/HANDOFF_CLAUDE.md`）。
+它描述寫下時的狀態；接手時請先用下面的命令核對，**以實際查到的為準，不以這份文字為準**。
 
 ## 一開始先做什麼
 
-在 WSL/Linux 執行，路徑若因環境變動應先查明：
-
 ```bash
 cd /home/user/src/Distributed_Key-Value_Store_with_Raft
-git status --short
-.venv/bin/python scripts/status.py
-cat AGENTS.md
+. "$HOME/.cargo/env"                    # 非登入的 shell 裡 cargo 不在 PATH 上
+git status --short && git log --oneline -3 && git tag
+.venv/bin/python scripts/status.py      # 每個階段最近一次驗收，以及是否對應目前的來源
 ```
 
-接著閱讀 `docs/ENGINEERING_HARDENING.md`、`docs/STORAGE_FORMAT_V1.md`，按需看
-`docs/WORKLOG.md`、`docs/API_CONTRACT.md`、`docs/CLIENT_CONTRACT.md` 及實作。若
-`.venv`、`.agf` 或 `artifacts` 不存在，先如實標示；它們被 `.gitignore` 排除，不會
-因複製 Git 來源自動帶上。不要因歷史文件說曾安裝過就假設新環境已可用。
+然後依任務讀：[路線圖](ROADMAP.md)（計畫與每階段的固定流程）、[AGENTS.md](../AGENTS.md)（不可違反的工程條件）、
+[獨立審查紀錄](INDEPENDENT_REVIEW_S1_S4.md)（最近一次工作的來龍去脈）、[測試紀錄](TEST_RECORD_20261114.md)（跑過什麼、結果在哪）。
+`.venv`、`.agf`、`artifacts`、`target` 都被 `.gitignore` 排除；換機器或重新 clone 之後它們不存在，要先如實確認再往下做。
 
-目前 Git 儲存庫尚無提交，`git status` 顯示整個專案來源為未追蹤檔案。**這不代表
-這些檔案可以刪除或覆蓋**，也無法直接以一般的 `git diff` 比較已提交基準。已保存的
-`artifacts/reports/engineering-stage2-source.zip` 是工程強化結束時的來源快照；它不
-包含本交接文件，也不包含忽略的工作資料或測試證據。資料、證據與其他來源檔應分別
-保護；是否建立本機 Git commit 依使用者當下授權與需求決定。
+## 目標與目前的位置
 
-## 使用者意圖與協作方式
+專案的目的是**學習**與**面試時展示能力**，並藉開發過程改進使用者自己的 AI 框架（`/home/user/src/ai-general-framework`，唯讀）。
+只維護一個最後版本；程式由 AI 完成，每個遇到的 bug 寫成新手導向的教學。最後整理成公開的 GitHub 儲存庫，push 由使用者自己做。
 
-- 建立並理解一個 Rust Raft KV Store；用自然、通順的台灣繁體中文解釋，說明程式
-  與測試的因果，避免空泛文字。適合時沿一筆請求追蹤狀態、對照規格與論文，並搭配
-  流程圖、時序圖、反例或練習。現成教學見 `docs/HANDS_ON.md` 與 `docs/LEARNING_GUIDE.md`。
-- 已按順序完成 V1、實際操作與教學驗收、工程強化。下一階段應先設計並討論 V2 的
-  範圍與驗收；使用者原先要求分階段進行、適合在階段結束時提問。
-- 使用者已允許目標專案所需的本機實作、測試與必要環境準備；不要重問已明確授權的
-  普通操作。push、建立 PR、部署及新的外部連線仍須符合當次明確指示和宿主政策。
-  不要在交接檔、命令紀錄或測試資料中記錄密碼或其他憑證。
-- 修改限於本目標專案；相鄰 `/home/user/src/ai-general-framework` 保持唯讀。
-  不假設框架是模型協調器、有永久記憶或會自動學習；不預設新增 MCP 或搜尋索引。
-- 保留 `START_HERE_zh-TW.md`、`01_FEASIBILITY_REVIEW.md`、`ALL_IN_ONE_SPEC.md`
-  原文。原始 ZIP、原始 `gates.json` 與腳本未取得；`docs/reference/` 是從現有材料
-  抽出的方便閱讀副本，`acceptance/v1.json` 是本專案訂出的**替代驗收**，不是原 gate。
+| 階段 | 狀態 |
+|---|---|
+| S0 基礎、S1 儲存格式、S2 快照與壓縮、S3 ReadIndex、S4 成員變更 | 已完成，各有 tag（`s0-…` 到 `s4-membership-verified`） |
+| S1～S4 的獨立審查 | 2026-11-14 補做並修正；S1 只做到「不同 session」（見下） |
+| **S5 效能** | **下一個階段，尚未開始**。開始前先寫規格並取得使用者同意 |
+| S6 整體強化、S7 公開整理 | 未開始 |
 
-## V1 的結構與不變條件
+## 版本與未提交的變更
 
-固定三節點 ID 1/2/3、quorum 2、單一 Raft group。`raft-core` 為純事件到有序效果
-的核心，模擬器與 runtime 共用它；`raft-node` 的單一 actor 擁有共識與狀態機狀態。
-模組定位見 `README.md`。修改前先讀受影響程式、呼叫者、對應契約和測試。
+- `HEAD` 是 `513cd58`（tag `s4-membership-verified`）。**獨立審查之後的所有修正都還在工作樹，沒有 commit，也沒有新的 tag。**
+  使用者還沒有指示 commit；這個 session 的宿主規則是「使用者要求才 commit」。
+- 未提交的內容（`git status --short` 應該看到這些；多了或少了就先弄清楚原因）：
 
-目前最重要的工程條件見 `AGENTS.md`：依賴 term/vote/log 的效果前必須持久化，
-storage 失敗停止服務；leader 直接推進 commit 需要多數 durable match 與 current-term
-entry。回復不能將所有 WAL 視為 committed。新 GET 走 replicated log；回覆成功須在
-commit 和本地 apply 後。重試依 replicated client ID、sequence、canonical command
-與原結果去重。故障測試的節點間流量及 reconnect 經完整 frame proxy。
+| 類別 | 檔案 |
+|---|---|
+| 產品程式 | `crates/raft-storage/src/lib.rs`（回復時採用快照的 term）、`crates/raft-node/src/main.rs`（超過上限後的重試間隔） |
+| 模擬器 | `crates/raft-sim/src/cluster.rs`、`crates/raft-sim/src/lib.rs`、`crates/raft-sim/tests/invariants.rs` |
+| 測試與測試工具 | `crates/raft-storage/src/tests.rs`、`crates/raft-storage/tests/crash_process.rs`、`crates/raft-storage/src/bin/snapshot_probe.rs`、`tests/integration/test_read_index.py`、`scripts/mutation_check.py` |
+| 契約 | `acceptance/final.json` |
+| 規格與說明 | `docs/SNAPSHOT_COMPACTION.md`、`docs/READ_INDEX.md`、`docs/MEMBERSHIP.md`、`docs/ROADMAP.md`、`CLAUDE.md`、`docs/FRAMEWORK_EXPERIENCE_LOG.md`、`docs/lessons/README.md`、本文件 |
+| 新檔案 | `docs/INDEPENDENT_REVIEW_S1_S4.md`、`docs/TEST_RECORD_20261114.md`、`docs/lessons/11-…`、`12-…`、`13-…` 三個資料夾 |
 
-V1 不使用既有 Raft library、unsafe Rust、snapshot、動態 membership、lease 或
-ReadIndex。若未來決議改變這些範圍，先明確更新設計、專案規則、相容性及驗收，而非
-把舊 V1 規則當成 V2 已完成或自行繞過。WAL 與 session 現在持續成長；永久失去多數
-不保證服務可用。請勿聲稱此教學專案已達 production-ready 或協定已被形式化證明。
+- 驗收：修正完成時（指紋 `5209bbdf…390dc`）P00～P13 全部通過。之後加入測試紀錄並改寫本文件，指紋因此改變，同一個 session 又重跑了一次。
+  **現況請看 `scripts/status.py`**：每一行都是 `PASS [current source]` 才代表 receipt 對應你眼前的檔案；出現 `source changed / not run` 就表示之後有人動過檔案。
 
-## 實作與文字風格
+## 這個 session 做了什麼
 
-- 沿用既有 Rust workspace、Rust 2024 edition、`rustfmt` 和 clippy；先選擇可讀的最小
-  變更。保持純 core 與 OS I/O 邊界、actor 所有權、明確錯誤及有界資源；不要用測試
-  專屬捷徑改變正式資料路徑，也不要為假想需求引入新框架或抽象層。
-- 測試要檢查外部可觀察行為與安全條件，含可重現的負向案例；避免只重述實作或只
-  檢查退出碼。保留首次失敗、命令、環境、結果、失敗原因與修正後證據。
-- 文件與回報分清程式中存在、實際執行且通過、尚未驗證及合理推論。保留原術語，
-  首次出現時用白話解釋；教學圖源與渲染方式遵循 `.agf/managed/project-rules.md`
-  及按需指引，圖解內容以實際來源為依據。
-- 禁止為了通過 gate 削弱測試、忽略失敗或悄悄變更驗收條件。修改安全性條件、
-  協定或資料格式前，先整理相容性與失敗路徑，留下可由他人檢查的決策。
+1. 以新的 session、不同的模型對 `513cd58` 做獨立審查。沒有發現違反 Raft 安全性的缺陷；找到三個缺陷與一組模擬器的盲點。
+2. 使用者指示「修，照建議做」後，修正三個缺陷並補測試：
+   - **F1**（S2，教學 11）：follower 用一則訊息安裝 term 比自己新的快照時，在「快照已落盤、WAL 未改寫」之間被終止，之後永遠無法啟動。
+     改為重啟時採用快照的 term、清除投票。
+   - **F2**（S4 影響 S3 的證據，教學 12）：模擬器把請求一律送給 term 最高的 leader，讀取的不變量 I8 因此抓不到「未經多數確認就回覆」。
+     產品程式沒有錯；修正的是模擬器的工作負載。
+   - **F3**（S2，教學 13）：狀態機超過 64 MiB 後，每個事件都重新序列化一次再丟掉。改為間隔加倍後才重試。
+3. 寫了教學 11～13、更新三份規格與契約、把審查紀錄放進版本控制，並重跑完整驗收。
 
-## 框架在 Claude Code 中的使用
+## 已決定的事與理由
 
-既有框架入口為 `/home/user/src/ai-general-framework/scripts/agf.py`，目標專案
-目前有 `.agf/managed/project-rules.md` 與 `.agents/skills/` 中的 read-research、
-trace-code、review-change、debug-root-cause、guide-learning。它們被記錄為曾經
-實際讀用的資源；**不能因此宣稱 Claude Code 已自動發現或載入這些 skills**。
-若檔案仍存在，可按任務直接讀取相應 `SKILL.md`，並依框架規則讀取 profile：
+| 決定 | 理由 |
+|---|---|
+| F1 在**回復時**修（採用快照的 term），不在 core 拆成兩個 barrier | core 的規則是一步最多一個 barrier；回復時提高 term 而不投票在 Raft 中是安全的。兩種做法的比較在教學 11 §6 |
+| 模擬器除了隨機挑選，還**主動**對過期的 leader 發讀取 | 實測只做隨機挑選時，1,000 個種子只有 43 次請求送到過期 leader，植入的錯誤仍全部通過 |
+| 模擬器的快照分塊隨種子變化（7、13、4096 bytes），follower 安裝途中 crash 的機率 1/10 | 固定 7 bytes 讓「一則訊息送完」的路徑從未執行；只改分塊時 F1 的巧合在 1,000 個種子裡一次都沒出現 |
+| 新增兩個「必須由模擬器抓到」的 mutation 案例，以及兩個必須大於零的統計欄位 | 讓「模擬器變弱」在驗收時以失敗出現，而不是繼續綠燈 |
+| 既有測試 `snapshot_and_wal_consistency_rules` 的最後一列改成相反的期待 | 它原本斷言 F1 的磁碟狀態「必須拒絕」，那正是缺陷本身。**這是唯一一處改了既有測試的期待**，已記入契約的 `modified_tests`，值得使用者親自看一眼 |
+| 新測試加進既有的階段 11、12，不另開階段 | 獨立審查是各階段固定流程的一步，補上的測試屬於它所審查的階段；階段 14、15 保留給 S5、S6 |
+| 審查報告的 §1～§7 保留審查當時的原文，處理結果另寫在 §8 | 讓人分得出「當時看到什麼」與「後來改了什麼」 |
 
-```bash
-python3 -B /home/user/src/ai-general-framework/scripts/agf.py profile show --root /home/user/src/Distributed_Key-Value_Store_with_Raft
-```
+## 還沒做的事與未知
 
-先檢查目前 Claude 宿主的可用功能、專案既有規則和框架 CLI 說明；不要套用未驗證
-的宿主設定，不要覆寫此 `CLAUDE.md` 或 `AGENTS.md`。若需要實際配置，先預覽和檢查
-受影響檔案，再依當前授權操作；配置成功、宿主發現 skill、真實任務有效是三件事。
-框架觀察與可驗假說見 `docs/FRAMEWORK_FEEDBACK.md`；沒有對照資料就不宣稱框架造成
-成效，也不要把 Raft 專屬規則硬塞進通用框架。
-完整增刪修候選、觀察分層及驗證矩陣另見 `docs/FRAMEWORK_IMPROVEMENT_PROPOSALS.md`。
+- **是否 commit、要不要加 tag，等使用者決定。** 之前各階段的慣例是本機 commit 加 tag；這次的修正跨 S2～S4，沒有現成的 tag 名稱可沿用。
+- **S1 還缺一次由第三個模型做的審查。** S1 的規格草稿與第一個 commit 和這次的審查者是同一個模型（`claude-fable-5-2`）。
+- 留給 S6 的模擬器盲點：管理者一次只送一個成員變更（「同時兩個變更」「蓋過未 commit 的設定」不會出現）；用戶端每個種子只有 64 個操作。
+  審查時實測有 17 個植入錯誤只有單元測試抓得到，清單在審查紀錄 §5。
+- 審查紀錄的觀察 O1～O3 沒有處理：O1（每個事件複製整份 log，成本隨資料量成長）屬於 S5；O2、O3 是已聲明的取捨。
+- 教學 01～13 的狀態都是「草稿」：沒有第二個人照著第 3 節做過。
+- 沒有實測的事（主機斷電、真實叢集跑到 64 MiB 等）列在測試紀錄 §7。
+- `docs/WORKLOG.md` 與 `CLAUDE.md` 的部分條目還停在 V1 時期的說法，這次沒有整理。
 
-## 驗收與證據的目前狀態
+## 下一步
 
-2026-11-10 工程強化完成時，WSL 執行的 Rust 34 項與 Python 45 項通過；替代驗收
-P00～P08 均對應當時來源指紋
-`5a61deeecd87efc373b756c22c8f398efdf0eb19ff1123e4178cc80ae94bab4d`。另有
-1,000 seeds、1,000 萬事件模擬、四項隔離 mutation 及乾淨副本 CLI crash/restart
-測試。具體命令、版本、數量、限制、首敗與原始輸出見
-`artifacts/reports/engineering-stage2.json`、`artifacts/acceptance-v1/`、
-`artifacts/audit/` 和 `artifacts/clean-build/engineering-20261110-01/result.json`。
+1. 使用者決定是否 commit 這批修正（以及 tag）。
+2. 若要嚴格符合路線圖：請第三個模型另開 session 審查 S1（`docs/STORAGE_FORMAT_V2.md`、`crates/raft-storage`），不要先給它這次的結論。
+3. 開始 S5 前先寫規格。S5 的規格應該回應 O1：把「快照大小」當成量測的變數，並決定每個事件複製整份 log、`Wal::save` 逐筆比對、回復時逐筆複製這三件事怎麼處理。
+4. 之後每個階段完成時，在規格補記寫下**實作所用的模型**，下一次審查才判斷得出自己是不是「不同模型」。
 
-**本次新增 `CLAUDE.md`、本文件與框架建議文件後，來源指紋改變；上述是文件新增前的歷史結果，
-尚未對新增文件後的來源重跑 P00～P08。** 單純文件交接並不代表測試失敗，但不能
-稱舊 receipt 是當前來源的通過紀錄。使用 `scripts/status.py` 核對最新嘗試與當前指紋。
-如需當前版本的完整替代驗收，來源穩定後執行：
+## 操作範圍
 
-```bash
-. "$HOME/.cargo/env"
-.venv/bin/python scripts/revalidate_all.py
-```
+- 修改只限本專案；`/home/user/src/ai-general-framework` 唯讀（`.claude/settings.json` 有 deny 規則）。
+- 不 push、不建立 PR、不部署。本機 commit 與 tag 依使用者當次的指示。
+- 不為了通過驗收而削弱測試或改契約；改既有測試的期待時，寫進契約的 `modified_tests` 並告訴使用者。
+- 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L42）。
+- 以自然的台灣繁體中文溝通；分清「已執行」「推論」「未驗證」。
 
-此命令會依序重跑 P00～P08，包含多次完整模擬與實際子程序測試，耗時且寫入
-`artifacts/`。如果修改 checker，其 hash 改變，必須從 P00 起重新依序驗收；先前
-receipt 不能充作新 checker 的前一階段。個別修改先依風險跑針對性測試，完整驗收
-以 `acceptance/v1.json`、`scripts/verify_gate.py` 和實際 receipt 為準。需要新建
-乾淨副本時見 `docs/ENGINEERING_HARDENING.md`；它仍共用主機 Rustup、Python 和
-package caches，不是新 OS 或冷快取驗證。
+## 這次踩過的坑（接手的人大概也會遇到）
 
-Windows 原生 Python 曾執行 checker 的 7 案例：5 通過、2 因 UNC symlink 建立權限
-而跳過；相同 symlink 測試在 WSL 執行通過。Rust runtime 的驗收目標是 WSL/Linux，
-沒有宣稱 Windows runtime 已驗證。SIGKILL 也不等於任意硬體斷電。
+- **session 從 `/home/user/src` 啟動時，宿主不會列出專案的 skill。** 直接讀 `.claude/skills/<名稱>/SKILL.md` 照做即可。從專案根目錄啟動比較省事。
+- **非登入的 shell 找不到 `cargo`。** 先 `. "$HOME/.cargo/env"`，或把 `$HOME/.cargo/bin` 加進 `PATH`。
+- **使用者環境的 RTK hook 會改寫 Bash 命令**，偶爾讓自動權限審查要求原樣重送；需要原始輸出時用 `rtk proxy <命令>`。
+- **寫「逐一植入錯誤再建置」的腳本前先讀教學 06。** 複製出來的檔案保留舊的修改時間，共用建置目錄時 cargo 會沿用前一個案例的編譯結果。這次的臨時腳本就重蹈了一次。
+- **報告與驗收執行期間不要改任何受指紋涵蓋的檔案**（`docs/` 也算）。三份報告帶著指紋，改了就得全部重跑（約 35 分鐘）。要寫文件就先寫完再跑。
+- **改模擬器的工作負載或固定參數前先讀教學 11、12。** 「挑最合理的對象」和「固定的大小」都曾讓整條路徑測不到。
+- `pkill -f <樣式>` 會連自己所在的 shell 一起殺掉（命令列裡有同樣的字）；用 PID。
 
-## 建議的下一階段：先討論 V2
+## 重要材料的位置
 
-**優先候選：WAL header integrity。** 已重現 v1 record 中間的 `payload_len` 若遭任意
-毀損成合法上限內但超過 EOF 的值，可能被判成 incomplete tail 而截斷。這與正常
-process crash 的 append-prefix 假設不同，具體格式與實際重現見
-`docs/STORAGE_FORMAT_V1.md`、`docs/ENGINEERING_HARDENING.md` 和
-`artifacts/audit/wal-review-20261110/results.json`。
+| 要找什麼 | 在哪裡 |
+|---|---|
+| 計畫、階段、固定流程、模型分工 | `docs/ROADMAP.md` |
+| 不可違反的工程條件 | `AGENTS.md` |
+| 各階段的規格與實作補記 | `docs/STORAGE_FORMAT_V2.md`、`SNAPSHOT_COMPACTION.md`、`READ_INDEX.md`、`MEMBERSHIP.md` |
+| 驗收契約與說明 | `acceptance/final.json`、`docs/ACCEPTANCE_FINAL.md` |
+| 審查的發現、證據與處理結果 | `docs/INDEPENDENT_REVIEW_S1_S4.md` |
+| 這次跑過的測試 | `docs/TEST_RECORD_20261114.md` |
+| bug 教學（13 篇）與寫法 | `docs/lessons/`、`.claude/skills/write-bug-lesson/SKILL.md` |
+| 框架的使用經驗 | `docs/FRAMEWORK_EXPERIENCE_LOG.md` |
+| 論文出處筆記 | `docs/reference/raft-notes.md` |
+| receipt、報告、審查的重現材料（不在版本控制內） | `artifacts/acceptance-final/`、`artifacts/reports/`、`artifacts/audit/independent-review-20261114/` |
 
-建議交給使用者審閱的設計應至少回答：
+## 可以直接交給下一個 session 的第一句話
 
-1. 威脅模型：正常中斷、部分寫入、隨機 header／payload 毀損各如何辨識；哪些情況
-   應 fail closed，哪些可安全截尾。checksum 有限制，不保證辨識所有毀損。
-2. 格式方案：版本識別、header 完整性、長度上限、sequence、payload checksum 與
-   decode 次序。避免在驗證 header 之前依不可信長度分配記憶體或決定截尾。
-3. v1 相容與遷移：開啟舊資料的策略、備份、遷移中斷後重啟、原子切換與 rollback；
-   v1 的既有歧義無法因轉換自動得到可信認證。不得在未確認資料安全與相容性時
-   原地改寫使用者資料。
-4. 驗收矩陣：v1/v2 版本、每個 header 欄位及 payload 毀損、短尾／中間毀損、超界
-   長度、重複／跳號、同步失敗、遷移各 crash 邊界與重複啟動；明列預期成功、拒絕
-   或可恢復，並檢查不產生錯誤 ACK、資料遺失或未經確認的 destructive repair。
-5. 保留既有 V1 替代驗收與原始證據；另定 V2 條件與測試，區分真實 process crash、
-   故障注入與未實測的硬體斷電。先設計並和使用者確認方向，再開始受授權的實作。
-
-**後續候選，尚未決定：** snapshot/compaction 與 session 資源成長，需先設計
-last-included index/term、KV 與 dedup sessions 的一致快照、原子安裝、leader/follower
-追趕和中斷回復；不能只刪 WAL。其他如 membership、TLS、sharding、multi-Raft、
-Windows runtime 與生產部署目前都不是已承諾範圍。先依使用者學習目標、風險與實際
-瓶頸排序，再個別決議範圍、相容性和驗收，不要一次擴大。
-
-## 可直接給 Claude Code 的第一項任務
-
-> 請先閱讀專案根目錄 `CLAUDE.md`、`AGENTS.md` 與 `docs/HANDOFF_CLAUDE.md`，
-> 核對目前 Git 狀態、`scripts/status.py`、WAL v1 格式及工程強化證據。請以台灣
-> 繁體中文提出 WAL header integrity 的 V2 設計選項、舊資料遷移取捨、失敗情境、
-> 測試和驗收矩陣，明確標出已重現與待驗證的部分，先和我討論，不要直接實作。
-> 相鄰 ai-general-framework 保持唯讀，不要 push、建立 PR 或部署。
+> 請先讀 `CLAUDE.md` 與 `docs/HANDOFF_CLAUDE.md`，執行「一開始先做什麼」的四個命令並回報：工作樹有哪些未提交的變更、`status.py` 是否每一行都是 `PASS [current source]`。
+> 然後（擇一）：(a) 依我的指示處理這批修正的 commit；(b) 以不同於 `claude-fable-5-2` 的模型審查 S1，不要先讀 `INDEPENDENT_REVIEW_S1_S4.md` 的結論；
+> (c) 起草 S5 的規格給我看，先不要實作。相鄰的 ai-general-framework 保持唯讀，不要 push、建立 PR 或部署。

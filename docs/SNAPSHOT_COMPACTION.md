@@ -48,6 +48,7 @@
 - 與正常處理同時進行的快照（論文 §5.1.1 的 copy-on-write／fork）。快照在 actor 內同步完成，期間節點暫停處理；耗時會記錄。
 - 壓縮、增量快照、磁碟型狀態機、follower 讀取、session 依時間淘汰、client 註冊。
 - 把 core 的「每個事件複製並比對整份狀態」改成追蹤變動：延到 S5，以 benchmark 決定（§13 D4）。壓縮會把 log 長度限制在門檻附近，複製成本因此有上限。
+  （2026-11-14 獨立審查補充：這個上限是「1 MiB 與上次快照 4 倍兩者取大」，所以它隨資料量成長；S5 量測時應把快照大小當作變數。）
 
 ## 4. 保證與不保證
 
@@ -56,6 +57,8 @@
 - G1 **只丟已套用的資料**：本機壓縮只涵蓋已套用（必然已 commit）的 entry。
 - G2 **先落盤、再丟棄、再回覆**：快照檔落盤之後才改寫 WAL 丟掉前段；follower 安裝快照，要在快照與 WAL 都落盤後才回覆成功。
 - G3 **任何中斷都能回復**：壓縮或安裝在任一步被終止，重啟後得到舊狀態或新狀態之一；超出 §7.3 允許範圍的不一致一律 fail closed。
+  例外（2026-11-14 修訂，[教學 11](lessons/11-install-from-a-newer-term/README.md)）：被中斷的安裝若同時帶著較新的 term，重啟後位於快照、term 為**快照的 term**、沒有投票；
+  這個 term 不小於舊狀態的 term、不大於被中斷那一步的 term，是磁碟上唯一留得下來的資訊。
 - G4 **快照等價於重放**：在 index S 還原快照，得到的 KV、session 與 `effect_count` 和從頭套用 1～S 完全相同；三台節點在同一個 S 做出的快照位元組完全相同。
 - G5 **有界**：WAL 大小不超過「1 MiB 與上次快照 4 倍兩者取大」再加上尚未套用的 entry；快照不超過 64 MiB；session 數等於 client 數。
 - G6 **落後的節點追得上**：leader 已丟掉某 follower 需要的 entry 時，改送快照，follower 追上後回到正常複製。
@@ -64,6 +67,8 @@
 **不保證**
 
 - N1 KV 資料量本身沒有上限。序列化後超過 64 MiB 時，該節點停止壓縮並記錄，log 從此恢復成長；不會截斷資料。
+  要知道「超過了」就得先序列化一次（在上限附近實測約 50～100 毫秒），所以放棄之後不會每個事件都再試：
+  下一次嘗試在「上次快照以來已套用的筆數加倍」時，仍然超過就再加倍（2026-11-14 修訂，[教學 13](lessons/13-oversize-snapshot-serialized-every-event/README.md)）。
 - N2 client 數沒有上限，session 也就沒有上限（§13 D1 的取捨）。
 - N3 做快照期間節點不處理其他事件；資料很大時可能拖過選舉逾時，引發一次換 leader。這是可用性問題，不影響安全性；耗時會量測並寫進結果。
 - N4 快照的 CRC 只防意外毀損。一個有 bug 的 leader 若送出 CRC 正確但內容錯誤的快照，follower 會在解析時發現並 fail closed（停止服務），不會嘗試修復。
@@ -170,10 +175,13 @@ WAL 的初始狀態改由檔頭決定：`term = start_term`、`voted_for = start
 | 無快照、B > 0 | **fail closed** | 快照檔遺失 |
 | S > 0、B = S | WAL 的 `base_term` 必須等於快照 term，否則 fail closed | 正常壓縮後 |
 | S > 0、B > S | **fail closed** | 不可能由本程式的寫入順序產生 |
-| S > 0、B < S | 用 `adopt_snapshot` 得到新狀態，**立刻改寫 WAL**（暫存檔、`sync_all`、rename、同步目錄），再繼續 | 壓縮或安裝在「快照已落盤、WAL 還沒改寫」之間被中斷 |
+| S > 0、B < S | 用 `adopt_snapshot` 得到新狀態；**若快照的 term 大於 WAL 的 term，把 term 提高到快照的 term 並清除投票**；然後**立刻改寫 WAL**（暫存檔、`sync_all`、rename、同步目錄），再繼續 | 壓縮或安裝在「快照已落盤、WAL 還沒改寫」之間被中斷。term 較新的情況：follower 由一則訊息得知新 term 並收齊快照，兩者在同一個 barrier（§9.3 第 6 步） |
 
 最後一列是「往前完成」：快照已經落盤，代表它涵蓋的 entry 都已 commit，所以依快照完成壓縮是安全的。
 改寫完成前再被中斷，下次重啟會走同一列，結果相同。殘留的 `snapshot.tmp`、`raft.wal.tmp` 一律忽略並刪除。
+
+提高 term 為什麼安全：快照涵蓋的 entry 已 commit，所以它的 term 確實存在過；這台節點在那個 term 沒有任何已落盤的投票，被中斷那一步的回覆也還沒送出。
+2026-11-14 以前這個情況被當成「不可能出現」而拒絕啟動，節點從此無法啟動；獨立審查以真實 process 重現後改為現在的規則（教學 11）。
 
 重啟後：狀態機由快照內容還原（沒有快照則為空）；core 的 `commit_index` 與 `last_applied` 設為 S，而不是 0。
 這是 S2 對「重啟只還原 term、vote、log」這條規則的修改：快照只含已 commit 的 entry，所以直接當作已套用是安全的；
@@ -195,7 +203,7 @@ S 之後的 entry 仍和以前一樣，要重新得知已 commit 才套用。
 - **一般模式**：`WAL 大小 >= max(1 MiB, 4 × 上次快照大小)`，且已套用的 index 大於目前的 base。
 - **測試模式**：啟動參數 `--snapshot-every N`，已套用的 index 比 base 多 N 筆以上就做。N = 1 即「每筆都做」。
 
-流程：actor 序列化狀態機（index 為 `last_applied`）→ 超過 64 MiB 就放棄這次並記錄（N1）→ 交給 core 的新事件 `Compact { index, data }`。
+流程：actor 序列化狀態機（index 為 `last_applied`）→ 超過 64 MiB 就放棄這次、記錄，並把下一次嘗試延到 N1 所述的位置 → 交給 core 的新事件 `Compact { index, data }`。
 core 檢查 `index == last_applied` 且 `index > base.index`，以 `term_at(index)` 為 base term，產生新狀態並發出 `PersistSnapshot` 效果；
 actor 依 §7.4 寫入後呼叫 `persisted`。壓縮和一般寫入一樣走 durability barrier，等待期間 core 不處理其他事件。
 
@@ -236,7 +244,9 @@ InstallSnapshotResponse { term, success, last_included_index, next_offset }
 4. `offset` 不等於已收到的長度、或快照身分與進行中的不同：回覆失敗，`next_offset` 為已收到的長度（或 0），leader 依此重送。
 5. `done` 為 false：存進記憶體，回覆成功與新的 `next_offset`。這時尚未落盤，因為還沒有回覆任何依賴它的東西。
 6. `done` 為 true：檢查長度與 `total_crc`；以 `adopt_snapshot` 得到新狀態（Figure 13 第 6、7 步），發出 `PersistSnapshot`（含「要還原狀態機」的標記）。
-   actor 先確認快照內容可以解析，再依 §7.4 寫入、還原 KV；core 在 `persisted` 後把 `commit_index`、`last_applied` 推到 S，**之後才**回覆成功。
+   actor 先確認快照內容可以解析，再依 §7.4 寫入、還原 KV，**之後才**回覆成功。
+   （實作上 core 在發出 `PersistSnapshot` 的同一步就把 `commit_index`、`last_applied` 設為 S，回覆排在 barrier 之後；barrier 完成前 core 不處理任何事件，對外等價。）
+   這則訊息的 term 若比 follower 新，term 的變更也在這同一個 barrier 裡；它被中斷時的回復見 §7.3 最後一列。
 
 ### 9.4 也要改的地方
 
@@ -327,3 +337,6 @@ InstallSnapshotResponse { term, success, last_included_index, next_offset }
 | 測試寫法與驗收程式 | 未涉及 | 一個 `#[should_panic]` 測試的結果行是 `... - should panic ... ok`，驗收程式只認 `... ok`，完整驗收到階段 11 才報錯。改用 `catch_unwind` 檢查 panic 訊息；新增 `scripts/preflight_phase.py`，開跑完整驗收前先用同一套規則跑該階段的測試 |
 | mutation 證據的隔離（2026-11-13，S3 期間發現） | 未涉及 | S2 tag 所附的 mutation 報告是在所有案例共用一個 cargo 建置目錄下產生的，案例之間可能互相污染，其「全部抓到」的證據力較弱。S3 起每個案例獨立建置並先跑對照組；見 [教學 06](lessons/06-mutants-sharing-a-build-directory/README.md) |
 | 模擬器的檢查範圍 | §10 列出 I6、I7 | 模擬器只檢查安全性，不檢查活性；拿掉 §9.4 的處理時模擬器仍全部通過，只有單元測試抓得到（教學 03 的練習） |
+| 被中斷的安裝帶著較新的 term（2026-11-14，獨立審查） | §7.3 把「快照的 term 比 WAL 新」視為不可能，測試 `snapshot_and_wal_consistency_rules` 斷言拒絕 | 可能，而且節點從此無法啟動。改為採用快照的 term。新增 `interrupted_install_from_a_newer_term_raises_the_term`、`real_process_crash_during_install_from_a_newer_term_recovers`；見 [教學 11](lessons/11-install-from-a-newer-term/README.md) |
+| 模擬器的分塊大小（同上） | §10 以 7 bytes 的分塊迫使每次傳送跨多個 RPC | 固定 7 bytes 讓「一則訊息送完」的路徑從未執行，上一列的 bug 因此沒被發現。改為隨種子在 7、13、4096 bytes 間變化；follower 安裝途中 crash 的機率由 1/100 提高到 1/10；測試斷言單一訊息的快照確實出現過 |
+| 超過 64 MiB 之後（同上） | N1：停止壓縮並記錄 | 實際上每個事件都重新序列化整個狀態機再丟棄。改為加倍間隔後才重試；新增 `an_oversize_state_is_not_serialized_again_until_the_log_doubles`；見 [教學 13](lessons/13-oversize-snapshot-serialized-every-event/README.md) |

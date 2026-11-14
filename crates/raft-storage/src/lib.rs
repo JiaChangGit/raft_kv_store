@@ -623,9 +623,18 @@ impl Wal {
             Some(found) => {
                 // The snapshot became durable but the WAL was not rewritten yet:
                 // finish the job. Everything the snapshot covers is committed.
-                let next = adopt_snapshot(&self.state, found.base);
+                let mut next = adopt_snapshot(&self.state, found.base);
+                // The interrupted install may also have carried a newer term: a
+                // follower that learns the term from a one-message snapshot
+                // raises it in the same barrier (lesson 11). The snapshot proves
+                // that its term existed, and this node holds no durable vote in
+                // it, so adopting the term without a vote is safe.
+                if next.term < found.base.term {
+                    next.term = found.base.term;
+                    next.voted_for = None;
+                }
                 if !next.valid() {
-                    return Err(invalid("snapshot is newer than the durable term"));
+                    return Err(invalid("snapshot and WAL cannot be reconciled"));
                 }
                 self.rewrite_wal(&next)?;
             }

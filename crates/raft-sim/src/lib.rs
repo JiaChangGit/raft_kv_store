@@ -122,7 +122,14 @@ impl MockDisk {
             }
             Some(s) => {
                 if base.index < s.base.index {
-                    self.durable = adopt_snapshot(&self.durable, s.base);
+                    let mut next = adopt_snapshot(&self.durable, s.base);
+                    // As raft-storage does: an install interrupted after it raised
+                    // the term leaves a snapshot newer than the WAL's term.
+                    if next.term < s.base.term {
+                        next.term = s.base.term;
+                        next.voted_for = None;
+                    }
+                    self.durable = next;
                     self.volatile = self.durable.clone();
                 }
                 Ok(self.durable.clone())

@@ -235,7 +235,10 @@
         "out_of_order_foreign_and_corrupt_chunks_are_refused",
         "a_snapshot_we_already_cover_is_acknowledged_without_change",
         "a_higher_term_install_persists_term_and_snapshot_together",
-        "append_entries_that_start_before_the_base_count_as_matching"
+        "append_entries_that_start_before_the_base_count_as_matching",
+        "interrupted_install_from_a_newer_term_raises_the_term",
+        "real_process_crash_during_install_from_a_newer_term_recovers",
+        "an_oversize_state_is_not_serialized_again_until_the_log_doubles"
       ],
       "pytest_nodes": [
         "tests/history/test_checker.py::test_only_the_latest_request_per_client_is_remembered",
@@ -260,7 +263,13 @@
         "docs/lessons/04-mutation-checker-false-survivors/expected-output.txt",
         "docs/lessons/05-marker-seen-before-written/README.md",
         "docs/lessons/05-marker-seen-before-written/repro.sh",
-        "docs/lessons/05-marker-seen-before-written/expected-output.txt"
+        "docs/lessons/05-marker-seen-before-written/expected-output.txt",
+        "docs/lessons/11-install-from-a-newer-term/README.md",
+        "docs/lessons/11-install-from-a-newer-term/repro.sh",
+        "docs/lessons/11-install-from-a-newer-term/expected-output.txt",
+        "docs/lessons/13-oversize-snapshot-serialized-every-event/README.md",
+        "docs/lessons/13-oversize-snapshot-serialized-every-event/repro.sh",
+        "docs/lessons/13-oversize-snapshot-serialized-every-event/expected-output.txt"
       ]
     },
     "12": {
@@ -280,7 +289,8 @@
         "tests/history/test_checker.py::test_reads_ignore_sessions_and_a_retried_get_reads_again",
         "tests/integration/test_read_index.py::test_reads_do_not_write_the_wal",
         "tests/integration/test_read_index.py::test_new_leader_reads_the_latest_acknowledged_write",
-        "scripts/test_mutation_check.py::IsolationTests::test_each_copy_builds_in_its_own_target_directory"
+        "scripts/test_mutation_check.py::IsolationTests::test_each_copy_builds_in_its_own_target_directory",
+        "tests/integration/test_read_index.py::test_a_leader_left_with_a_minority_does_not_answer_reads"
       ],
       "required_files": [
         "docs/READ_INDEX.md",
@@ -292,7 +302,10 @@
         "docs/lessons/06-mutants-sharing-a-build-directory/expected-output.txt",
         "docs/lessons/07-test-silently-stopped-testing/README.md",
         "docs/lessons/07-test-silently-stopped-testing/repro.sh",
-        "docs/lessons/07-test-silently-stopped-testing/expected-output.txt"
+        "docs/lessons/07-test-silently-stopped-testing/expected-output.txt",
+        "docs/lessons/12-simulator-stopped-asking-stale-leaders/README.md",
+        "docs/lessons/12-simulator-stopped-asking-stale-leaders/repro.sh",
+        "docs/lessons/12-simulator-stopped-asking-stale-leaders/expected-output.txt"
       ]
     },
     "13": {
@@ -341,7 +354,8 @@
         "docs/lessons/08-judged-before-the-term-commit/expected-output.txt",
         "docs/lessons/09-apply-overtaken-by-its-barrier/README.md",
         "docs/lessons/09-apply-overtaken-by-its-barrier/repro.sh",
-        "docs/lessons/09-apply-overtaken-by-its-barrier/expected-output.txt"
+        "docs/lessons/09-apply-overtaken-by-its-barrier/expected-output.txt",
+        "docs/INDEPENDENT_REVIEW_S1_S4.md"
       ],
       "notes": "Since S4 tools/cluster.py creates every test cluster by bootstrapping node 1 and adding the others through membership requests, so every earlier integration test also exercises the add path. Tests whose only change is a constructor signature (Snapshot::new takes voters, AppendResponse carries last_log_index) are not listed in modified_tests."
     }
@@ -413,7 +427,8 @@
           "event_count",
           "pass_count",
           "snapshots_taken",
-          "snapshots_installed"
+          "snapshots_installed",
+          "one_message_snapshots"
         ],
         "required_empty_array": [
           "failures"
@@ -458,7 +473,10 @@
           "s2_wal_rewritten_before_snapshot",
           "s2_snapshot_file_crc_unchecked",
           "s2_accept_wal_newer_than_snapshot",
-          "s2_older_sequence_executes_again"
+          "s2_older_sequence_executes_again",
+          "s2_recover_refuses_newer_term_snapshot",
+          "s2_oversize_snapshot_serialized_every_event",
+          "sim_must_catch_interrupted_newer_term_install"
         ]
       }
     ],
@@ -483,7 +501,9 @@
           "seed_count",
           "event_count",
           "pass_count",
-          "reads_served"
+          "reads_served",
+          "one_message_snapshots",
+          "stale_leader_requests"
         ],
         "required_empty_array": [
           "failures"
@@ -535,7 +555,11 @@
           "s3_round_not_advanced",
           "s3_skip_current_term_commit_wait",
           "s3_keep_reads_after_losing_leadership",
-          "s3_answer_before_applied"
+          "s3_answer_before_applied",
+          "s2_recover_refuses_newer_term_snapshot",
+          "s2_oversize_snapshot_serialized_every_event",
+          "sim_must_catch_interrupted_newer_term_install",
+          "sim_must_catch_unconfirmed_read"
         ]
       }
     ],
@@ -553,7 +577,9 @@
           "membership_changes",
           "leader_removals",
           "catch_up_failures",
-          "even_configurations"
+          "even_configurations",
+          "one_message_snapshots",
+          "stale_leader_requests"
         ],
         "required_empty_array": [
           "failures"
@@ -620,7 +646,11 @@
           "s4_read_index_fixed_majority",
           "s4_snapshot_records_latest_configuration",
           "s4_no_length_hint",
-          "s4_apply_after_barrier"
+          "s4_apply_after_barrier",
+          "s2_recover_refuses_newer_term_snapshot",
+          "s2_oversize_snapshot_serialized_every_event",
+          "sim_must_catch_interrupted_newer_term_install",
+          "sim_must_catch_unconfirmed_read"
         ]
       }
     ]
@@ -653,7 +683,7 @@
       "final_tests": [
         "stale_candidate_rejected"
       ],
-      "note": "unchanged"
+      "note": "same assertions; builds its state with DurableState::new since S2 made the log fields private (body compared with the v1 tag by the independent review, 2026-11-14)"
     },
     "vote_persist_intent_before_reply": {
       "final_phase": "01",
@@ -695,14 +725,14 @@
       "final_tests": [
         "append_ack_after_durable_sync"
       ],
-      "note": "same test body; since S1 it runs against WAL format 2, the only storage implementation"
+      "note": "same assertions; since S1 it runs against WAL format 2, the only storage implementation. The body moved to tests.rs and uses the log accessors introduced in S2 (compared with the v1 tag by the independent review, 2026-11-14)"
     },
     "uncommitted_suffix_not_applied_after_recovery": {
       "final_phase": "03",
       "final_tests": [
         "uncommitted_suffix_not_applied_after_recovery"
       ],
-      "note": "same test body; since S1 it runs against WAL format 2, the only storage implementation"
+      "note": "same assertions; since S1 it runs against WAL format 2, the only storage implementation. The body moved to tests.rs and uses the log accessors introduced in S2 (compared with the v1 tag by the independent review, 2026-11-14)"
     },
     "truncated_wal_tail_safe": {
       "final_phase": "03",
@@ -718,14 +748,14 @@
       "final_tests": [
         "tcp_framing_handles_partial_io"
       ],
-      "note": "unchanged"
+      "note": "same assertions; its AppendResponse literal names the last_log_index field added in S4 (body compared with the v1 tag by the independent review, 2026-11-14)"
     },
     "rpc_correlation_ignores_stale_reply": {
       "final_phase": "04",
       "final_tests": [
         "rpc_correlation_ignores_stale_reply"
       ],
-      "note": "unchanged"
+      "note": "same assertions; its AppendResponse literal names the last_log_index field added in S4 (body compared with the v1 tag by the independent review, 2026-11-14)"
     },
     "tests/integration/test_cluster_smoke.py::test_three_process_election_and_restart": {
       "final_phase": "04",
@@ -788,7 +818,7 @@
       "final_tests": [
         "simulation_randomized_invariants"
       ],
-      "note": "unchanged"
+      "note": "same test function, strengthened: see modified_tests. From S4 until the independent review of 2026-11-14 its workload was weaker than S3's in one respect (no request reached a deposed leader); it now also asserts that the situations its invariants are about occurred"
     },
     "tests/history/test_checker.py::test_linearizability_checker_rejects_stale_read": {
       "final_phase": "07",
@@ -834,7 +864,9 @@
     "Membership changes (S4) have no formal proof; the evidence is the dissertation, the 2015 raft-dev fix and finite tests, including a scripted replay of the 2015 counterexample.",
     "Operator mistakes are not detected: bootstrapping twice, or re-adding an ID with a wiped data directory, can break safety (docs/MEMBERSHIP.md N2).",
     "Catch-up is timed in heartbeats, not wall-clock time; a removed node keeps running until stopped, and re-adding a still-running removed node may make the leader step down once (MEMBERSHIP.md N5, N6, N8).",
-    "The simulator uses five node slots; configurations of six or seven nodes are exercised only by unit tests of the majority rule."
+    "The simulator uses five node slots; configurations of six or seven nodes are exercised only by unit tests of the majority rule.",
+    "The independent review of S1-S4 (docs/INDEPENDENT_REVIEW_S1_S4.md) was done by a different model than the one that implemented S2-S4, but by the same model that drafted the S1 specification and its first commit; for S1 it is independent by session only.",
+    "The simulator's administrator sends one membership request at a time and its clients stop after 64 operations per seed; two concurrent changes, and reads late in a run, are covered by unit tests only (left for S6)."
   ],
   "replaced_tests": {
     "reserved_header_fields_must_be_pristine": {
@@ -868,8 +900,8 @@
     },
     "saturated_outbound_pool_does_not_starve_status": {
       "phase": "none (mutation target of saturated_pool_spin)",
-      "changed_in": "12, 13",
-      "note": "sent a GET to make the leader replicate into a saturated pool; since S3 a GET waits for ReadIndex and sends nothing, so the test stopped exercising the pool and the mutant survived. It now sends a Put; the control passes and the mutant is detected (lesson 07) S4 (13): Its hand-made leader now holds a three-node configuration entry: since S4 a leader replicates only to the voters of its configuration, and without one the Put would send nothing and the pool would not be exercised (the lesson 07 failure again)."
+      "changed_in": "12, 13, 11 (2026-11-14)",
+      "note": "sent a GET to make the leader replicate into a saturated pool; since S3 a GET waits for ReadIndex and sends nothing, so the test stopped exercising the pool and the mutant survived. It now sends a Put; the control passes and the mutant is detected (lesson 07) S4 (13): Its hand-made leader now holds a three-node configuration entry: since S4 a leader replicates only to the voters of its configuration, and without one the Put would send nothing and the pool would not be exercised (the lesson 07 failure again). 2026-11-14: its hand-made actor names the three fields that replaced snapshot_too_large (lesson 13); nothing else changed."
     },
     "single_leader_per_term": {
       "phase": "01",
@@ -960,6 +992,21 @@
       "phase": "none (not in a phase)",
       "changed_in": "13",
       "note": "A node without a configuration no longer campaigns (S4), so the test starts from a three-node configuration entry at index 1, term 1 instead of an empty log; every term and index it asserts moved up by one, the asserted behaviour is the same."
+    },
+    "snapshot_and_wal_consistency_rules": {
+      "phase": "11",
+      "changed_in": "11 (independent review, 2026-11-14)",
+      "note": "Its last row asserted that a snapshot whose term is newer than the WAL's is refused with the files unchanged. The independent review produced exactly that disk state with a real process (a one-message install from a newer term, killed between the snapshot file and the WAL rewrite), after which the node could never start. The row now asserts that the node starts at the snapshot with the snapshot's term and no vote; the other rows are unchanged (lesson 11)."
+    },
+    "simulation_randomized_invariants": {
+      "phase": "07",
+      "changed_in": "11, 12, 13 (independent review, 2026-11-14)",
+      "note": "The test function was untouched from v1 to S4, but the workload it runs was not: S4 sent every client request to the leader with the highest term, so deposed leaders received no reads and invariant I8 could no longer see a read answered without a confirmation round (the planted mistake passed all 1,000 seeds; under S3's workload it failed at seed 266). The workload now picks any self-believed leader at random and aims extra reads at deposed ones; snapshot chunk sizes vary by seed (7, 13 and 4096 bytes) instead of always 7; a follower's install is interrupted 1 time in 10 instead of 1 in 100. The test additionally asserts that requests reached a deposed leader and that one-message snapshots occurred, so a workload that stops reaching them fails instead of passing (lessons 11 and 12)."
+    },
+    "real_process_crash_during_snapshot_install_recovers": {
+      "phase": "11",
+      "changed_in": "11 (independent review, 2026-11-14)",
+      "note": "Only its helper calls changed: the snapshot probe takes an optional mode, used by the new real_process_crash_during_install_from_a_newer_term_recovers. Boundaries and assertions are the same."
     }
   }
 }

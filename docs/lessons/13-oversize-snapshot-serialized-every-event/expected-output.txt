@@ -1,0 +1,33 @@
+
+== s4-membership-verified  (before the fix)
+   state machine image: 67473925 bytes; snapshot limit: 67108864 bytes
+   after event  1: the snapshot check took   50 ms
+   after event  2: the snapshot check took   50 ms
+   after event  3: the snapshot check took   50 ms
+   after event  4: the snapshot check took   50 ms
+   after event  5: the snapshot check took   50 ms
+   after event  6: the snapshot check took   50 ms
+   after event  7: the snapshot check took   50 ms
+   after event  8: the snapshot check took   50 ms
+   after event  9: the snapshot check took   50 ms
+   after event 10: the snapshot check took   50 ms
+   ten events: 500 ms spent on snapshot checks; snapshots taken: 0
+
+== current source  (after the fix)
+   state machine image: 67473925 bytes; snapshot limit: 67108864 bytes
+   after event  1: the snapshot check took   52 ms
+   after event  2: the snapshot check took    0 ms
+   after event  3: the snapshot check took    0 ms
+   after event  4: the snapshot check took    0 ms
+   after event  5: the snapshot check took    0 ms
+   after event  6: the snapshot check took    0 ms
+   after event  7: the snapshot check took    0 ms
+   after event  8: the snapshot check took    0 ms
+   after event  9: the snapshot check took    0 ms
+   after event 10: the snapshot check took    0 ms
+   ten events: 52 ms spent on snapshot checks; snapshots taken: 0
+   serializations: 1; next attempt at applied index 32802
+
+== RESULT
+Events (out of 10) whose snapshot check took 10 ms or more: before the fix 10, after the fix 1.
+BUG REPRODUCED at s4-membership-verified: every event pays for a full serialization that is thrown away.

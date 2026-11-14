@@ -217,6 +217,28 @@ CASES=[
      "            .partition(|effect| matches!(effect, Effect::Apply(_)));",
      "            .partition(|_| false);",
      "applies_stay_in_order_when_a_barrier_commits_more","raft-core"),
+    # Independent review of 2026-11-14 (lessons 11-13).
+    # Lesson 11: recovery refuses an interrupted install that also raised the term.
+    ("s2_recover_refuses_newer_term_snapshot",STORAGE,
+     "                if next.term < found.base.term {\n",
+     "                if false && next.term < found.base.term {\n",
+     "interrupted_install_from_a_newer_term_raises_the_term","raft-storage"),
+    # Lesson 13: the oversize image is serialized again after every event.
+    ("s2_oversize_snapshot_serialized_every_event","crates/raft-node/src/main.rs",
+     "        if !due || applied < self.oversize_retry_at {",
+     "        if !due {",
+     "an_oversize_state_is_not_serialized_again_until_the_log_doubles",None),
+    # The next two require the SIMULATOR, not a unit test, to notice a mistake:
+    # they survive as soon as its workload stops reaching the situation, which
+    # no ordinary test run would show (lessons 11 and 12).
+    ("sim_must_catch_unconfirmed_read","crates/raft-core/src/lib.rs",
+     "            Some(read_index) if read.round <= confirmed && last_applied >= read_index => {",
+     "            Some(read_index) if last_applied >= read_index => {",
+     "simulation_randomized_invariants","raft-sim"),
+    ("sim_must_catch_interrupted_newer_term_install","crates/raft-sim/src/lib.rs",
+     "                    if next.term < s.base.term {\n",
+     "                    if false && next.term < s.base.term {\n",
+     "simulation_randomized_invariants","raft-sim"),
 ]
 
 def classify(test,stdout,stderr):

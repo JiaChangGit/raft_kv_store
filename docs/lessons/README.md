@@ -17,6 +17,9 @@
 | 08 | [剛選出的 leader 把早就 commit 的設定當成「進行中」](08-judged-before-the-term-commit/README.md) | 新 leader 還不知道什麼已 commit 就先做判斷，每次換 leader 後成員變更都被誤拒 | 草稿（待有人照做一遍） |
 | 09 | [先 commit 的反而後套用](09-apply-overtaken-by-its-barrier/README.md) | 落盤 barrier 排在 Apply 前面，它完成時又 commit 了更新的 entry，69 比 68 先套用 | 草稿（待有人照做一遍） |
 | 10 | [植入的錯誤存活了，但測試沒有問題](10-mutant-that-changed-nothing/README.md) | 一個 mutation 案例根本沒有改變程式行為（等價突變），被誤報成測試抓不到 | 草稿（待有人照做一遍） |
+| 11 | [快照裝到一半被終止，節點從此開不了機](11-install-from-a-newer-term/README.md) | follower 用一則訊息裝下 term 比自己新的快照，在兩個檔案之間被終止後，每次啟動都被拒絕 | 草稿（待有人照做一遍） |
+| 12 | [一千萬個事件全部通過，因為模擬器不再去問該問的節點](12-simulator-stopped-asking-stale-leaders/README.md) | S4 把模擬的請求一律送給最新的 leader，讀取的不變量從此碰不到它要抓的情況 | 草稿（待有人照做一遍） |
+| 13 | [資料超過快照上限之後，每做一件事都先白做一次大工程](13-oversize-snapshot-serialized-every-event/README.md) | 超過 64 MiB 後，節點每個事件都重新序列化整個狀態機再丟掉 | 草稿（待有人照做一遍） |
 
 ## 怎麼讀
 

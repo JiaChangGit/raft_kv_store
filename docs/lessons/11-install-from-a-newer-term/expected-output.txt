@@ -1,0 +1,18 @@
+
+== s4-membership-verified  (before the fix)
+   1. on disk before: term 3 vote Some(3) last index 2
+   2. core asks for 1 barrier: PersistSnapshot with term 5 and a snapshot ending at index 6 of term 5
+   3. killed between the two steps: new snapshot file, old WAL
+   4. restart 1: REFUSED: snapshot is newer than the durable term
+   4. restart 2: REFUSED: snapshot is newer than the durable term
+
+== current source  (after the fix)
+   1. on disk before: term 3 vote Some(3) last index 2
+   2. core asks for 1 barrier: PersistSnapshot with term 5 and a snapshot ending at index 6 of term 5
+   3. killed between the two steps: new snapshot file, old WAL
+   4. restart 1: STARTED with term 5 vote None log base index 6 of term 5
+   4. restart 2: STARTED with term 5 vote None log base index 6 of term 5
+
+== RESULT
+BUG REPRODUCED at s4-membership-verified: the node refuses to start, every time.
+Current source: the node starts, in the snapshot's term and without a vote.

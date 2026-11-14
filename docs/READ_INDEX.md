@@ -140,6 +140,9 @@
 - 用戶端工作負載中的 GET 改為對 leader 送出 `Event::Read`，不再 `Propose`。
 - 新增 I8 **讀取新鮮度**：讀取開始時，記下觀察者已知的最大已 commit index；`ReadReady` 的 readIndex 必須不小於它，且該節點的模型狀態機至少套用到 readIndex。
 - 原有的訊息遺失、延遲、重複、crash、分區都照舊作用於確認回合。
+- **請求要送得到過期的 leader**（2026-11-14 修訂，[教學 12](lessons/12-simulator-stopped-asking-stale-leaders/README.md)）：I8 要抓的是「已被取代、自己還不知道的 leader 回覆了舊資料」。
+  工作負載因此在所有自認為 leader 的在線節點中隨機挑選；另外，只要同時存在兩個自認的 leader，就以 1/4 的機率對 term 較低的那個額外發一筆讀取。
+  報告的 `stale_leader_requests` 記錄這類請求的次數，測試斷言它大於零。
 
 ## 9. 量測（§12 D4）
 
@@ -199,6 +202,7 @@
 | 實作順序 | 照 §11 的四步完成，每步結束時全部測試通過。步驟 2 前先推演出 v1 的 `test_retry_after_leader_crash` 會被 D3 打破（它用 GET 的 sequence 接著做重複寫入），與節點的修改一起調整並記錄於契約 |
 | 產品程式的 bug | 讀取流程本身沒有發現 bug：core 的 9 個讀取測試第一次執行就全部通過，5 個 S3 植入錯誤全部被抓到。但發現了一個不安全的預設值（見下方「附帶修正」），以及 S3 讓一個既有測試悄悄失效（見下方） |
 | 模擬器不變量 I8 | 在暫存副本中植入「不等確認就回覆」與「不等本任期 entry commit」兩種錯誤，I8 分別在第 266 與第 1 個種子抓到。第二個實驗第一次執行時，植入腳本因錨點不符而沒有真的植入，卻仍執行並回報全部通過；見教學 04 §8 的補記 |
+| 模擬器不變量 I8 在 S4 之後失效（2026-11-14，獨立審查） | 上一列的「第 266 個種子」只對 S3 的模擬器成立。S4 把用戶端請求改送 term 最高的 leader，過期 leader 不再收到讀取，植入「不等確認就回覆」後 1,000 個種子全部通過，真實 process 的 6 個故障與讀取測試也全部通過；產品程式沒有錯，但這個錯誤只剩單元測試 `replies_to_requests_sent_before_the_read_do_not_confirm_it` 擋著。已修正模擬器的工作負載（§8），新增 mutation 案例 `sim_must_catch_unconfirmed_read`（要求模擬器自己抓到），以及真實 process 測試 `test_a_leader_left_with_a_minority_does_not_answer_reads`（五台，舊 leader 仍有一台 follower）。見 [教學 12](lessons/12-simulator-stopped-asking-stale-leaders/README.md) |
 | 量測（§9） | 同一台機器、300 次連續 GET：S2 版每個 GET 讓三個節點各寫一筆 WAL record，S3 版為 0；延遲 p50 1.83 ms → 1.51 ms、p99 2.84 ms → 2.32 ms。延遲改善不大，因為這台機器的 `fsync` 很快，而 ReadIndex 仍需一輪 heartbeat。最新數字以 `artifacts/reports/read-benchmark.json` 為準 |
 | 回覆的 `committed_index` | 採用讀取當下狀態機已套用到的 index（不小於 readIndex），與 §5 相同 |
 | mutation 工具的隔離 | 完整驗收前的 mutation 執行有 28/30 案例編譯失敗：所有案例共用一個 cargo 建置目錄，後面的案例沿用了 `quorum_one`（`QUORUM = 1`）的 `raft-protocol`，撞上本階段新增的 `QUORUM - 2`。改為每個案例獨立建置並先跑對照組；見 [教學 06](lessons/06-mutants-sharing-a-build-directory/README.md) |

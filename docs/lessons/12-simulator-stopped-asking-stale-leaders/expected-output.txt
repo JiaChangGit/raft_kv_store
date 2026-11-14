@@ -1,0 +1,16 @@
+
+== s3-read-index-verified  (S3: requests go to the lowest-numbered node that believes it is leader)
+   control (correct read path):      all 1000 seeds passed; reads answered: 20775
+   mistake planted in raft-core:      FAILED at seed 266: I8 Read Freshness node=1 read=37 readIndex=31 < committed 32 at start
+
+== s4-membership-verified  (S4: requests go to the leader with the highest term)
+   control (correct read path):      all 1000 seeds passed; reads answered: 19294
+   mistake planted in raft-core:      all 1000 seeds passed; reads answered: 20721
+
+== current  (current source: any self-believed leader, plus reads aimed at deposed ones)
+   control (correct read path):      all 1000 seeds passed; reads answered: 19271; requests that reached a deposed leader: 2502
+   mistake planted in raft-core:      FAILED at seed 21: I8 Read Freshness node=3 read=1000011 readIndex=100 < committed 101 at start; requests that reached a deposed leader: 65
+
+== RESULT
+The planted mistake is the same line in all three versions. Whether the simulator
+sees it depends only on whether its clients ever talk to a deposed leader.

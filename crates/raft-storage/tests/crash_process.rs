@@ -205,17 +205,19 @@ fn real_process_crash_during_initialization_recovers() {
     }
 }
 
-fn snapshot_probe(data: &Path) -> std::process::Output {
+fn snapshot_probe(data: &Path, mode: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_snapshot_probe"))
         .arg(data)
+        .args(mode)
         .output()
         .unwrap()
 }
 
 /// Same as `crash_at`, for the snapshot probe.
-fn crash_snapshot_probe_at(data: &Path, marker: &Path, boundary: &str) {
+fn crash_snapshot_probe_at(data: &Path, marker: &Path, boundary: &str, mode: &[&str]) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_snapshot_probe"))
         .arg(data)
+        .args(mode)
         .env("RAFT_WAL_FAILPOINT", boundary)
         .env("RAFT_WAL_FAILPOINT_MARKER", marker)
         .stdout(Stdio::piped())
@@ -254,7 +256,7 @@ fn real_process_crash_during_snapshot_install_recovers() {
         let dir = TestDir::new();
         let marker = dir.0.join("reached");
         let data = dir.0.join("node");
-        crash_snapshot_probe_at(&data, &marker, boundary);
+        crash_snapshot_probe_at(&data, &marker, boundary, &[]);
         let (state, wal_bytes) = {
             let wal = Wal::open(&data, 1).unwrap();
             assert_eq!(wal.state().base(), expected, "{boundary}");
@@ -276,12 +278,69 @@ fn real_process_crash_during_snapshot_install_recovers() {
             "{boundary}"
         );
         // Whatever survived, the probe can finish the job.
-        let done = snapshot_probe(&data);
+        let done = snapshot_probe(&data, &[]);
         assert!(
             done.status.success(),
             "{boundary}: {}",
             String::from_utf8_lossy(&done.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&done.stdout).trim(), "INSTALLED 2");
+    }
+}
+
+/// Lesson 11: the same four interruptions when the snapshot comes from a newer
+/// term than the WAL holds (a follower that was away across an election gets
+/// the whole snapshot in one message). Every one of them must leave a node
+/// that starts: with the old state, or at the snapshot with at least its term.
+#[test]
+fn real_process_crash_during_install_from_a_newer_term_recovers() {
+    let _serial = serial();
+    use raft_protocol::LogBase;
+    let mode = ["newer-term"];
+    let old = (LogBase { index: 0, term: 0 }, 1, Some(1), 3);
+    let new = (LogBase { index: 5, term: 4 }, 4, None, 5);
+    for (boundary, expected) in [
+        ("install_before_snapshot_rename", old),
+        ("install_after_snapshot_before_wal", new),
+        ("install_before_wal_rename", new),
+        ("install_after_wal_rename", new),
+    ] {
+        let dir = TestDir::new();
+        let marker = dir.0.join("reached");
+        let data = dir.0.join("node");
+        crash_snapshot_probe_at(&data, &marker, boundary, &mode);
+        let (state, wal_bytes) = {
+            let wal = Wal::open(&data, 1)
+                .unwrap_or_else(|error| panic!("{boundary}: the node must start: {error}"));
+            let state = wal.state();
+            assert_eq!(
+                (
+                    state.base(),
+                    state.term,
+                    state.voted_for,
+                    state.last_index()
+                ),
+                expected,
+                "{boundary}"
+            );
+            assert_eq!(wal.snapshot().is_some(), expected == new, "{boundary}");
+            (state.clone(), fs::read(data.join("raft.wal")).unwrap())
+        };
+        let again =
+            Wal::open(&data, 1).unwrap_or_else(|error| panic!("{boundary}: second open: {error}"));
+        assert_eq!(again.state(), &state, "{boundary}");
+        drop(again);
+        assert_eq!(
+            fs::read(data.join("raft.wal")).unwrap(),
+            wal_bytes,
+            "{boundary}"
+        );
+        let done = snapshot_probe(&data, &mode);
+        assert!(
+            done.status.success(),
+            "{boundary}: {}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&done.stdout).trim(), "INSTALLED 5");
     }
 }
