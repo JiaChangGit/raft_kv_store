@@ -197,10 +197,11 @@ fn a_bootstrapped_node_elects_itself_once_its_vote_is_durable() {
     let mut n = Core::new(1, bootstrap_state(1)).unwrap();
     assert_eq!(n.configuration(), Some((1, voters(&[1]))));
     let fx = n.step(Event::ElectionTimeout { generation: 0 });
-    let Some(Effect::Persist { barrier_id, state }) = fx.first() else {
+    let Some(Effect::Persist { barrier_id, delta }) = fx.first() else {
         panic!("the vote is a barrier: {fx:?}");
     };
-    assert_eq!((state.term, state.voted_for), (2, Some(1)));
+    assert_eq!((delta.term, delta.voted_for), (2, Some(1)));
+    assert!(delta.append.is_empty(), "a vote changes no log entry");
     assert!(
         !fx.iter().any(|e| matches!(e, Effect::Send(_))),
         "nobody to ask"
@@ -208,10 +209,14 @@ fn a_bootstrapped_node_elects_itself_once_its_vote_is_durable() {
     assert_eq!(n.role, Role::Candidate, "not before the vote is durable");
     let fx = n.persisted(*barrier_id);
     assert_eq!(n.role, Role::Leader);
-    let Some(Effect::Persist { barrier_id, state }) = fx.first() else {
+    let Some(Effect::Persist { barrier_id, delta }) = fx.first() else {
         panic!("the no-op is a barrier: {fx:?}");
     };
-    assert_eq!(state.last_index(), 2);
+    assert_eq!(
+        (delta.truncate_from, delta.append.len()),
+        (2, 1),
+        "only the no-op at index 2"
+    );
     assert_eq!(n.commit_index, 0, "not before the no-op is durable");
     let fx = n.persisted(*barrier_id);
     assert_eq!(n.commit_index, 2);

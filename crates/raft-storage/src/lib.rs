@@ -4,8 +4,8 @@
 //! recovery rules: docs/STORAGE_FORMAT_V2.md and docs/SNAPSHOT_COMPACTION.md.
 pub use raft_protocol::crc32c;
 use raft_protocol::{
-    CLUSTER, DurableState, LogBase, LogEntry, MAX_SNAPSHOT, NodeId, Snapshot, adopt_snapshot,
-    valid_node,
+    CLUSTER, Delta, DurableState, LogBase, LogEntry, MAX_SNAPSHOT, NodeId, Snapshot,
+    adopt_snapshot, valid_node,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -50,6 +50,14 @@ struct Transaction {
     /// First suffix index removed; append is atomic with this truncation.
     truncate_from: u64,
     append: Vec<LogEntry>,
+}
+/// `Transaction` for writing, borrowing the entries: the same JSON.
+#[derive(Serialize)]
+struct TransactionRef<'a> {
+    term: u64,
+    voted_for: Option<NodeId>,
+    truncate_from: u64,
+    append: &'a [LogEntry],
 }
 
 /// Where a WAL file starts. A fresh node starts at [`PRISTINE`]; after a
@@ -103,6 +111,10 @@ pub struct Wal {
     fail_sync: bool,
     directory: PathBuf,
     last_sync_us: f64,
+    /// Completed transaction writes, and entries copied or compared for them
+    /// (docs/PERFORMANCE.md §6.4).
+    pub persists: u64,
+    pub entries_copied: u64,
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -288,24 +300,59 @@ fn validate_change(previous: &DurableState, next: &DurableState) -> io::Result<(
     Ok(())
 }
 
-fn apply_transaction(
-    previous: &DurableState,
-    transaction: Transaction,
-) -> io::Result<DurableState> {
-    if transaction.truncate_from <= previous.base().index
-        || transaction.truncate_from > previous.last_index() + 1
-    {
+/// The rules of `validate_change`, checked on the change alone: nothing here
+/// looks at entries the delta does not touch, so the cost does not grow with
+/// the log (docs/PERFORMANCE.md §6.3).
+fn validate_delta(state: &DurableState, delta: &Delta) -> io::Result<()> {
+    if delta.term < state.term || delta.voted_for.is_some_and(|id| !valid_node(id)) {
+        return Err(invalid("invalid or decreasing persistent state"));
+    }
+    if delta.term == state.term && state.voted_for.is_some() && delta.voted_for != state.voted_for {
+        return Err(invalid(
+            "cannot clear or change a durable vote in the same term",
+        ));
+    }
+    if delta.truncate_from <= state.base().index || delta.truncate_from > state.last_index() + 1 {
         return Err(invalid("transaction truncation index outside current log"));
     }
-    let mut next = previous.clone();
-    next.term = transaction.term;
-    next.voted_for = transaction.voted_for;
-    next.truncate_from(transaction.truncate_from);
-    for entry in transaction.append {
-        next.push(entry);
+    let mut previous = state
+        .term_at(delta.truncate_from - 1)
+        .expect("checked: the index before the change is the base or held");
+    for (offset, entry) in delta.append.iter().enumerate() {
+        if entry.index != delta.truncate_from + offset as u64
+            || entry.term == 0
+            || entry.term < previous
+            || entry.term > delta.term
+            || !entry.command.valid()
+        {
+            return Err(invalid("invalid or decreasing persistent state"));
+        }
+        if state
+            .entry(entry.index)
+            .is_some_and(|old| old.term == entry.term && old != entry)
+        {
+            return Err(invalid(
+                "same index and term cannot identify different commands",
+            ));
+        }
+        previous = entry.term;
     }
-    validate_change(previous, &next)?;
-    Ok(next)
+    Ok(())
+}
+
+/// Recovery: apply one record in place. Each record costs its own entries,
+/// not a copy of everything recovered so far.
+fn apply_transaction(state: &mut DurableState, transaction: Transaction) -> io::Result<()> {
+    let delta = Delta {
+        term: transaction.term,
+        voted_for: transaction.voted_for,
+        truncate_from: transaction.truncate_from,
+        append: transaction.append,
+    };
+    validate_delta(state, &delta)?;
+    state.apply(&delta);
+    state.mark_clean();
+    Ok(())
 }
 
 fn file_header(node_id: NodeId, start: FileStart) -> [u8; FILE_HEADER_LEN] {
@@ -595,6 +642,8 @@ impl Wal {
             fail_sync: false,
             directory,
             last_sync_us: 0.0,
+            persists: 0,
+            entries_copied: 0,
         };
         wal.recover()?;
         wal.reconcile_snapshot()?;
@@ -759,7 +808,7 @@ impl Wal {
             }
             let transaction = serde_json::from_slice(&payload)
                 .map_err(|e| invalid(format!("invalid transaction: {e}")))?;
-            self.state = apply_transaction(&self.state, transaction)?;
+            apply_transaction(&mut self.state, transaction)?;
             self.sequence = next_sequence;
             offset += record_len;
         }
@@ -805,6 +854,9 @@ impl Wal {
         self.fail_sync = fail;
     }
 
+    /// Persist a whole next state by comparing it with the current one. This
+    /// costs a pass over the log; the node uses [`Wal::save_delta`] instead.
+    /// Kept for tools and tests that build states by hand.
     pub fn save(&mut self, next: &DurableState) -> io::Result<()> {
         if self.poisoned {
             return Err(io::Error::other(
@@ -812,6 +864,7 @@ impl Wal {
             ));
         }
         validate_change(&self.state, next)?;
+        self.entries_copied += next.entries().len() as u64;
         if next == &self.state {
             return Ok(());
         }
@@ -828,13 +881,43 @@ impl Wal {
             .zip(next.entries())
             .take_while(|(left, right)| left == right)
             .count();
-        let transaction = Transaction {
+        self.write(&Delta {
             term: next.term,
             voted_for: next.voted_for,
             truncate_from: self.state.base().index + common as u64 + 1,
             append: next.entries()[common..].to_vec(),
-        };
-        let payload = serde_json::to_vec(&transaction).map_err(io::Error::other)?;
+        })
+    }
+
+    /// Persist one step's change (docs/PERFORMANCE.md §6.3). Validation and
+    /// the write look only at the delta; the record on disk is the same
+    /// Transaction `save` writes for the same change.
+    pub fn save_delta(&mut self, delta: &Delta) -> io::Result<()> {
+        if self.poisoned {
+            return Err(io::Error::other(
+                "WAL is poisoned; restart and recover before use",
+            ));
+        }
+        validate_delta(&self.state, delta)?;
+        self.entries_copied += delta.append.len() as u64;
+        if delta.term == self.state.term
+            && delta.voted_for == self.state.voted_for
+            && delta.append.is_empty()
+            && delta.truncate_from == self.state.last_index() + 1
+        {
+            return Ok(());
+        }
+        self.write(delta)
+    }
+
+    fn write(&mut self, delta: &Delta) -> io::Result<()> {
+        let payload = serde_json::to_vec(&TransactionRef {
+            term: delta.term,
+            voted_for: delta.voted_for,
+            truncate_from: delta.truncate_from,
+            append: &delta.append,
+        })
+        .map_err(io::Error::other)?;
         if payload.len() > MAX_RECORD_PAYLOAD {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -866,8 +949,10 @@ impl Wal {
             self.poisoned = true;
             return Err(error);
         }
-        self.state = next.clone();
+        self.state.apply(delta);
+        self.state.mark_clean();
         self.sequence = next_sequence;
+        self.persists += 1;
         failpoint("after_sync_before_ack");
         Ok(())
     }

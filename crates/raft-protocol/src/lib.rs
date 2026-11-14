@@ -211,12 +211,16 @@ pub struct LogBase {
 /// Persistent Raft state (Figure 2). The log holds only entries after `base`;
 /// they are private so that every access must state what happens when the
 /// requested index was compacted away (dissertation section 5.1.3).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct DurableState {
     pub term: Term,
     pub voted_for: Option<NodeId>,
     base: LogBase,
     entries: Vec<LogEntry>,
+    /// The lowest index appended or truncated since the last `mark_clean`.
+    /// With it, what must be persisted is known without comparing two whole
+    /// logs (docs/PERFORMANCE.md §6.3). Bookkeeping, not part of the value.
+    dirty_from: Option<LogIndex>,
     /// Indexes of the configuration entries in `entries`, ascending. Derived
     /// from `entries` (so equality is unaffected); finding the configuration
     /// then never scans the whole log (docs/MEMBERSHIP.md §5).
@@ -244,7 +248,41 @@ impl DurableState {
             voted_for,
             base,
             entries,
+            dirty_from: None,
             configs,
+        }
+    }
+    /// Entries from the first index changed since the last `mark_clean`, with
+    /// the current term and vote: exactly what one WAL transaction records.
+    pub fn delta(&self) -> Delta {
+        let truncate_from = self.dirty_from.unwrap_or(self.last_index() + 1);
+        Delta {
+            term: self.term,
+            voted_for: self.voted_for,
+            truncate_from,
+            append: self.entries_from(truncate_from).unwrap_or(&[]).to_vec(),
+        }
+    }
+    /// Whether the log changed since the last `mark_clean`.
+    pub fn log_changed(&self) -> bool {
+        self.dirty_from.is_some()
+    }
+    pub fn mark_clean(&mut self) {
+        self.dirty_from = None;
+    }
+    fn touch(&mut self, index: LogIndex) {
+        self.dirty_from = Some(self.dirty_from.map_or(index, |dirty| dirty.min(index)));
+    }
+    /// Apply a delta produced by [`DurableState::delta`] on an equal state.
+    /// The caller validates first; see `raft-storage`.
+    pub fn apply(&mut self, delta: &Delta) {
+        self.term = delta.term;
+        self.voted_for = delta.voted_for;
+        if delta.truncate_from <= self.last_index() {
+            self.truncate_from(delta.truncate_from);
+        }
+        for entry in &delta.append {
+            self.push(entry.clone());
         }
     }
     pub fn base(&self) -> LogBase {
@@ -282,8 +320,10 @@ impl DurableState {
             .truncate((index - self.base.index - 1) as usize);
         // Falling back to the previous configuration (dissertation §4.1).
         self.configs.retain(|config| *config < index);
+        self.touch(index);
     }
     pub fn push(&mut self, entry: LogEntry) {
+        self.touch(entry.index);
         if matches!(entry.command, Command::Config { .. }) {
             self.configs.push(entry.index);
         }
@@ -318,6 +358,28 @@ impl DurableState {
                 .windows(2)
                 .all(|pair| pair[0].term <= pair[1].term)
     }
+}
+
+impl PartialEq for DurableState {
+    /// The persistent value only; `configs` and `dirty_from` are derived bookkeeping.
+    fn eq(&self, other: &Self) -> bool {
+        self.term == other.term
+            && self.voted_for == other.voted_for
+            && self.base == other.base
+            && self.entries == other.entries
+    }
+}
+impl Eq for DurableState {}
+
+/// One step's change to the persistent state: the new term and vote, and the
+/// log from `truncate_from` on (everything at or after it is replaced by
+/// `append`). `truncate_from` is one past the last index when nothing is removed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Delta {
+    pub term: Term,
+    pub voted_for: Option<NodeId>,
+    pub truncate_from: LogIndex,
+    pub append: Vec<LogEntry>,
 }
 
 /// Reflected CRC32C/Castagnoli: polynomial 0x82F63B78, init/final xor 0xFFFFFFFF.

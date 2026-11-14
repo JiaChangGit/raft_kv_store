@@ -406,10 +406,9 @@ impl Actor {
         let mut queue = VecDeque::from(effects);
         while let Some(effect) = queue.pop_front() {
             match effect {
-                Effect::Persist { barrier_id, state } => {
-                    let previous_last = self.wal.state().last_index();
+                Effect::Persist { barrier_id, delta } => {
                     let started = Instant::now();
-                    if let Err(error) = self.wal.save(&state) {
+                    if let Err(error) = self.wal.save_delta(&delta) {
                         self.core.storage_failed();
                         self.trace(
                             "storage_failure",
@@ -421,12 +420,10 @@ impl Actor {
                     self.trace("persist",json!({"barrier_id":barrier_id,"sync_us":started.elapsed().as_micros() as u64,
                         "fsync_us":self.wal.last_sync_us(),
                         "measurement":"WAL save includes encoding/write/sync"}));
-                    if state.last_index() > previous_last
-                        && matches!(
-                            state.entry(state.last_index()).map(|entry| &entry.command),
-                            Some(Command::Client(_))
-                        )
-                    {
+                    if matches!(
+                        delta.append.last().map(|entry| &entry.command),
+                        Some(Command::Client(_))
+                    ) {
                         self.failpoint("after_sync_before_ack");
                     }
                     for effect in self.core.persisted(barrier_id).into_iter().rev() {
@@ -1034,7 +1031,7 @@ mod tests {
                     .unwrap()
                     .as_nanos()
             ));
-        let wal = Wal::open(&dir, 1).unwrap();
+        let mut wal = Wal::open(&dir, 1).unwrap();
         // Index 1 configures nodes 1, 2 and 3: since S4 a leader replicates only
         // to the voters of its configuration, and without one it would send
         // nothing and the pool would never be exercised (lesson 07 again).
@@ -1053,6 +1050,9 @@ mod tests {
             ),
         )
         .unwrap();
+        // The WAL holds what the core holds: since S5 the node persists only
+        // each step's change, which must connect to what is on disk.
+        wal.save(&core.state).unwrap();
         core.role = Role::Leader;
         let config: Config = toml::from_str(include_str!("../../../config/cluster.toml")).unwrap();
         let (tx, rx) = mpsc::sync_channel(QUEUE);

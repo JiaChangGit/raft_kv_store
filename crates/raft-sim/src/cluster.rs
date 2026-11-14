@@ -559,14 +559,22 @@ impl Cluster {
                 break;
             }
             match effect {
-                Effect::Persist { barrier_id, state } => {
+                Effect::Persist { barrier_id, delta } => {
+                    // The barrier is pending, so the core's state is exactly
+                    // what this delta leads to.
                     self.oracle.change_rule(
                         &self.nodes[node],
                         self.disks[node].volatile.last_index(),
-                        &state,
+                        &self.nodes[node].state,
                     )?;
                     let old_term = self.disks[node].durable.term;
-                    self.disks[node].write(state);
+                    self.disks[node].write_delta(&delta);
+                    if self.disks[node].volatile != self.nodes[node].state {
+                        return Err(format!(
+                            "delta does not reproduce the state node={}",
+                            node + 1
+                        ));
+                    }
                     // Crash between write and sync permits either complete survival or loss.
                     if faults && self.random.next_u64().is_multiple_of(500) {
                         let survives = self.random.next_u64().is_multiple_of(2);

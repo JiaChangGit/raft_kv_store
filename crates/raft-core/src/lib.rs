@@ -95,9 +95,10 @@ pub enum Event {
 }
 #[derive(Clone, Debug)]
 pub enum Effect {
+    /// Durably record `delta`, this step's change to the persistent state.
     Persist {
         barrier_id: u64,
-        state: DurableState,
+        delta: Delta,
     },
     /// Durably store `snapshot` and replace the WAL with `state`, which starts
     /// right after it (docs/SNAPSHOT_COMPACTION.md §7.4). When `restore` is set
@@ -240,6 +241,10 @@ pub struct Core {
     /// (docs/MEMBERSHIP.md §9.4); a leader always has.
     leader_contact: bool,
     pending_change: Option<PendingChange>,
+    /// Term and vote as of the last barrier: a change needs a new one.
+    sealed: (Term, Option<NodeId>),
+    /// Entries copied into `Persist` effects so far (docs/PERFORMANCE.md §6.4).
+    pub entries_copied: u64,
     failed: bool,
 }
 impl Core {
@@ -262,6 +267,9 @@ impl Core {
         }
         let base_voters = snapshot.as_ref().and_then(|s| Voters::from_bits(s.voters));
         let durable_index = state.last_index();
+        let mut state = state;
+        state.mark_clean();
+        let sealed = (state.term, state.voted_for);
         // Entries up to the base are inside a durable snapshot, hence committed and applied.
         let snapshot_index = state.base().index;
         Ok(Self {
@@ -295,6 +303,8 @@ impl Core {
             pending_reads: vec![],
             leader_contact: false,
             pending_change: None,
+            sealed,
+            entries_copied: 0,
             failed: false,
         })
     }
@@ -388,7 +398,7 @@ impl Core {
             self.snapshot = Some(snapshot);
         }
         self.durable_index = self.state.last_index();
-        let old = self.state.clone();
+
         let mut effects = vec![];
         if self.role == Role::Candidate && self.state.voted_for == Some(self.id) {
             // Our own vote counts once it is durable, and only if we vote; a
@@ -404,13 +414,13 @@ impl Core {
             self.start_read_round(&mut effects);
             self.finish_reads(&mut effects);
         }
-        self.seal(old, effects)
+        self.seal(effects)
     }
     pub fn step(&mut self, event: Event) -> Vec<Effect> {
         if self.failed || self.pending_barrier.is_some() {
             return vec![];
         }
-        let old = self.state.clone();
+
         let mut effects = vec![];
         match event {
             Event::ElectionTimeout { generation }
@@ -480,7 +490,7 @@ impl Core {
             }
             _ => {}
         }
-        self.seal(old, effects)
+        self.seal(effects)
     }
     /// End of a step: one durability barrier for whatever changed (or none).
     ///
@@ -489,25 +499,35 @@ impl Core {
     /// this barrier, and the barrier's completion may commit and apply more.
     /// Hosts run that completion before the rest of this list, so an `Apply`
     /// left behind the barrier would be applied after a later index (lesson 09).
-    fn seal(&mut self, old: DurableState, effects: Vec<Effect>) -> Vec<Effect> {
+    fn seal(&mut self, effects: Vec<Effect>) -> Vec<Effect> {
         let barrier = if let Some((snapshot, restore)) = self.requested_snapshot.take() {
             // One barrier writes the snapshot and the new WAL, which also carries
             // any term or vote change made in this step.
             self.barrier_serial += 1;
             self.pending_barrier = Some(self.barrier_serial);
             self.pending_snapshot = Some(snapshot.clone());
+            self.state.mark_clean();
+            self.sealed = (self.state.term, self.state.voted_for);
             Effect::PersistSnapshot {
                 barrier_id: self.barrier_serial,
                 state: self.state.clone(),
                 snapshot,
                 restore,
             }
-        } else if self.state != old {
+        } else if self.state.log_changed() || self.sealed != (self.state.term, self.state.voted_for)
+        {
+            // Only what this step changed (docs/PERFORMANCE.md §6.3): the log
+            // itself records where it was first touched, so nothing is copied
+            // or compared beyond the entries that go to disk.
             self.barrier_serial += 1;
             self.pending_barrier = Some(self.barrier_serial);
+            let delta = self.state.delta();
+            self.entries_copied += delta.append.len() as u64;
+            self.state.mark_clean();
+            self.sealed = (self.state.term, self.state.voted_for);
             Effect::Persist {
                 barrier_id: self.barrier_serial,
-                state: self.state.clone(),
+                delta,
             }
         } else {
             return effects;

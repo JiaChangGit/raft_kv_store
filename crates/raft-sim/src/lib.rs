@@ -1,5 +1,5 @@
 //! Virtual time is ordered by (time, sequence); never consults the host clock.
-use raft_protocol::{DurableState, Snapshot, adopt_snapshot};
+use raft_protocol::{Delta, DurableState, Snapshot, adopt_snapshot};
 use std::collections::BTreeMap;
 
 mod cluster;
@@ -92,6 +92,11 @@ pub struct MockDisk {
 impl MockDisk {
     pub fn write(&mut self, state: DurableState) {
         self.volatile = state;
+    }
+    /// What the node does since S5: write one step's change, not a whole state.
+    pub fn write_delta(&mut self, delta: &Delta) {
+        self.volatile.apply(delta);
+        self.volatile.mark_clean();
     }
     pub fn sync(&mut self) -> Result<(), &'static str> {
         if self.fail_sync {

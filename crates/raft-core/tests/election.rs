@@ -155,9 +155,9 @@ fn vote_persist_intent_before_reply() {
     let mut n = Core::new(1, three_nodes()).unwrap();
     let fx = n.step(Event::ElectionTimeout { generation: 0 });
     let barrier = match fx.first().unwrap() {
-        Effect::Persist { barrier_id, state } => {
-            assert_eq!(state.term, 2);
-            assert_eq!(state.voted_for, Some(1));
+        Effect::Persist { barrier_id, delta } => {
+            assert_eq!(delta.term, 2);
+            assert_eq!(delta.voted_for, Some(1));
             *barrier_id
         }
         _ => panic!("vote messages lack leading durability barrier"),
