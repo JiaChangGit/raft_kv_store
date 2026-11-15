@@ -85,7 +85,7 @@ S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`�
 - 修改只限本專案；`/home/user/src/ai-general-framework` 唯讀（`.claude/settings.json` 有 deny 規則，但見「踩過的坑」的第一條）。
 - 不 push、不建立 PR、不部署。本機 commit 與 tag 依使用者當次的指示。
 - 不為了通過驗收而削弱測試或改契約；改既有測試的期待時，寫進契約的 `modified_tests` 並告訴使用者。
-- 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L53）。
+- 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L54）。
 - 以自然的台灣繁體中文溝通；分清「已執行」「推論」「未驗證」。
 
 ## 踩過的坑（接手的人大概也會遇到）
