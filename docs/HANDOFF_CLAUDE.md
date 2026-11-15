@@ -1,6 +1,6 @@
 # 接手文件
 
-更新日期：2026-11-15（S6 收尾之後）。這份文件取代 S5 審查者寫的版本（舊版在 Git 歷史中：`git show 54319e6:docs/HANDOFF_CLAUDE.md`）。
+更新日期：2026-11-16（S7 完成之後）。這份文件取代 S5 審查者寫的版本（舊版在 Git 歷史中：`git show 54319e6:docs/HANDOFF_CLAUDE.md`）。
 它描述寫下時的狀態；接手時請先用下面的命令核對，**以實際查到的為準，不以這份文字為準**。
 
 ## 一開始先做什麼
@@ -13,8 +13,9 @@ git status --short && git log --oneline -5 && git tag
 uptime && ps -eo pid,pcpu,etime,comm --sort=-pcpu | head -5   # 機器是不是安靜的（見「踩過的坑」）
 ```
 
-**`git tag` 有沒有 `s6-review-fixes-verified`，是 S6 是否驗收通過的第一個線索**：這個 tag 只在 P00～P15 都是 `PASS [current source]` 之後才建立；沒有它，就是驗收還沒通過，
-先看最後一個 commit 的訊息說哪一步沒過。S7 起會加入不屬於 Raft 的檔案，`status.py` 顯示 `source changed` 是預期中的事（路線圖「2026-11-15 的計畫修改」）。
+**`git tag` 有沒有 `s6-review-fixes-verified`，是 S6 是否驗收通過的第一個線索**：這個 tag 只在 P00～P15 都是 `PASS [current source]` 之後才建立。
+S7 加入了不屬於 Raft 的 `framework-study/`，所以現在 `status.py` 顯示 `source changed` 是預期中的事（路線圖「2026-11-15 的計畫修改」）：
+Raft 的驗收結果對應 tag `s6-review-fixes-verified` 那個 commit，S9 收尾時從 P00 重跑。
 然後依任務讀：[路線圖](ROADMAP.md)（計畫、每階段的固定流程、S7 與 S8 的依據）、[AGENTS.md](../AGENTS.md)（不可違反的工程條件）、
 [S6 的規格與補記](PERFORMANCE.md) §15、[S5 獨立審查](INDEPENDENT_REVIEW_S5.md)。
 `.venv`、`.agf`、`artifacts`、`target` 都被 `.gitignore` 排除；換機器或重新 clone 之後它們不存在，要先如實確認再往下做。
@@ -29,9 +30,9 @@ uptime && ps -eo pid,pcpu,etime,comm --sort=-pcpu | head -5   # 機器是不是�
 | 階段 | 狀態 |
 |---|---|
 | S0 基礎～S5 效能 | 已完成，各有 tag（`s0-…` 到 `s5-performance-verified`）；S1～S4、S5 各做過一次獨立審查 |
-| **S6 收尾（縮減）** | 實作與教學完成（`claude-opus-5-5`）：S5 審查的 F2～F5、預檢報告結構、教學 16～19、契約階段 15。驗收與 tag 以 `git tag`／`status.py` 為準 |
-| **S7 中文 AI 味檢查** | **下一個階段**，未開始。先寫規格給使用者同意 |
-| S8 框架分析與對照實驗 | 未開始 |
+| S6 收尾（縮減） | 已完成並驗收（tag `s6-review-fixes-verified`，`claude-opus-5-5`）：S5 審查的 F2～F5、預檢報告結構、教學 16～19、契約階段 15 |
+| S7 中文 AI 味檢查 | 已完成（tag `s7-zh-style-prototype`，`claude-opus-5-5`）：`framework-study/zh-style/`，先讀 `report.md` |
+| **S8 框架分析與對照實驗** | **下一個階段**，未開始。先寫規格給使用者同意 |
 | S9 公開整理（完整版） | 未開始；最後從 P00 完整重跑驗收 |
 
 ## 這個 session 做了什麼（2026-11-15）
@@ -42,7 +43,9 @@ uptime && ps -eo pid,pcpu,etime,comm --sort=-pcpu | head -5   # 機器是不是�
    F5：拿掉恆真的斷言；新 failpoint `after_sync_of_a_batch_before_ack` 與新的 crash 測試保證整批；node 端切批的單元測試；舊版程式寫出的 golden WAL。
 3. `scripts/preflight_phase.py` 會用磁碟上的報告預檢契約的報告規則（F7 那類錯誤幾秒就出現）。
 4. 教學 16～19（F6、F7、F2、F3），重現與練習都實際跑過。框架經驗紀錄 L49～L51。
-5. 完整驗收：63 個 mutation 案例、模擬器、讀寫 benchmark、P00～P15。結果見 commit 訊息與 `status.py`。
+5. 完整驗收：63 個 mutation 案例、模擬器、讀寫 benchmark、P00～P15 全部通過，建立 tag `s6-review-fixes-verified`。
+6. 起草 S7 前唯讀查框架，發現 `docs/writing.md` 早已涵蓋大半的 AI 味特徵、也部署在本專案，卻沒被讀到（L52），S7 因此改成「拿指引檢查實際文字，量腳本的價值」。
+7. S7（2026-11-16 核准）：規則式提示腳本與 12 個測試、14 個實例、對照表、試跑報告。抽樣 53 處只有 17% 值得改，推估只找得到約 4% 的問題；使用者抽查 10 筆標註全部同意（L53）。
 
 ## 已決定的事與理由
 
@@ -54,13 +57,17 @@ uptime && ps -eo pid,pcpu,etime,comm --sort=-pcpu | head -5   # 機器是不是�
 | AI 味：實例分析＋檢查清單＋規則式腳本原型（S7） | 兩篇論文只研究英文，中文的特徵要自己定義、自己量誤報 |
 
 S6 的實作決定（我做的，寫在 `PERFORMANCE.md` §15.3）：新測試放進新的**階段 15**，不塞進 S5 的階段 14（契約的成長規則）；原本的 crash 測試不動，另寫一個保證整批的；
-審查 §8 的無法解釋的失敗不追查，驗收時再出現就照實記錄。
+審查 §8 的無法解釋的失敗不追查，驗收時再出現就照實記錄（這次沒有再出現）。
+
+S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`、只用標準函式庫、使用者抽查 10 筆標註。我另外決定：檔案交錯分成兩半，一半只用來找規則的寫法錯誤，另一半才量精確率；
+量測時才發現的寫法錯誤照實記成誤判，不回頭修了再量（`framework-study/zh-style/report.md` §2、§3）。
 
 ## 還沒做的事與未知
 
-- **S7 的規格**：檢查清單的項目要對應使用者的七個特徵（原文在路線圖）；腳本是規則式的原型，要在本專案的文件上試跑、報告誤報率，只當提示。
-  兩篇論文的摘要來自網頁讀取代理，引用前要回原文核對。
-- **S8 的實驗設計**：候選是「skill 是否被正確觸發」「交接文件能否讓新 session 接手」等，評分要事先寫好，記錄模型、命令與原始輸出。證據來源：`FRAMEWORK_EXPERIENCE_LOG.md`（L01～L51）、兩份審查、框架原始碼。
+- **S8 的規格**：依使用者的標準（原文在路線圖）逐項寫優點、缺點與改進建議；證據來源是 `FRAMEWORK_EXPERIENCE_LOG.md`（L01～L53）、兩份審查、S7 的報告與框架原始碼。
+  實驗候選：「skill／指引在該觸發時有沒有被讀到」（L52 是實例）、「交接文件能否讓新 session 接手」。評分要事先寫好，記錄模型、命令與原始輸出；
+  若要用其他模型當受試者或評分者，規格裡要寫明，使用者核准規格時才能一併同意開子代理（L53）。
+- S7 腳本的已知寫法錯誤：R5 的輕動詞規則會把「進行的」「做出的」也算進去；要再用，先修這一點。
 - **教學 01～19 都是草稿**：沒有第二個人照著第 3 節做過。
 - **審查 §8 那個無法解釋的失敗**（`an_oversize_state_is_not_serialized_again_until_the_log_doubles`）沒有追查。
 - 因為計畫縮減而沒有驗證的事：沒有長時間浸泡測試；真實 process 的線性一致性一次只看 24 個操作；模擬器只檢查安全性、沒有活性（教學 18）；
@@ -69,8 +76,8 @@ S6 的實作決定（我做的，寫在 `PERFORMANCE.md` §15.3）：新測試�
 
 ## 下一步
 
-1. 核對 `git tag` 與 `status.py`。有 `s6-review-fixes-verified` 且 P00～P15 都是 `PASS [current source]`：S6 成立。
-2. 起草 S7 的規格給使用者看，先不要實作。
+1. 核對 `git tag`：應該有 `s6-review-fixes-verified` 與 `s7-zh-style-prototype`。`status.py` 顯示 `source changed` 是因為 S7 的檔案，見上方說明。
+2. 起草 S8 的規格給使用者看，先不要實作。
 3. 每個階段完成時，在規格補記寫下**實作所用的模型**。
 
 ## 操作範圍
@@ -78,7 +85,7 @@ S6 的實作決定（我做的，寫在 `PERFORMANCE.md` §15.3）：新測試�
 - 修改只限本專案；`/home/user/src/ai-general-framework` 唯讀（`.claude/settings.json` 有 deny 規則，但見「踩過的坑」的第一條）。
 - 不 push、不建立 PR、不部署。本機 commit 與 tag 依使用者當次的指示。
 - 不為了通過驗收而削弱測試或改契約；改既有測試的期待時，寫進契約的 `modified_tests` 並告訴使用者。
-- 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L52）。
+- 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L53）。
 - 以自然的台灣繁體中文溝通；分清「已執行」「推論」「未驗證」。
 
 ## 踩過的坑（接手的人大概也會遇到）
@@ -111,10 +118,11 @@ S6 的實作決定（我做的，寫在 `PERFORMANCE.md` §15.3）：新測試�
 | 框架的使用經驗與改進候選 | `docs/FRAMEWORK_EXPERIENCE_LOG.md`、`docs/FRAMEWORK_IMPROVEMENT_PROPOSALS.md`、`docs/FRAMEWORK_FEEDBACK.md` |
 | 論文出處筆記 | `docs/reference/raft-notes.md` |
 | golden WAL 與它的來歷 | `crates/raft-storage/testdata/` |
+| S7 的成果（中文 AI 味：實例、對照表、提示腳本、試跑報告） | `framework-study/zh-style/`（先讀 `report.md`） |
 | receipt、報告、審查的重現材料（不在版本控制內） | `artifacts/acceptance-final/`、`artifacts/reports/`、`artifacts/benchmarks/`、`artifacts/audit/independent-review-20261115-s5/` |
 
 ## 可以直接交給下一個 session 的第一句話
 
-> 請先讀 `CLAUDE.md` 與 `docs/HANDOFF_CLAUDE.md`，執行「一開始先做什麼」的命令並回報：工作樹有哪些未提交的變更、`git tag` 有沒有 `s6-review-fixes-verified`、
-> `status.py` 是否 P00～P15 都是 `PASS [current source]`、機器是否安靜。然後依 `docs/ROADMAP.md` 的「S7、S8 的依據」起草 S7（中文 AI 味檢查）的規格給我看，先不要實作。
+> 請先讀 `CLAUDE.md` 與 `docs/HANDOFF_CLAUDE.md`，執行「一開始先做什麼」的命令並回報：工作樹有哪些未提交的變更、`git tag` 有沒有 `s6-review-fixes-verified` 與 `s7-zh-style-prototype`、機器是否安靜。
+> 然後依 `docs/ROADMAP.md` 的「S7、S8 的依據」與 `framework-study/zh-style/report.md`，起草 S8（框架分析與對照實驗）的規格給我看，先不要實作。
 > 相鄰的 ai-general-framework 保持唯讀，不要 push、建立 PR 或部署。

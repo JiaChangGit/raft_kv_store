@@ -102,7 +102,7 @@ ReadIndex 與 membership 都依賴「目前的成員是誰、多數是幾台」�
 | S4 Membership change（**已完成**，tag `s4-membership-verified`） | 一次增減一台；設定以 log entry 表示，寫入即生效；一台引導、其他逐一加入；先追趕再加入（固定 10 輪）；2015 修正；leader 不在設定中時不計自己、commit 後退位；干擾防護；節點編號 1～7。規格與補記 `MEMBERSHIP.md`，教學 08～10 | 2015 年反例以五個 core 逐步重現。實作中發現 V1 起的「barrier 一律排最前」在 S4 失效（教學 09）。刪減方案仍適用：若 S6 不過，移除本功能、回到固定三台 |
 | S5 效能（**已完成**，tag `s5-performance-verified`；規格與補記 `PERFORMANCE.md`，教學 14、15；審查 `INDEPENDENT_REVIEW_S5.md`） | group commit（多筆交易共用一次 fsync）、批次複製、前後 benchmark 對照 | 不得改變「先持久化、後回覆」的次序 |
 | S6 收尾（2026-11-15 縮減） | S5 審查的 F2～F5：接收端批次上限的測試、`validate_delta` 三條規則的案例、§14.5 的數字、F5 的測試強度與 golden WAL；`preflight_phase.py` 預檢報告的結構；教學 16～19（F6、F7、F2、F3）。驗收一次，tag `s6-review-fixes-verified`。規格與補記寫在 `PERFORMANCE.md` §15 | 只改測試、工具與文件，節點只多一個測試用的 failpoint；契約或檢查器一改，就得從 P00 重跑 |
-| S7 中文 AI 味檢查（新增；規格 `framework-study/zh-style/SPEC.md`） | 實例分析、檢查清單、規則式檢查腳本的原型與誤報率 | 兩篇參考論文只研究英文，中文的特徵依使用者的清單自己定義。規則式的檢查誤報多，只能當提示，不能當門檻 |
+| S7 中文 AI 味檢查（新增；**已完成**，tag `s7-zh-style-prototype`；規格與報告在 `framework-study/zh-style/`） | 實例分析、檢查清單、規則式檢查腳本的原型與誤報率 | 兩篇參考論文只研究英文，中文的特徵依使用者的清單自己定義。規則式的檢查誤報多，只能當提示，不能當門檻 |
 | S8 框架分析與對照實驗（新增） | 依使用者的標準寫優缺點報告；2～3 個可以重複的小型對照實驗 | 框架唯讀，實驗在暫存副本中做。樣本小，設計與評分又是同一方，結論只能當方向 |
 | S9 公開整理（原 S7，完整版） | 中英 README、架構圖、教學索引、移除本機絕對路徑、標明過時的 V1 文件、AI 協作說明；最後從 P00 完整重跑驗收 | 不改程式行為 |
 
