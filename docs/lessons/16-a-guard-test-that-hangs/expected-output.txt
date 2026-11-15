@@ -1,0 +1,15 @@
+
+== S4 (s1-s4-review-verified), with the mistake planted
+   the test FAILED after 1.1 s: pool saturation must not starve queued status: Timeout
+   output: 44.5 MB (40 MB/s)
+
+== S5 before the fix (e5f09c2), with the mistake planted
+   KILLED after 6.3 s (output cap of 268435456 bytes reached); the test had neither failed nor passed
+   output: 270.1 MB (43 MB/s)
+
+== current source, with the mistake planted
+   the test FAILED after 1.1 s: pool saturation must not starve a status asked while the write replicates: Timeout
+   output: 43.0 MB (39 MB/s)
+
+== RESULT
+S4 and the current test fail within seconds. S5 before the fix hangs and floods its output.

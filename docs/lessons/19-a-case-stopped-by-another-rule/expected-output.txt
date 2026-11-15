@@ -1,0 +1,16 @@
+
+== S5 (s5-performance-verified), every rule in place
+   S5 case "entry term below the previous entry": refused, "invalid or decreasing persistent state"
+   S6 case "new entry term below the previous entry": refused, "invalid or decreasing persistent state"
+
+== S5 with the rule "an entry term is never below the previous one" removed
+   S5 case "entry term below the previous entry": refused, "same index and term cannot identify different commands"
+   S6 case "new entry term below the previous entry": ACCEPTED
+   invalid_deltas_are_refused_without_writing: passed, so the rule can go unnoticed
+
+== current source with the same rule removed
+   invalid_deltas_are_refused_without_writing: FAILED
+     new entry term below the previous entry
+
+== RESULT
+The S5 case is refused with or without the rule, so it never tested the rule. The S6 case needs it.

@@ -1,0 +1,22 @@
+
+== S5 (s5-performance-verified) with the limit back to 32
+   raft-core and raft-protocol: 57 tests, all passed
+
+== current source with the same mistake
+   a_follower_accepts_a_full_batch_and_refuses_one_more: FAILED
+     assertion `left == right` failed
+       left: (Some((false, 0)), 1)
+      right: (Some((true, 257)), 257)
+
+== a real cluster, S5 with the limit back to 32
+   node 2 stopped, 100 writes committed (last_applied 104, snapshot_index 0); node 2 started again
+   node 2 NOT caught up after 15 s: role Candidate, term 27, last_applied 0
+   node 1: role Follower, term 27, entries sent in AppendEntries 111734
+   node 3: role Follower, term 26, entries sent in AppendEntries 199954
+
+== a real cluster, current source
+   node 2 stopped, 100 writes committed (last_applied 104, snapshot_index 0); node 2 started again
+   node 2 caught up in 0.2 s
+
+== RESULT
+With the limit at 32 the S5 tests pass and the follower never catches up; the S6 test fails on it.

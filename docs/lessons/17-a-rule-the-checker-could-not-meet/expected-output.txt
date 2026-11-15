@@ -1,0 +1,12 @@
+phase 14 rule: {"required_nonempty": ["command", "environment", "runs"], "required_positive_integer": ["writes_per_run"]}
+
+== S5 checker (e5f09c2)
+   runs holds two entries: REFUSED (Report write-benchmark.json: runs must be nonempty)
+   runs is empty: REFUSED (Report write-benchmark.json: runs must be nonempty)
+
+== current checker
+   runs holds two entries: accepted
+   runs is empty: REFUSED (Report write-benchmark.json: runs must be nonempty)
+
+== RESULT
+The S5 checker refuses every report, a good one too: the rule could never be met. The current one refuses only the empty list.

@@ -22,6 +22,10 @@
 | 13 | [資料超過快照上限之後，每做一件事都先白做一次大工程](13-oversize-snapshot-serialized-every-event/README.md) | 超過 64 MiB 後，節點每個事件都重新序列化整個狀態機再丟掉 | 草稿（待有人照做一遍） |
 | 14 | [量測工具量到的是它自己](14-the-benchmark-measured-itself/README.md) | 測試工具每送一個請求就重寫整份歷史檔，讓效能基準多出一個「來源不明、隨資料成長」的成本 | 草稿（待有人照做一遍） |
 | 15 | [資料超過 1 MiB，節點就說不出自己的狀態](15-status-too-large-to-send/README.md) | 狀態查詢把整個 KV 放進回覆，超過訊框上限就送不出去，所有靠它找 leader 的工具一起失效 | 草稿（待有人照做一遍） |
+| 16 | [植入錯誤之後，守衛測試不失敗，而是永遠等下去](16-a-guard-test-that-hangs/README.md) | group commit 改了同一輪的處理順序，守衛測試在它要抓的錯誤下卡住；工具又把每秒 50 MB 的輸出全留在記憶體裡 | 草稿（待有人照做一遍） |
+| 17 | [驗收契約寫了一條檢查器永遠做不到的要求](17-a-rule-the-checker-could-not-meet/README.md) | 契約要求清單不得為空，檢查器卻只把它當字串檢查，再好的報告也過不了 | 草稿（待有人照做一遍） |
+| 18 | [放寬了上限，卻沒有測試守著它](18-a-limit-nobody-tested/README.md) | follower 的批次上限改回 32，所有測試照過，落後超過 32 筆的 follower 卻永遠追不上 | 草稿（待有人照做一遍） |
+| 19 | [測試案例被別的規則先攔下，它要守的規則就沒人守](19-a-case-stopped-by-another-rule/README.md) | 案例同時違反兩條規則，刪掉其中一條，另一條照樣擋下，測試看不出差別 | 草稿（待有人照做一遍） |
 
 ## 怎麼讀
 
