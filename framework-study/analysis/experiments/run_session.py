@@ -24,13 +24,16 @@ CLI = os.environ.get("CLAUDE_CLI", str(Path.home() / ".claude/remote/ccd-cli/2.1
 KEEP = ("HOME", "PATH", "LANG", "TERM")
 
 
-def run(cwd: Path, model: str, prompt: str, tools: str, out: Path, budget: float, timeout: int) -> int:
+def run(cwd: Path, model: str, prompt: str, tools: str, out: Path, budget: float, timeout: int,
+        disallowed: tuple[str, ...] = ()) -> int:
     env = {name: os.environ[name] for name in KEEP if name in os.environ}
     env.setdefault("LANG", "C.UTF-8")
     env["ANTHROPIC_BASE_URL"] = "https://api.anthropic.com"
     argv = [CLI, "-p", prompt, "--model", model, "--output-format", "stream-json", "--verbose",
             "--no-session-persistence", "--permission-mode", "dontAsk", "--allowedTools", tools,
             "--max-budget-usd", str(budget)]
+    if disallowed:
+        argv += ["--disallowedTools", *disallowed]
     out.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     with out.open("wb") as stdout, out.with_suffix(".stderr").open("wb") as stderr:

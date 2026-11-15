@@ -18,7 +18,12 @@ LOGS = PROJECT / "artifacts/runs/s8-20261116/B"
 RUNS = [("claude-haiku-5-5", "with-handoff"), ("claude-haiku-5-5", "without-handoff"),
         ("claude-sonnet-5-5", "without-handoff"), ("claude-sonnet-5-5", "with-handoff")]
 READ_ONLY = ["git status", "git log", "git tag", "git branch", "git show", "git diff",
-             ".venv/bin/python scripts/status.py", "uptime", "ps", "ls", "cat"]
+             ".venv/bin/python scripts/status.py", "uptime", "ps"]
+# Attempt 1: CLAUDE.md names the real project by absolute path, and one subject read the real
+# handoff there. Reads under /home/user/src (the real project and the framework) and of the
+# user's ~/.claude are denied; Read rules also bind Grep and Glob. cat and ls left the list:
+# Bash is not bound by Read rules.
+DISALLOWED = ("Read(//home/user/src/**)", "Read(//home/user/.claude/**)")
 TOOLS = " ".join(["Read", "Grep", "Glob"] + [f"Bash({c}:*)" for c in READ_ONLY] + [f"Bash(rtk {c}:*)" for c in READ_ONLY])
 GIT = ["git", "-c", "user.name=experiment", "-c", "user.email=experiment@localhost"]
 
@@ -59,7 +64,7 @@ def main() -> int:
         clone(directory, condition == "without-handoff")
         out = LOGS / f"{name}.jsonl"
         print(f"run {name}", flush=True)
-        code = run_session.run(directory, model, prompt, TOOLS, out, budget=2.0, timeout=900)
+        code = run_session.run(directory, model, prompt, TOOLS, out, budget=2.0, timeout=900, disallowed=DISALLOWED)
         summary = run_session.summarize(out)
         run_session.stop_if_failed(name, code, summary)
         text = (summary["result"] or {}).get("text") or ""
