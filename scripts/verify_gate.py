@@ -19,6 +19,10 @@ RECEIPTS = "artifacts/acceptance-final"
 # .claude and .agents hold framework-managed host copies (checked by `agf project status`),
 # not program behaviour; they are outside the source fingerprint by user decision 2026-11-12.
 EXCLUDED = {".git", ".agf", ".claude", ".agents", ".venv", "target", "artifacts", "__pycache__", ".pytest_cache"}
+# The JSON type a key named in a report schema's required_nonempty must have; any other key is a
+# string. Until S5 review F7 `runs` was missing here, so the phase 14 requirement "runs is not
+# empty" read it as a string and could never be met.
+REPORT_KEY_TYPES = {"metrics": dict, "environment": dict, "runs": list}
 
 
 def sha(path: Path) -> str:
@@ -81,7 +85,7 @@ def validate_report(path: Path, schema: dict, fingerprint: str | None = None) ->
         if missing:
             raise ValueError(f"Report {path}: required cases missing or not detected: {missing}")
     for key in schema.get("required_nonempty", []):
-        expected = dict if key in {"metrics", "environment"} else str
+        expected = REPORT_KEY_TYPES.get(key, str)
         if not isinstance(data.get(key), expected) or not data[key] or (expected is str and not data[key].strip()):
             raise ValueError(f"Report {path}: {key} must be nonempty")
     for key in schema.get("required_positive_integer", []):

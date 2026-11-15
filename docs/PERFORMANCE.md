@@ -280,3 +280,16 @@ leader 處理一筆寫入要經過好幾個事件，每個事件都付一次。
 
   單一用戶端在兩次執行間從 3.9 到 5.8 ms 不等，屬於機器的變動，與 N2 一致（沒有明顯改善）。
 - **Mutation**：S5 新增 8 個案例（其中 1 個必須由模擬器抓到），共 57 個；結果以完整驗收的 `mutations.json` 為準。
+
+### 14.6 獨立審查後的更正（2026-11-15）
+
+[獨立審查](INDEPENDENT_REVIEW_S5.md)（`claude-sonnet-5-5`）對本補記的更正：
+
+- **§14.4 漏看了一個測試的強度（審查 F6）。** `saturated_outbound_pool_does_not_starve_status` 在 S5 只因 WAL 起始狀態而被改過；但 drain 迴圈把同一輪裡的狀態回覆排在寫入提出之前，
+  使它在對應的 mutant `saturated_pool_spin` 下不再失敗，而是卡在等節點停止——S4 的程式碼 2.1 秒就失敗。作者那次驗收正好停在這個 mutant，所以沒看到。
+  已修正：測試在寫入開始複製後再問一次狀態，並限時等待停止；`scripts/mutation_check.py` 經 `scripts/capped_run.py` 執行每個案例，限制時間與輸出量
+  （無上限的擷取曾三次耗盡 8.6 GB 記憶體）。
+- **§14.5 的 log 成長列**與 `write-benchmark.json` 不符（審查 F4）：檔案中修正前是 6.2 → 14.8 ms（254 → 1,900 筆）、修正後 5.1 → 5.5 ms。結論不變，數字待下一個 session 改正。
+- **階段 14 的契約本身過不了（審查 F7）。** 契約要求 `write-benchmark.json` 的 `runs` 不得為空，但 `scripts/verify_gate.py` 對 `required_nonempty` 只認字串與物件，
+  清單一律判錯，所以這條要求永遠無法滿足；階段 14 從沒跑完過，因此沒人發現。已讓檢查器認得清單（保留「不得為空」），並補兩個測試。
+- 審查的 F2、F3、F5（測試缺口）尚未處理，列在 [交接文件](HANDOFF_CLAUDE.md)。

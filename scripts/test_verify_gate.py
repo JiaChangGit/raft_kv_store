@@ -74,6 +74,32 @@ class EvidenceBoundaryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 gate.validate_report(report, schema, "abc")
 
+    def test_nonempty_keys_have_the_type_the_report_uses(self):
+        # S5 review F7: the phase 14 contract asked for a nonempty `runs` list, which the
+        # checker read as a string, so phase 14 could never pass.
+        report = self.directory / "typed.json"
+        schema = {"required_nonempty": ["command", "environment", "runs"]}
+        good = {"command": "run", "environment": {"cpu_count": 1}, "runs": [{"label": "before"}]}
+        report.write_text(json.dumps(good))
+        self.assertTrue(gate.validate_report(report, schema)["schema_valid"])
+        for key, bad in (("runs", []), ("runs", "before"), ("runs", {}), ("environment", {}), ("environment", ["x"]),
+                         ("command", " "), ("command", ["run"])):
+            report.write_text(json.dumps({**good, key: bad}))
+            with self.assertRaises(ValueError, msg=f"{key}={bad!r}"):
+                gate.validate_report(report, schema)
+
+    def test_the_phase_14_write_benchmark_schema_accepts_a_report_shaped_like_the_real_one(self):
+        contract = json.loads(gate.CONTRACT.read_text())
+        schema = next(s for s in contract["reports"]["14"] if s["path"].endswith("write-benchmark.json"))
+        report = self.directory / "write-benchmark.json"
+        shaped = {"command": "python scripts/write_benchmark.py", "source_fingerprint": "abc", "writes_per_run": 3000,
+                  "environment": {"cpu_count": 16}, "runs": [{"label": "before"}, {"label": "after"}]}
+        report.write_text(json.dumps(shaped))
+        self.assertTrue(gate.validate_report(report, schema, "abc")["schema_valid"])
+        report.write_text(json.dumps({**shaped, "runs": []}))
+        with self.assertRaises(ValueError):
+            gate.validate_report(report, schema, "abc")
+
     def test_snapshot_rejects_file_and_directory_symlinks(self):
         target = self.directory / "target"
         target.mkdir()

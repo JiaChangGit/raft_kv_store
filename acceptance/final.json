@@ -367,12 +367,20 @@
         "deltas_write_the_same_bytes_as_whole_states",
         "invalid_deltas_are_refused_without_writing",
         "recovery_work_grows_linearly_with_the_records",
-        "queued_writes_share_one_barrier_and_status_survives_a_large_map"
+        "queued_writes_share_one_barrier_and_status_survives_a_large_map",
+        "saturated_outbound_pool_does_not_starve_status"
       ],
       "pytest_nodes": [
         "tests/integration/test_performance.py::test_concurrent_writes_and_reads_stay_linearizable",
         "tests/integration/test_performance.py::test_a_batch_persisted_but_not_answered_is_not_executed_twice",
-        "tests/integration/test_performance.py::test_tools_keep_working_when_the_map_exceeds_a_frame"
+        "tests/integration/test_performance.py::test_tools_keep_working_when_the_map_exceeds_a_frame",
+        "scripts/test_mutation_check.py::JudgeTests::test_killed_runs_are_never_detections",
+        "scripts/test_mutation_check.py::JudgeTests::test_ordinary_failure_is_still_a_detection",
+        "scripts/test_mutation_check.py::CappedRunTests::test_output_and_exit_status_pass_through",
+        "scripts/test_mutation_check.py::CappedRunTests::test_a_flood_is_cut_at_the_cap_and_only_its_ends_are_kept",
+        "scripts/test_mutation_check.py::CappedRunTests::test_the_time_limit_kills_the_command_and_what_it_started",
+        "scripts/test_verify_gate.py::EvidenceBoundaryTests::test_nonempty_keys_have_the_type_the_report_uses",
+        "scripts/test_verify_gate.py::EvidenceBoundaryTests::test_the_phase_14_write_benchmark_schema_accepts_a_report_shaped_like_the_real_one"
       ],
       "required_files": [
         "docs/PERFORMANCE.md",
@@ -385,7 +393,8 @@
         "docs/lessons/14-the-benchmark-measured-itself/expected-output.txt",
         "docs/lessons/15-status-too-large-to-send/README.md",
         "docs/lessons/15-status-too-large-to-send/repro.sh",
-        "docs/lessons/15-status-too-large-to-send/expected-output.txt"
+        "docs/lessons/15-status-too-large-to-send/expected-output.txt",
+        "scripts/capped_run.py"
       ],
       "notes": "Since S5 Persist carries a Delta instead of a whole DurableState and the core proposes writes in batches (ProposeBatch); tests whose only change is reading delta fields instead of state fields are listed in modified_tests. tools/cluster.py writes history.json once at close (lesson 14), which changes no test's assertion."
     }
@@ -1043,9 +1052,9 @@
       "note": "showed the rejection with a GET; GETs no longer pass the session table, so it uses a Put and adds a read"
     },
     "saturated_outbound_pool_does_not_starve_status": {
-      "phase": "none (mutation target of saturated_pool_spin)",
-      "changed_in": "12, 13, 11 (2026-11-14), 14",
-      "note": "sent a GET to make the leader replicate into a saturated pool; since S3 a GET waits for ReadIndex and sends nothing, so the test stopped exercising the pool and the mutant survived. It now sends a Put; the control passes and the mutant is detected (lesson 07) S4 (13): Its hand-made leader now holds a three-node configuration entry: since S4 a leader replicates only to the voters of its configuration, and without one the Put would send nothing and the pool would not be exercised (the lesson 07 failure again). 2026-11-14: its hand-made actor names the three fields that replaced snapshot_too_large (lesson 13); nothing else changed. S5 (14): Its WAL now first saves the core's starting state: since S5 the node persists deltas, which must connect to what is on disk."
+      "phase": "14",
+      "changed_in": "12, 13, 11 (2026-11-14), 14, 14 (independent review S5 F6, 2026-11-15)",
+      "note": "sent a GET to make the leader replicate into a saturated pool; since S3 a GET waits for ReadIndex and sends nothing, so the test stopped exercising the pool and the mutant survived. It now sends a Put; the control passes and the mutant is detected (lesson 07) S4 (13): Its hand-made leader now holds a three-node configuration entry: since S4 a leader replicates only to the voters of its configuration, and without one the Put would send nothing and the pool would not be exercised (the lesson 07 failure again). 2026-11-14: its hand-made actor names the three fields that replaced snapshot_too_large (lesson 13); nothing else changed. S5 (14): Its WAL now first saves the core's starting state: since S5 the node persists deltas, which must connect to what is on disk. 2026-11-15 (independent review S5, F6): since S5 the actor answers a status that arrives together with a write before it proposes that write, so with the planted mistake the one-second status check still passed and the test then waited for ever for the actor to stop (the S4 code failed it in 2.1 s). It now asks for a second status after the write was proposed (batched_writes must be 1) and bounds the wait for Stop; the mutant fails it in about one second. The assertion it had is kept; two are added."
     },
     "single_leader_per_term": {
       "phase": "01",

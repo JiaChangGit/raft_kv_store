@@ -17,6 +17,12 @@ from verify_gate import snapshot
 
 ROOT=Path(__file__).resolve().parents[1]
 STORAGE="crates/raft-storage/src/lib.rs"
+# One cargo test (build included) may run this long, and print this much, before it is
+# killed. A planted mistake can leave a test spinning and printing ~50 MB/s; an unbounded
+# capture exhausted the machine's memory three times (docs/INDEPENDENT_REVIEW_S5.md F6).
+CASE_TIMEOUT=480
+OUTPUT_CAP=256<<20
+CAPPED_RUN=Path(__file__).with_name("capped_run.py")
 
 # (name, file, original text, mutated text, test that must fail, cargo package or None for the workspace)
 CASES=[
@@ -296,6 +302,14 @@ def classify(test,stdout,stderr):
         return "test_not_run"
     return "survived"
 
+def judge(test,returncode,stdout,stderr):
+    """(outcome, detected). A run killed for time or output (exit 124 or 125 from
+    capped_run.py) did not fail by itself, so whatever its output says it is not a detection."""
+    if returncode==124: return "timeout",False
+    if returncode==125: return "output_cap",False
+    outcome=classify(test,stdout,stderr)
+    return outcome,returncode!=0 and outcome=="detected"
+
 def copy_source(work):
     shutil.copytree(ROOT/"crates",work/"crates")
     shutil.copytree(ROOT/"config",work/"config")
@@ -311,7 +325,8 @@ def cargo_test(work,test,package):
     env["CARGO_TARGET_DIR"]=str(work/"target")
     scope=["-p",package] if package else ["--workspace"]
     command=["cargo","test",*scope,test]
-    result=subprocess.run(command,cwd=work,env=env,capture_output=True,timeout=600)
+    capped=[sys.executable,str(CAPPED_RUN),"--timeout",str(CASE_TIMEOUT),"--cap",str(OUTPUT_CAP),"--",*command]
+    result=subprocess.run(capped,cwd=work,env=env,capture_output=True,timeout=CASE_TIMEOUT+60)
     (work/"stdout.txt").write_bytes(result.stdout)
     (work/"stderr.txt").write_bytes(result.stderr)
     shutil.rmtree(work/"target",ignore_errors=True)  # created by this run only
@@ -350,8 +365,7 @@ def main():
         if source.count(original)!=1: raise RuntimeError(f"Mutation anchor not unique: {name}")
         path.write_text(source.replace(original,mutated,1))
         command,result=cargo_test(work,test,package)
-        outcome=classify(test,result.stdout.decode(errors="replace"),result.stderr.decode(errors="replace"))
-        detected=result.returncode!=0 and outcome=="detected"
+        outcome,detected=judge(test,result.returncode,result.stdout.decode(errors="replace"),result.stderr.decode(errors="replace"))
         results.append({"case":name,"test":test,"command":command,"exit_code":result.returncode,"outcome":outcome,"detected":detected,"directory":str(work.relative_to(ROOT))})
         print(f"{name}: {outcome.upper() if not detected else 'detected'} ({test})",flush=True)
     if snapshot(ROOT)[1]!=fingerprint: raise RuntimeError("source changed while mutants were running")

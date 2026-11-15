@@ -1176,7 +1176,29 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("pool saturation must not starve queued status");
         assert_eq!(status["role"], "Leader");
+        // Since S5 the actor answers a status that arrives together with a write
+        // before it proposes that write, so the answer above no longer shows that
+        // replication into the saturated pool leaves the actor responsive: with the
+        // retry deadline set to "now" (mutant `saturated_pool_spin`) it still came,
+        // and the test then waited for ever for the actor to stop
+        // (docs/INDEPENDENT_REVIEW_S5.md F6). Ask again once the write was proposed.
+        let (again_tx, again_rx) = mpsc::sync_channel(1);
+        tx.send(Input::Status(again_tx)).unwrap();
+        let status = again_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("pool saturation must not starve a status asked while the write replicates");
+        assert_eq!(
+            status["batched_writes"], 1,
+            "the write was proposed; otherwise the pool was never used"
+        );
+        assert_eq!(status["role"], "Leader");
         tx.send(Input::Stop).unwrap();
+        // A starved actor never reads Stop: fail instead of waiting for ever.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !worker.is_finished() {
+            assert!(Instant::now() < deadline, "the actor did not stop");
+            thread::sleep(Duration::from_millis(10));
+        }
         worker.join().unwrap().unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
