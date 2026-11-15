@@ -3,8 +3,10 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parents[3]
@@ -41,7 +43,11 @@ def main() -> int:
         scenario = scenarios[sid]
         groups = ("control", "framework") if position % 2 == 0 else ("framework", "control")
         for group in groups:
-            directory = BASE / sid / group
+            # Each run gets a parent of its own, removed afterwards: in attempt 1 a session
+            # globbed its parent directory and read the other group's files (README).
+            BASE.mkdir(parents=True, exist_ok=True)
+            parent = Path(tempfile.mkdtemp(prefix="run-", dir=BASE))
+            directory = parent / "work"
             prepare(directory, scenario["materials"], group == "framework")
             prompt = startup + "\n\n" + scenario["request"]
             out = LOGS / f"{sid}-{group}.jsonl"
@@ -52,11 +58,13 @@ def main() -> int:
             text = (summary["result"] or {}).get("text") or ""
             (HERE / "outputs" / f"{sid}-{group}.md").write_text(text + "\n", encoding="utf-8")
             listed = summary["skills_listed"] or []
+            outside = run_session.outside_paths(summary, directory)
+            shutil.rmtree(parent)
             results.append({"scenario": sid, "group": group, "expected_skill": scenario["expected_skill_if_available"],
                             "exit": code, "framework_skills_listed": [s for s in SKILLS if s in listed],
                             "skills_listed_count": len(listed), "skill_calls": summary["skill_calls"],
                             "files_read": [p.replace(str(directory), ".") for p in summary["files_read"]],
-                            "denied": summary["denied"], "tool_uses": len(summary["tool_uses"]),
+                            "outside_paths": outside, "denied": summary["denied"], "tool_uses": len(summary["tool_uses"]),
                             **{k: v for k, v in (summary["result"] or {}).items() if k != "text"}})
             (HERE / "results.json").write_text(json.dumps({"framework_commit": commit, "model": MODEL, "tools": TOOLS,
                                                             "runs": results}, ensure_ascii=False, indent=1) + "\n")

@@ -51,6 +51,21 @@ def stop_if_failed(name: str, code: int, summary: dict) -> None:
         raise SystemExit(f"stopped after {name}: exit {code}, {str(result.get('text'))[:200]}")
 
 
+def outside_paths(summary: dict, directory: Path) -> list[str]:
+    """Absolute paths in tool inputs that are not inside the run's own directory."""
+    found = []
+    for use in summary["tool_uses"]:
+        try:
+            given = json.loads(use["input"])
+        except json.JSONDecodeError:
+            given = {}
+        for key in ("file_path", "path"):
+            value = given.get(key) if isinstance(given, dict) else None
+            if isinstance(value, str) and value.startswith("/") and not value.startswith(str(directory)):
+                found.append(f"{use['tool']} {value}")
+    return found
+
+
 def summarize(path: Path) -> dict:
     summary = {"skills_listed": None, "tools_listed": None, "model": None, "version": None,
                "tool_uses": [], "skill_calls": [], "files_read": [], "denied": [], "result": None}
