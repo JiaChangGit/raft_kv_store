@@ -1,6 +1,6 @@
 # 接手文件
 
-更新日期：2026-11-14。這份文件取代 2026-11-10 從 Codex 轉交時寫的版本（舊版在 Git 歷史中，`git show 513cd58:docs/HANDOFF_CLAUDE.md`）。
+更新日期：2026-11-15。這份文件取代 2026-11-14 為 S1～S4 審查寫的版本（舊版在 Git 歷史中，`git show e5f09c2:docs/HANDOFF_CLAUDE.md`）。
 它描述寫下時的狀態；接手時請先用下面的命令核對，**以實際查到的為準，不以這份文字為準**。
 
 ## 一開始先做什麼
@@ -8,12 +8,15 @@
 ```bash
 cd /home/user/src/Distributed_Key-Value_Store_with_Raft
 . "$HOME/.cargo/env"                    # 非登入的 shell 裡 cargo 不在 PATH 上
-git status --short && git log --oneline -3 && git tag
+git status --short && git log --oneline -5 && git tag
 .venv/bin/python scripts/status.py      # 每個階段最近一次驗收，以及是否對應目前的來源
+uptime && ps -eo pid,pcpu,etime,comm --sort=-pcpu | head -5   # 機器是不是安靜的（見「踩過的坑」）
 ```
 
+**`git tag` 有沒有 `s5-performance-verified` 是 S5 是否驗收通過的第一個線索**：這個 tag 只在整套 P00～P14 都是 `PASS [current source]` 之後才建立；沒有它，就是驗收還沒通過。
 然後依任務讀：[路線圖](ROADMAP.md)（計畫與每階段的固定流程）、[AGENTS.md](../AGENTS.md)（不可違反的工程條件）、
-[獨立審查紀錄](INDEPENDENT_REVIEW_S1_S4.md)（最近一次工作的來龍去脈）、[測試紀錄](TEST_RECORD_20261114.md)（跑過什麼、結果在哪）。
+[S5 獨立審查](INDEPENDENT_REVIEW_S5.md)（最近一次工作的來龍去脈與未結事項）、[S5 規格與補記](PERFORMANCE.md) §14、
+[S1～S4 獨立審查](INDEPENDENT_REVIEW_S1_S4.md)。
 `.venv`、`.agf`、`artifacts`、`target` 都被 `.gitignore` 排除；換機器或重新 clone 之後它們不存在，要先如實確認再往下做。
 
 ## 目標與目前的位置
@@ -24,87 +27,88 @@ git status --short && git log --oneline -3 && git tag
 | 階段 | 狀態 |
 |---|---|
 | S0 基礎、S1 儲存格式、S2 快照與壓縮、S3 ReadIndex、S4 成員變更 | 已完成，各有 tag（`s0-…` 到 `s4-membership-verified`） |
-| S1～S4 的獨立審查 | 2026-11-14 補做並修正；S1 只做到「不同 session」（見下） |
-| S5 效能 | 2026-11-15 完成（tag `s5-performance-verified`），補記 `docs/PERFORMANCE.md` §14；實作模型見 §14.1 |
-| **S6 整體強化** | **下一個階段**，開始前先寫規格；S5 也需要獨立審查（Fable 與 Opus 都寫過，需第三個模型） |
+| S1～S4 的獨立審查 | 2026-11-14 補做並修正（tag `s1-s4-review-verified`）；S1 只做到「不同 session」，還缺第三個模型 |
+| S5 效能 | 實作完成（`claude-fable-5-2` 起頭、`claude-opus-5-5` 完成，規格 `PERFORMANCE.md`）；**獨立審查完成**（2026-11-15，`claude-sonnet-5-5`，[報告](INDEPENDENT_REVIEW_S5.md)）；審查找到的 F6、F7 已修正；F2～F5 **未處理**。驗收與 tag 以 `git tag`／`status.py` 為準 |
+| **S6 整體強化** | **下一個階段**，開始前先寫規格並取得使用者同意；建議先處理 S5 的未結事項 |
 | S7 公開整理 | 未開始 |
 
-## 版本與未提交的變更
+`ROADMAP.md`、`CLAUDE.md`、`PERFORMANCE.md` 檔頭仍寫「S5 已完成、tag `s5-performance-verified`」：那是作者在驗收開始前寫的，只有 tag 真的存在時才成立。
 
-- **2026-11-14 更新**：下面這批修正已由使用者 commit 為 `b3e73f1`，並加上本機 tag `s1-s4-review-verified`（當時 P00～P13 皆為 `PASS [current source]`）。
-  之後開始 S5：規格草稿 `docs/PERFORMANCE.md`（待核准時尚未 commit）。以下兩段是寫交接當時的狀態，保留作為紀錄。
-- （當時）`HEAD` 是 `513cd58`（tag `s4-membership-verified`），獨立審查之後的所有修正都還在工作樹。
-- （當時）未提交的內容：
+## 這個 session 做了什麼（2026-11-15）
 
-| 類別 | 檔案 |
-|---|---|
-| 產品程式 | `crates/raft-storage/src/lib.rs`（回復時採用快照的 term）、`crates/raft-node/src/main.rs`（超過上限後的重試間隔） |
-| 模擬器 | `crates/raft-sim/src/cluster.rs`、`crates/raft-sim/src/lib.rs`、`crates/raft-sim/tests/invariants.rs` |
-| 測試與測試工具 | `crates/raft-storage/src/tests.rs`、`crates/raft-storage/tests/crash_process.rs`、`crates/raft-storage/src/bin/snapshot_probe.rs`、`tests/integration/test_read_index.py`、`scripts/mutation_check.py` |
-| 契約 | `acceptance/final.json` |
-| 規格與說明 | `docs/SNAPSHOT_COMPACTION.md`、`docs/READ_INDEX.md`、`docs/MEMBERSHIP.md`、`docs/ROADMAP.md`、`CLAUDE.md`、`docs/FRAMEWORK_EXPERIENCE_LOG.md`、`docs/lessons/README.md`、本文件 |
-| 新檔案 | `docs/INDEPENDENT_REVIEW_S1_S4.md`、`docs/TEST_RECORD_20261114.md`、`docs/lessons/11-…`、`12-…`、`13-…` 三個資料夾 |
+1. 以不同於作者的模型（`claude-sonnet-5-5`）對 `e5f09c2` 做 S5 的獨立審查。沒有發現違反 Raft 安全性或 S5 保證的缺陷；找到 F1～F6（見報告 §1）。
+2. 使用者要求把沒通過的部分在安靜的機器上重測。完整 mutation 執行三次都死在第 4 個 mutant（`saturated_pool_spin`），孤立重現後查明是 **F6**：
+   S5 的 drain 迴圈讓守衛測試在該 mutant 下不再失敗而是卡住，而 `mutation_check.py` 把輸出全留在記憶體裡（約 52 MB/s），幾分鐘就撐爆 WSL。不是背景軟體造成的。
+3. 使用者同意修正 F6：修測試、加 `scripts/capped_run.py` 限制單案例的時間與輸出、補契約與測試。
+4. F6 修正後整套重驗一次：57/57 mutant 偵測到、模擬器 1,000/1,000、P00～P13 全過，P14 的所有測試也過，只在最後的報告檢查失敗——**F7**：契約要求 `write-benchmark.json` 的 `runs` 不得為空，
+   但檢查器只認字串與物件，清單一律判錯，這條要求永遠過不了（P14 從沒跑完過）。
+5. 使用者同意修正 F7：`verify_gate.py` 認清單（保留「不得為空」），補兩個測試。檢查器與契約都變，所以從 P00 全部重跑並重新產生報告；結果見 commit 訊息與 `scripts/status.py`。
 
-- 驗收：修正完成時（指紋 `5209bbdf…390dc`）P00～P13 全部通過。之後加入測試紀錄並改寫本文件，指紋因此改變，同一個 session 又重跑了一次。
-  **現況請看 `scripts/status.py`**：每一行都是 `PASS [current source]` 才代表 receipt 對應你眼前的檔案；出現 `source changed / not run` 就表示之後有人動過檔案。
-
-## 這個 session 做了什麼
-
-1. 以新的 session、不同的模型對 `513cd58` 做獨立審查。沒有發現違反 Raft 安全性的缺陷；找到三個缺陷與一組模擬器的盲點。
-2. 使用者指示「修，照建議做」後，修正三個缺陷並補測試：
-   - **F1**（S2，教學 11）：follower 用一則訊息安裝 term 比自己新的快照時，在「快照已落盤、WAL 未改寫」之間被終止，之後永遠無法啟動。
-     改為重啟時採用快照的 term、清除投票。
-   - **F2**（S4 影響 S3 的證據，教學 12）：模擬器把請求一律送給 term 最高的 leader，讀取的不變量 I8 因此抓不到「未經多數確認就回覆」。
-     產品程式沒有錯；修正的是模擬器的工作負載。
-   - **F3**（S2，教學 13）：狀態機超過 64 MiB 後，每個事件都重新序列化一次再丟掉。改為間隔加倍後才重試。
-3. 寫了教學 11～13、更新三份規格與契約、把審查紀錄放進版本控制，並重跑完整驗收。
+兩個 commit：先是 F6、F7 的修正（`crates/`、`scripts/`、`acceptance/`，以及 `PERFORMANCE.md` §14.6 的更正），再是審查報告、本文件與框架經驗紀錄。
 
 ## 已決定的事與理由
 
-| 決定 | 理由 |
+| 決定（使用者 2026-11-15） | 理由 |
 |---|---|
-| F1 在**回復時**修（採用快照的 term），不在 core 拆成兩個 barrier | core 的規則是一步最多一個 barrier；回復時提高 term 而不投票在 Raft 中是安全的。兩種做法的比較在教學 11 §6 |
-| 模擬器除了隨機挑選，還**主動**對過期的 leader 發讀取 | 實測只做隨機挑選時，1,000 個種子只有 43 次請求送到過期 leader，植入的錯誤仍全部通過 |
-| 模擬器的快照分塊隨種子變化（7、13、4096 bytes），follower 安裝途中 crash 的機率 1/10 | 固定 7 bytes 讓「一則訊息送完」的路徑從未執行；只改分塊時 F1 的巧合在 1,000 個種子裡一次都沒出現 |
-| 新增兩個「必須由模擬器抓到」的 mutation 案例，以及兩個必須大於零的統計欄位 | 讓「模擬器變弱」在驗收時以失敗出現，而不是繼續綠燈 |
-| 既有測試 `snapshot_and_wal_consistency_rules` 的最後一列改成相反的期待 | 它原本斷言 F1 的磁碟狀態「必須拒絕」，那正是缺陷本身。**這是唯一一處改了既有測試的期待**，已記入契約的 `modified_tests`，值得使用者親自看一眼 |
-| 新測試加進既有的階段 11、12，不另開階段 | 獨立審查是各階段固定流程的一步，補上的測試屬於它所審查的階段；階段 14、15 保留給 S5、S6 |
-| 審查報告的 §1～§7 保留審查當時的原文，處理結果另寫在 §8 | 讓人分得出「當時看到什麼」與「後來改了什麼」 |
+| 重測：先補跑，最後整套重驗 | `docs/` 計入來源指紋，文件定稿後 receipt 才會對應最終的檔案 |
+| 整套驗收全過才打本機 tag `s5-performance-verified`，不 push | F1（驗收未完成）解決後，文件裡的「已完成、tag」才名實相符 |
+| F2～F5 不修，只列進交接 | 審查者不改被審查的實作與測試；下一個 session 一次處理、只驗收一次 |
+| F6 要修 | 它讓 P10 之後的驗收根本過不去，不修就無法驗收 |
+| F7 要修，方式是讓檢查器認清單、保留「`runs` 不得為空」，不是把它從契約拿掉 | 前者保留原本的要求；後者是削弱驗收。改檢查器必須從 P00 全部重跑，使用者同意 |
+| 審查報告 §1～§6、§8～§9 保留審查當時的原文，F6 與處理結果另寫（§7、§11） | 讓人分得出「當時看到什麼」與「後來改了什麼」 |
 
 ## 還沒做的事與未知
 
-- **是否 commit、要不要加 tag，等使用者決定。** 之前各階段的慣例是本機 commit 加 tag；這次的修正跨 S2～S4，沒有現成的 tag 名稱可沿用。
-- **S1 還缺一次由第三個模型做的審查。** S1 的規格草稿與第一個 commit 和這次的審查者是同一個模型（`claude-fable-5-2`）。
-- 留給 S6 的模擬器盲點：管理者一次只送一個成員變更（「同時兩個變更」「蓋過未 commit 的設定」不會出現）；用戶端每個種子只有 64 個操作。
-  審查時實測有 17 個植入錯誤只有單元測試抓得到，清單在審查紀錄 §5。
-- 審查紀錄的觀察 O1～O3 沒有處理：O1（每個事件複製整份 log，成本隨資料量成長）屬於 S5；O2、O3 是已聲明的取捨。
-- 教學 01～13 的狀態都是「草稿」：沒有第二個人照著第 3 節做過。
-- 沒有實測的事（主機斷電、真實叢集跑到 64 MiB 等）列在測試紀錄 §7。
-- `docs/WORKLOG.md` 與 `CLAUDE.md` 的部分條目還停在 V1 時期的說法，這次沒有整理。
+**S5 的未結事項（做法與要補的案例都在 [審查報告](INDEPENDENT_REVIEW_S5.md)，這裡只列摘要；建議一起處理，只驗收一次）**
+
+- **F2（中）**：follower 接收端的批次上限（`crates/raft-core/src/lib.rs` 的 `entries.len() <= MAX_BATCH_ENTRIES`）沒有任何測試守著；改回 32，cargo 與 32 個整合測試都過，但落後超過 32 筆的 follower 永遠追不上。
+  補 core 單元測試（256 筆成功、257 筆被拒）與真實 process 測試（`repro/test_zz_lag.py` 是現成的探針），並新增 mutation 案例。
+- **F3（中低）**：`validate_delta` 有三條規則沒被測試獨立守住（entry 的 term 不得小於前一筆、命令必須合法、term 不得為 0）。在 `invalid_deltas_are_refused_without_writing` 補案例並各加一個 mutant。
+- **F4（低）**：`PERFORMANCE.md` §14.5 的「log 成長」列與 `write-benchmark.json` 不符（正確：修正前 6.2 → 14.8 ms、修正後 5.1 → 5.5 ms）。
+- **F5（低）**：一個恆真的斷言（`batches <= batched_writes`）；crash 測試不保證是整批；node 端 512 KiB 切批沒有測試；G6 測試只比 `save` 與 `save_delta`，建議存一個舊版產生的 golden WAL。
+- **預檢（建議，未實作）**：`scripts/preflight_phase.py` 只跑階段自己的測試，不檢查報告的結構，所以 F7 要到整套驗收的最後一步才出現。讓它用現有報告預檢契約的報告檢查（不寫 receipt），可以省下一小時。
+- **教學**：F6（測試失敗時卡住而不是失敗；擷取輸出沒有上限）、F7（契約與檢查器彼此不符，要到第一次真的跑才發現）與 F2、F3 都還沒寫成教學；下一篇編號是 16。依 AGENTS.md，遇到的 bug 要寫成教學。
+- **無法解釋的失敗**：重測時有 4 次 `raft-node` 的 `an_oversize_state_is_not_serialized_again_until_the_log_doubles` 失敗，當時機器上有其他建置；之後單獨跑 50 次、整個檔案跑 30 次都沒有再失敗。原因不明，見報告 §8。
+
+**其他**
+
+- **S1 還缺一次由第三個模型做的審查。** S1 的規格草稿與第一個 commit 是 `claude-fable-5-2` 寫的；這次的審查者（`claude-sonnet-5-5`）只審了 S5，要審 S1 的話請另開 session，不要先給它結論。
+- 留給 S6 的模擬器盲點：管理者一次只送一個成員變更；用戶端每個種子只有 64 個操作。審查時實測有 17 個植入錯誤只有單元測試抓得到（S1～S4 審查紀錄 §5）。
+- 教學 01～15 的狀態都是「草稿」：沒有第二個人照著第 3 節做過。
+- 沒有實測的事（主機斷電、真實叢集跑到 64 MiB 等）列在 `TEST_RECORD_20261114.md` §7。
+- `docs/WORKLOG.md` 與 `CLAUDE.md` 的部分條目還停在 V1 時期的說法，沒有整理。
 
 ## 下一步
 
-1. 使用者決定是否 commit 這批修正（以及 tag）。
-2. 若要嚴格符合路線圖：請第三個模型另開 session 審查 S1（`docs/STORAGE_FORMAT_V2.md`、`crates/raft-storage`），不要先給它這次的結論。
-3. 開始 S5 前先寫規格。S5 的規格應該回應 O1：把「快照大小」當成量測的變數，並決定每個事件複製整份 log、`Wal::save` 逐筆比對、回復時逐筆複製這三件事怎麼處理。
-4. 之後每個階段完成時，在規格補記寫下**實作所用的模型**，下一次審查才判斷得出自己是不是「不同模型」。
+1. 核對 `git tag` 與 `status.py`。有 `s5-performance-verified` 且每一行都是 `PASS [current source]`：驗收成立。沒有：先看 commit 訊息說哪一步沒過；重跑整套之前先確認機器是安靜的。
+2. 處理 F2～F5 與教學，**改完一次跑完整驗收**（`mutation_check.py`、`simulation_report.py`、`read_benchmark.py`、`write_benchmark.py`，再 `revalidate_all.py`；約 1 小時）。
+3. （擇一）請第三個模型另開 session 審查 S1；或起草 S6 的規格給使用者看，先不要實作。
+4. 每個階段完成時，在規格補記寫下**實作所用的模型**，下一次審查才判斷得出自己是不是「不同模型」。
 
 ## 操作範圍
 
 - 修改只限本專案；`/home/user/src/ai-general-framework` 唯讀（`.claude/settings.json` 有 deny 規則）。
 - 不 push、不建立 PR、不部署。本機 commit 與 tag 依使用者當次的指示。
 - 不為了通過驗收而削弱測試或改契約；改既有測試的期待時，寫進契約的 `modified_tests` 並告訴使用者。
-- 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L42）。
+- 審查者不改被審查的實作；要改，先問使用者。
+- 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L48）。
 - 以自然的台灣繁體中文溝通；分清「已執行」「推論」「未驗證」。
 
 ## 這次踩過的坑（接手的人大概也會遇到）
 
-- **session 從 `/home/user/src` 啟動時，宿主不會列出專案的 skill。** 直接讀 `.claude/skills/<名稱>/SKILL.md` 照做即可。從專案根目錄啟動比較省事。
+- **長時間的工作會被打斷，而且連脫離 session 的背景工作也一起死。** 這個 WSL 在 session 結束時似乎會整個重啟（之後 `uptime` 只有 0～10 分鐘；原因是推論，現象有 `uptime` 與被殺的 `setsid` 工作為證）。
+  `/tmp` 是 tmpfs，重啟就清空；要留的證據寫到 `artifacts/`（本次 `artifacts/audit/independent-review-20261115-s5/`），暫存目錄只放用完即丟的東西。
+  驗收用 `scripts/run_phase.sh NN` 可以從某一階段續跑（需前一階段已有通過紀錄），`revalidate_all.py` 則從頭開始。
+- **擷取輸出一定要有上限。** 失控的 mutant 或測試可以每秒噴 50 MB；`mutation_check.py` 現在經 `scripts/capped_run.py` 執行每個案例（480 秒、256 MiB）。自己寫腳本時同樣不要 `capture_output=True` 後讓它無限成長。
+- **這個 WSL 開機就跑著 `dockerd` 和 `containerd`，常各佔約一顆 CPU**（load 8～18）。量測或驗收前先看 `uptime`，必要時先停掉它們；時序相關的測試在那種負載下不可靠。
+- **報告與驗收執行期間不要改任何受指紋涵蓋的檔案**（`docs/` 也算）。報告帶著指紋，改了就得全部重跑。要寫文件就先寫完再跑。
+  **改檢查器（`verify_gate.py`）或契約（`final.json`）也要從 P00 全部重跑**——receipt 帶著兩者的雜湊，前一階段的雜湊不符，下一階段就拒絕執行。
+- **新階段的契約寫完後，立刻實際跑一次 `scripts/verify_gate.py NN`，不要等到階段收尾。** S5 的契約到驗收的最後一步才發現過不了（F7），而 S5 的作者在驗收開始前就把文件寫成「已完成」。
+- **session 從 `/home/user/src` 啟動時，宿主不會列出專案的 skill**；這次在工作目錄進入專案目錄後宿主才補列，之後 `review-change` 能直接用 Skill 叫用。從專案根目錄啟動最省事，否則直接讀 `.claude/skills/<名稱>/SKILL.md` 照做。
 - **非登入的 shell 找不到 `cargo`。** 先 `. "$HOME/.cargo/env"`，或把 `$HOME/.cargo/bin` 加進 `PATH`。
 - **使用者環境的 RTK hook 會改寫 Bash 命令**，偶爾讓自動權限審查要求原樣重送；需要原始輸出時用 `rtk proxy <命令>`。
-- **寫「逐一植入錯誤再建置」的腳本前先讀教學 06。** 複製出來的檔案保留舊的修改時間，共用建置目錄時 cargo 會沿用前一個案例的編譯結果。這次的臨時腳本就重蹈了一次。
-- **報告與驗收執行期間不要改任何受指紋涵蓋的檔案**（`docs/` 也算）。三份報告帶著指紋，改了就得全部重跑（約 35 分鐘）。要寫文件就先寫完再跑。
-- **改模擬器的工作負載或固定參數前先讀教學 11、12。** 「挑最合理的對象」和「固定的大小」都曾讓整條路徑測不到。
+- **寫「逐一植入錯誤再建置」的腳本前先讀教學 06。** 共用建置目錄時 cargo 會沿用前一個案例的編譯結果。
+- **改模擬器的工作負載或固定參數前先讀教學 11、12；改任何測試依賴的執行順序前先讀教學 07。** 「挑最合理的對象」、「固定的大小」和「順序」都曾讓整條路徑測不到——S5 的 F6 是同一類。
 - `pkill -f <樣式>` 會連自己所在的 shell 一起殺掉（命令列裡有同樣的字）；用 PID。
 
 ## 重要材料的位置
@@ -113,17 +117,18 @@ git status --short && git log --oneline -3 && git tag
 |---|---|
 | 計畫、階段、固定流程、模型分工 | `docs/ROADMAP.md` |
 | 不可違反的工程條件 | `AGENTS.md` |
-| 各階段的規格與實作補記 | `docs/STORAGE_FORMAT_V2.md`、`SNAPSHOT_COMPACTION.md`、`READ_INDEX.md`、`MEMBERSHIP.md` |
+| 各階段的規格與實作補記 | `docs/STORAGE_FORMAT_V2.md`、`SNAPSHOT_COMPACTION.md`、`READ_INDEX.md`、`MEMBERSHIP.md`、`PERFORMANCE.md` |
 | 驗收契約與說明 | `acceptance/final.json`、`docs/ACCEPTANCE_FINAL.md` |
-| 審查的發現、證據與處理結果 | `docs/INDEPENDENT_REVIEW_S1_S4.md` |
-| 這次跑過的測試 | `docs/TEST_RECORD_20261114.md` |
-| bug 教學（13 篇）與寫法 | `docs/lessons/`、`.claude/skills/write-bug-lesson/SKILL.md` |
+| S5 審查的發現、證據與處理結果 | `docs/INDEPENDENT_REVIEW_S5.md` |
+| S1～S4 審查的發現、證據與處理結果 | `docs/INDEPENDENT_REVIEW_S1_S4.md` |
+| 測試紀錄（S1～S4 審查時） | `docs/TEST_RECORD_20261114.md` |
+| bug 教學（15 篇）與寫法 | `docs/lessons/`、`.claude/skills/write-bug-lesson/SKILL.md` |
 | 框架的使用經驗 | `docs/FRAMEWORK_EXPERIENCE_LOG.md` |
 | 論文出處筆記 | `docs/reference/raft-notes.md` |
-| receipt、報告、審查的重現材料（不在版本控制內） | `artifacts/acceptance-final/`、`artifacts/reports/`、`artifacts/audit/independent-review-20261114/` |
+| receipt、報告、審查的重現材料（不在版本控制內） | `artifacts/acceptance-final/`、`artifacts/reports/`、`artifacts/audit/independent-review-20261115-s5/`（S1～S4：`…-20261114/`） |
 
 ## 可以直接交給下一個 session 的第一句話
 
-> 請先讀 `CLAUDE.md` 與 `docs/HANDOFF_CLAUDE.md`，執行「一開始先做什麼」的四個命令並回報：工作樹有哪些未提交的變更、`status.py` 是否每一行都是 `PASS [current source]`。
-> 然後（擇一）：(a) 依我的指示處理這批修正的 commit；(b) 以不同於 `claude-fable-5-2` 的模型審查 S1，不要先讀 `INDEPENDENT_REVIEW_S1_S4.md` 的結論；
-> (c) 起草 S5 的規格給我看，先不要實作。相鄰的 ai-general-framework 保持唯讀，不要 push、建立 PR 或部署。
+> 請先讀 `CLAUDE.md` 與 `docs/HANDOFF_CLAUDE.md`，執行「一開始先做什麼」的命令並回報：工作樹有哪些未提交的變更、`git tag` 有沒有 `s5-performance-verified`、`status.py` 是否每一行都是 `PASS [current source]`、機器是否安靜。
+> 然後（擇一）：(a) 依 `docs/INDEPENDENT_REVIEW_S5.md` 處理 F2～F5 與教學 16，一次改完再驗收一次；(b) 以不同於 `claude-fable-5-2` 的模型審查 S1，不要先讀審查紀錄的結論；
+> (c) 起草 S6 的規格給我看，先不要實作。相鄰的 ai-general-framework 保持唯讀，不要 push、建立 PR 或部署。
