@@ -446,6 +446,19 @@ impl Actor {
                     ) {
                         self.failpoint("after_sync_before_ack");
                     }
+                    // Review F5: the one above may stop at a batch of one write.
+                    // This one stops only once several writes are durable together.
+                    let writes: Vec<u128> = delta
+                        .append
+                        .iter()
+                        .filter_map(|entry| match &entry.command {
+                            Command::Client(request) => Some(request.client_id),
+                            _ => None,
+                        })
+                        .collect();
+                    if writes.len() > 1 {
+                        self.failpoint_with("after_sync_of_a_batch_before_ack", &writes);
+                    }
                     for effect in self.core.persisted(barrier_id).into_iter().rev() {
                         queue.push_front(effect);
                     }
@@ -630,12 +643,18 @@ impl Actor {
         Ok(())
     }
     fn failpoint(&self, name: &str) {
+        self.failpoint_with(name, &[]);
+    }
+    /// `writes` are the client ids of the batch just synced; the trace lists
+    /// them (as strings: a u128 does not fit a JSON number).
+    fn failpoint_with(&self, name: &str, writes: &[u128]) {
         let control = std::env::var_os("RAFT_FAILPOINT_FILE")
             .and_then(|path| std::fs::read_to_string(path).ok());
         if std::env::var("RAFT_FAILPOINT").ok().as_deref() == Some(name)
             || control.as_deref().is_some_and(|value| value.trim() == name)
         {
-            self.trace("failpoint", json!({"name":name}));
+            let writes: Vec<String> = writes.iter().map(u128::to_string).collect();
+            self.trace("failpoint", json!({"name":name,"client_ids":writes}));
             std::process::exit(91);
         }
     }
@@ -1422,15 +1441,14 @@ mod tests {
         assert!(config.validate().is_err());
     }
 
-    /// docs/PERFORMANCE.md G2, G8: writes that are already queued when the
-    /// actor looks share one durability barrier; every one is answered; and
-    /// the status still answers when the map is too large to embed.
-    #[test]
-    fn queued_writes_share_one_barrier_and_status_survives_a_large_map() {
+    /// Node 1 alone in its configuration, already leader with its no-op
+    /// committed, and the WAL holding what the core holds. Returns the actor,
+    /// a sender to its queue and the data directory to remove at the end.
+    fn single_voter_leader(name: &str) -> (Actor, SyncSender<Input>, PathBuf) {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/node-pool-tests")
             .join(format!(
-                "batch-{}-{}",
+                "{name}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -1477,10 +1495,17 @@ mod tests {
             .step(Event::ElectionTimeout { generation: 0 })
             .unwrap();
         assert_eq!(actor.core.role, Role::Leader);
-        let before = actor.wal.persists;
+        (actor, tx, dir)
+    }
+
+    /// Queues one 4 KiB Put per client before the actor runs.
+    fn queue_puts(
+        tx: &SyncSender<Input>,
+        clients: std::ops::Range<u128>,
+    ) -> Vec<mpsc::Receiver<ClientResponse>> {
         let value = "v".repeat(MAX_VALUE);
         let mut replies = vec![];
-        for client in 0..96u128 {
+        for client in clients {
             let (reply_tx, reply_rx) = mpsc::sync_channel(1);
             tx.send(Input::Client(
                 ClientRequest {
@@ -1496,6 +1521,17 @@ mod tests {
             .unwrap();
             replies.push(reply_rx);
         }
+        replies
+    }
+
+    /// docs/PERFORMANCE.md G2, G8: writes that are already queued when the
+    /// actor looks share one durability barrier; every one is answered; and
+    /// the status still answers when the map is too large to embed.
+    #[test]
+    fn queued_writes_share_one_barrier_and_status_survives_a_large_map() {
+        let (mut actor, tx, dir) = single_voter_leader("batch");
+        let before = actor.wal.persists;
+        let replies = queue_puts(&tx, 0..96);
         let worker = thread::spawn(move || {
             let result = actor.run();
             (actor, result)
@@ -1519,6 +1555,34 @@ mod tests {
         let persisted = actor.wal.persists - before;
         assert!(persisted <= 4, "96 queued writes took {persisted} barriers");
         assert_eq!(actor.batched_writes, 96);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// docs/PERFORMANCE.md §6.1: what one drain collects is proposed in
+    /// batches of at most MAX_BATCH_BYTES (review F5: nothing tested it).
+    #[test]
+    fn oversized_queued_writes_are_split_into_bounded_batches() {
+        let (mut actor, tx, dir) = single_voter_leader("split");
+        // 200 writes of 4 KiB are about 800 KiB, more than one batch may hold,
+        // and fewer than the 256 entries one drain collects.
+        let replies = queue_puts(&tx, 0..200);
+        let worker = thread::spawn(move || {
+            let result = actor.run();
+            (actor, result)
+        });
+        for reply in replies {
+            let answer = reply.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(answer.status, "OK", "{answer:?}");
+        }
+        tx.send(Input::Stop).unwrap();
+        let (actor, result) = worker.join().unwrap();
+        result.unwrap();
+        assert_eq!(actor.batched_writes, 200);
+        assert!(
+            actor.batches >= 2,
+            "800 KiB of queued writes went out as {} batch(es)",
+            actor.batches
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

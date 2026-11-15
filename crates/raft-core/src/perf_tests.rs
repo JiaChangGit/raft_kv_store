@@ -218,6 +218,48 @@ fn an_append_carries_at_most_one_batch() {
     assert_eq!(batch_len(&big[..1]), 1);
 }
 
+/// Review F2: a follower takes a whole batch. The limit was 32 entries until
+/// S5; put back on either the envelope check or the core's own check, it left
+/// a follower more than 32 entries behind, with no snapshot to fall back on,
+/// refusing every request and never catching up.
+#[test]
+fn a_follower_accepts_a_full_batch_and_refuses_one_more() {
+    let receive = |count: u64| {
+        let mut n = Core::new(2, DurableState::new(2, None, vec![config(1)])).unwrap();
+        let fx = n.step(Event::Message(env(
+            1,
+            2,
+            7,
+            Rpc::AppendEntries {
+                term: 2,
+                leader_id: 1,
+                prev_log_index: 1,
+                prev_log_term: 1,
+                entries: (2..2 + count).map(|i| noop(i, 2)).collect(),
+                leader_commit: 0,
+            },
+        )));
+        let answer = complete(&mut n, fx).iter().find_map(|e| match e {
+            Effect::Send(Envelope {
+                to: 1,
+                body:
+                    Rpc::AppendResponse {
+                        success,
+                        matched_through,
+                        ..
+                    },
+                ..
+            }) => Some((*success, *matched_through)),
+            _ => None,
+        });
+        (answer, n.state.last_index())
+    };
+    let full = MAX_BATCH_ENTRIES as u64;
+    assert_eq!(receive(full), (Some((true, 1 + full)), 1 + full));
+    // One entry more is not a request any leader sends: it is dropped unanswered.
+    assert_eq!(receive(full + 1), (None, 1));
+}
+
 /// G4: what a write costs the core does not depend on how long the log is.
 #[test]
 fn the_cost_of_a_write_does_not_grow_with_the_log() {

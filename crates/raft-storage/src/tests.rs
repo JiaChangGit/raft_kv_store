@@ -1299,6 +1299,104 @@ fn changes() -> Vec<DurableState> {
     states
 }
 
+/// G6 against the past: the test below compares `save_delta` with today's
+/// `save`, which shares its encoder, so it cannot show that the format stayed
+/// the same. testdata/pre-s5-steps.wal was written by the pre-S5 `save` (tag
+/// s1-s4-review-verified) for these steps (S5 review §8; testdata/README.md).
+#[test]
+fn the_wal_bytes_match_a_file_written_before_s5() {
+    fn put(index: u64, term: u64, value: &str) -> LogEntry {
+        LogEntry {
+            index,
+            term,
+            command: Command::Client(ClientRequest {
+                client_id: 7,
+                sequence: index,
+                operation: Operation::Put {
+                    key: format!("key-{index}"),
+                    value: value.into(),
+                },
+            }),
+        }
+    }
+    type Step = Box<dyn Fn(&mut DurableState)>;
+    let steps: Vec<Step> = vec![
+        Box::new(|s| {
+            s.term = 1;
+            s.voted_for = Some(1);
+        }),
+        Box::new(|s| {
+            s.push(LogEntry {
+                index: 1,
+                term: 1,
+                command: Command::Config {
+                    voters: vec![1, 2, 3],
+                },
+            });
+            s.push(LogEntry {
+                index: 2,
+                term: 1,
+                command: Command::NoOp,
+            });
+        }),
+        Box::new(|s| {
+            s.push(put(3, 1, "alpha"));
+            s.push(LogEntry {
+                index: 4,
+                term: 1,
+                command: Command::Client(ClientRequest {
+                    client_id: 7,
+                    sequence: 4,
+                    operation: Operation::Delete {
+                        key: "key-3".into(),
+                    },
+                }),
+            });
+            s.push(put(5, 1, &"x".repeat(4000)));
+        }),
+        Box::new(|s| {
+            s.term = 2;
+            s.voted_for = Some(3);
+        }),
+        Box::new(|s| {
+            s.truncate_from(4);
+            s.push(put(4, 2, "replaced-4"));
+            s.push(put(5, 2, "replaced-5"));
+        }),
+        Box::new(|s| {
+            s.term = 3;
+            s.voted_for = None;
+        }),
+        Box::new(|s| {
+            for i in 6..=40 {
+                s.push(put(i, 3, &format!("batch-{i}")));
+            }
+        }),
+        Box::new(|s| {
+            s.term = 4;
+            s.voted_for = Some(1);
+            s.truncate_from(10);
+            for i in 10..=12 {
+                s.push(put(i, 4, &format!("leader4-{i}")));
+            }
+        }),
+    ];
+    let dir = TestDir::new();
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    let mut state = DurableState::new(0, None, vec![]);
+    for step in &steps {
+        state.mark_clean();
+        step(&mut state);
+        wal.save_delta(&state.delta()).unwrap();
+    }
+    assert_eq!(wal.state(), &state);
+    let written = fs::read(dir.wal()).unwrap();
+    let golden: &[u8] = include_bytes!("../testdata/pre-s5-steps.wal");
+    assert_eq!(written.len(), golden.len(), "WAL length");
+    let first_difference = written.iter().zip(golden).position(|(a, b)| a != b);
+    assert_eq!(first_difference, None, "first byte that differs");
+}
+
 /// G6: `save_delta` writes exactly the bytes `save` writes for the same change.
 #[test]
 fn deltas_write_the_same_bytes_as_whole_states() {
@@ -1411,6 +1509,31 @@ fn invalid_deltas_are_refused_without_writing() {
             good(3, vec![entry(3, 2, "other")]),
         ),
         ("term 0 entry", good(4, vec![entry(4, 0, "y")])),
+        // Review F3: in the case above "below the previous entry" is never the
+        // rule that refuses it (index 3 holds another command of term 2). Here
+        // index 4 is new and term 1 is below no current term: only it applies.
+        (
+            "new entry term below the previous entry",
+            good(4, vec![entry(4, 1, "y")]),
+        ),
+        (
+            "invalid command",
+            good(
+                4,
+                vec![LogEntry {
+                    index: 4,
+                    term: 2,
+                    command: Command::Client(ClientRequest {
+                        client_id: 1,
+                        sequence: 4,
+                        operation: Operation::Put {
+                            key: "k".repeat(raft_protocol::MAX_KEY + 1),
+                            value: "y".into(),
+                        },
+                    }),
+                }],
+            ),
+        ),
     ] {
         assert!(wal.save_delta(&delta).is_err(), "{what}");
         assert!(
@@ -1429,6 +1552,19 @@ fn invalid_deltas_are_refused_without_writing() {
     })
     .unwrap();
     assert_eq!(wal.state().entry(3), Some(&entry(3, 3, "new")));
+
+    // Review F3: with entries before it, a term-0 entry is also below the
+    // previous one. Only on an empty log is "never term 0" the rule that applies.
+    let empty_dir = TestDir::new();
+    let mut empty = Wal::open(&empty_dir.0, 1).unwrap();
+    empty.save(&state(2, Some(1))).unwrap();
+    let before = fs::read(empty_dir.wal()).unwrap();
+    assert!(
+        empty.save_delta(&good(1, vec![entry(1, 0, "y")])).is_err(),
+        "a term-0 first entry"
+    );
+    assert_eq!(fs::read(empty_dir.wal()).unwrap(), before);
+    assert_eq!(empty.state(), &state(2, Some(1)));
 }
 
 /// G5: recovery handles each record's own entries once.

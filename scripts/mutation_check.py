@@ -279,6 +279,32 @@ CASES=[
      "            append: self.entries_from(truncate_from).unwrap_or(&[]).to_vec(),",
      "            append: self.entries_from(truncate_from).unwrap_or(&[]).iter().take(1).cloned().collect(),",
      "simulation_randomized_invariants","raft-sim"),
+    # S6 (docs/PERFORMANCE.md section 15): S5 code that the S5 review found
+    # unguarded. Before S6 every one of these survived the whole test suite.
+    # F2: the follower's limit back to the pre-S5 32, in the core or in the envelope check.
+    ("s5_follower_limit_still_32","crates/raft-core/src/lib.rs",
+     "let valid_entries = entries.len() <= MAX_BATCH_ENTRIES",
+     "let valid_entries = entries.len() <= 32",
+     "a_follower_accepts_a_full_batch_and_refuses_one_more","raft-core"),
+    ("s5_envelope_limit_still_32","crates/raft-protocol/src/lib.rs",
+     "&& entries.len() <= MAX_BATCH_ENTRIES",
+     "&& entries.len() <= 32",
+     "a_follower_accepts_a_full_batch_and_refuses_one_more","raft-core"),
+    # F3: three rules of validate_delta, each removed alone.
+    ("s5_delta_entry_term_may_decrease",STORAGE,
+     "\n            || entry.term < previous","",
+     "invalid_deltas_are_refused_without_writing","raft-storage"),
+    ("s5_delta_command_unchecked",STORAGE,
+     "\n            || !entry.command.valid()","",
+     "invalid_deltas_are_refused_without_writing","raft-storage"),
+    ("s5_delta_first_term_zero",STORAGE,
+     "\n            || entry.term == 0","",
+     "invalid_deltas_are_refused_without_writing","raft-storage"),
+    # F5: the node proposes what one drain collected as a single batch, however large.
+    ("s5_node_never_splits_proposals","crates/raft-node/src/main.rs",
+     "                if bytes > MAX_BATCH_BYTES && count > 0 {",
+     "                if false {",
+     "oversized_queued_writes_are_split_into_bounded_batches","raft-node"),
 ]
 
 def classify(test,stdout,stderr):

@@ -6,9 +6,7 @@
   "claims": "Finite engineering acceptance for the final version; not original gate equivalence, not a formal protocol proof, not a production-readiness claim.",
   "supersedes": "acceptance/v1.json (kept as a historical record with its receipts under artifacts/acceptance-v1/)",
   "growth_rule": "Each roadmap stage appends its own phase after its specification is approved. A phase may replace tests of an earlier phase only by updating v1_mapping so that every v1 property still names at least one final test that checks it no more weakly; scripts/test_verify_gate.py enforces that the mapping is complete and resolvable, and independent review judges strength.",
-  "planned_phases": {
-    "15": "S6 whole-system hardening"
-  },
+  "planned_phases": {},
   "cumulative": true,
   "require_previous_receipt": true,
   "common_commands": [
@@ -397,6 +395,42 @@
         "scripts/capped_run.py"
       ],
       "notes": "Since S5 Persist carries a Delta instead of a whole DurableState and the core proposes writes in batches (ProposeBatch); tests whose only change is reading delta fields instead of state fields are listed in modified_tests. tools/cluster.py writes history.json once at close (lesson 14), which changes no test's assertion."
+    },
+    "15": {
+      "title": "S6: tests the S5 review found missing (F2, F3, F5) and a preflight of report rules",
+      "rust_tests": [
+        "a_follower_accepts_a_full_batch_and_refuses_one_more",
+        "oversized_queued_writes_are_split_into_bounded_batches",
+        "the_wal_bytes_match_a_file_written_before_s5"
+      ],
+      "pytest_nodes": [
+        "tests/integration/test_performance.py::test_a_crash_right_after_a_batch_of_writes_executes_each_once",
+        "tests/integration/test_performance.py::test_a_follower_far_behind_catches_up_from_the_log",
+        "scripts/test_preflight_phase.py::ReportPreflightTests::test_a_rule_the_report_breaks_is_a_problem",
+        "scripts/test_preflight_phase.py::ReportPreflightTests::test_a_list_valued_runs_passes_and_another_source_is_only_a_note",
+        "scripts/test_preflight_phase.py::ReportPreflightTests::test_a_missing_report_is_a_note",
+        "scripts/test_preflight_phase.py::ReportPreflightTests::test_earlier_phases_rules_apply_and_later_ones_do_not"
+      ],
+      "required_files": [
+        "docs/PERFORMANCE.md",
+        "crates/raft-storage/testdata/pre-s5-steps.wal",
+        "crates/raft-storage/testdata/README.md",
+        "scripts/preflight_phase.py",
+        "artifacts/reports/mutations.json",
+        "docs/lessons/16-a-guard-test-that-hangs/README.md",
+        "docs/lessons/16-a-guard-test-that-hangs/repro.sh",
+        "docs/lessons/16-a-guard-test-that-hangs/expected-output.txt",
+        "docs/lessons/17-a-rule-the-checker-could-not-meet/README.md",
+        "docs/lessons/17-a-rule-the-checker-could-not-meet/repro.sh",
+        "docs/lessons/17-a-rule-the-checker-could-not-meet/expected-output.txt",
+        "docs/lessons/18-a-limit-nobody-tested/README.md",
+        "docs/lessons/18-a-limit-nobody-tested/repro.sh",
+        "docs/lessons/18-a-limit-nobody-tested/expected-output.txt",
+        "docs/lessons/19-a-case-stopped-by-another-rule/README.md",
+        "docs/lessons/19-a-case-stopped-by-another-rule/repro.sh",
+        "docs/lessons/19-a-case-stopped-by-another-rule/expected-output.txt"
+      ],
+      "notes": "The S5 independent review (docs/INDEPENDENT_REVIEW_S5.md) found S5 code that no test guarded; docs/PERFORMANCE.md section 15 is the plan. The node gains one test-only failpoint, after_sync_of_a_batch_before_ack, which fires only once a batch of two or more client writes is durable. queued_writes_share_one_barrier_and_status_survives_a_large_map (phase 14) now builds its actor through a helper it shares with the split test; its assertions are unchanged. Tests of phase 14 whose assertions changed are listed in modified_tests."
     }
   },
   "reports": {
@@ -804,6 +838,32 @@
         ],
         "source_fingerprint_must_match": true
       }
+    ],
+    "15": [
+      {
+        "path": "artifacts/reports/mutations.json",
+        "required_nonempty": [
+          "command",
+          "isolation"
+        ],
+        "required_positive_integer": [
+          "case_count",
+          "detected_count",
+          "control_count"
+        ],
+        "required_empty_array": [
+          "undetected"
+        ],
+        "source_fingerprint_must_match": true,
+        "required_detected_cases": [
+          "s5_follower_limit_still_32",
+          "s5_envelope_limit_still_32",
+          "s5_delta_entry_term_may_decrease",
+          "s5_delta_command_unchecked",
+          "s5_delta_first_term_zero",
+          "s5_node_never_splits_proposals"
+        ]
+      }
     ]
   },
   "v1_mapping": {
@@ -1165,6 +1225,16 @@
       "phase": "13",
       "changed_in": "14",
       "note": "Reads the Delta of each barrier: the vote changes no entry, the no-op is the single entry at index 2. Stronger than the old last_index check."
+    },
+    "tests/integration/test_performance.py::test_concurrent_writes_and_reads_stay_linearizable": {
+      "phase": "14",
+      "changed_in": "15 (S6, 2026-11-15)",
+      "note": "Dropped `batches <= batched_writes`, which could not fail: every batch holds at least one write (S5 review F5). That several writes share a batch in a real process is shown instead by test_a_crash_right_after_a_batch_of_writes_executes_each_once (phase 15), whose failpoint fires only after a batch of two or more writes. The linearizability check and `batched_writes >= 16` are unchanged."
+    },
+    "invalid_deltas_are_refused_without_writing": {
+      "phase": "14",
+      "changed_in": "15 (S6, 2026-11-15)",
+      "note": "Three cases added, each refused by one rule only: a new entry whose term is below the previous entry's, an entry whose command is invalid, and a term-0 first entry on an empty log (S5 review F3: removing any of those rules alone passed every test). The existing cases are unchanged."
     }
   }
 }
