@@ -44,6 +44,13 @@ def run(cwd: Path, model: str, prompt: str, tools: str, out: Path, budget: float
     return code
 
 
+def stop_if_failed(name: str, code: int, summary: dict) -> None:
+    """A failed run (for example the plan's usage limit) stops the experiment instead of spending more."""
+    result = summary.get("result") or {}
+    if code != 0 or not result or result.get("is_error"):
+        raise SystemExit(f"stopped after {name}: exit {code}, {str(result.get('text'))[:200]}")
+
+
 def summarize(path: Path) -> dict:
     summary = {"skills_listed": None, "tools_listed": None, "model": None, "version": None,
                "tool_uses": [], "skill_calls": [], "files_read": [], "denied": [], "result": None}

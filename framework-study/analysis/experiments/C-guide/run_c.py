@@ -52,6 +52,7 @@ def main() -> int:
             print(f"run {name}", flush=True)
             code = run_session.run(directory, MODEL, prompt, TOOLS, out, budget=2.0, timeout=600)
             summary = run_session.summarize(out)
+            run_session.stop_if_failed(name, code, summary)
             text = (summary["result"] or {}).get("text") or ""
             (HERE / "outputs" / f"{name}.md").write_text(text + "\n", encoding="utf-8")
             read = [p.replace(str(directory) + "/", "") for p in summary["files_read"]]
