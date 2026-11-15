@@ -268,17 +268,20 @@ leader 處理一筆寫入要經過好幾個事件，每個事件都付一次。
 
 - **重構的行為不變**：只做變動紀錄時，模擬器 1,000 個種子的全部統計與改動前**完全相同**（§8 步驟 2 的檢查點）。
 - **模擬器**：加入批次後 1,000 個種子 × 10,000 個事件全部通過（I1～I10），多筆批次 13,785 次。以完整驗收的 `simulation.json` 為準。
-- **量測**（實作期間兩次執行，以完整驗收時的 `write-benchmark.json` 為準）：
+- **量測**：下表抄自 S5 最終驗收產生的 `write-benchmark.json`（2026-11-15 13:44 UTC，來源指紋 `ef68b87a…`；
+  本機副本 `artifacts/benchmarks/write-benchmark-s5-final-20261115T134423Z.json`）。時間依機器而異，只記錄、不當門檻；
+  每次驗收都會重新產生這份報告，數字會略有不同。這張表原本抄的是實作期間的兩次執行，和當時的檔案對不上（審查 F4），
+  2026-11-15 改成這份檔案的數字。
 
 | | 修正前（`s1-s4-review-verified`） | 修正後 |
 |---|---|---|
-| 1 個用戶端 | 167 寫入／秒，p50 5.8 ms | 179 寫入／秒，p50 5.3 ms |
-| 8 個用戶端 | 364 寫入／秒，p50 19.9 ms，leader 落盤 480 次 | 628 寫入／秒，p50 10.9 ms，落盤 204 次 |
-| 32 個用戶端 | 400 寫入／秒，p50 82 ms，leader 落盤 1,920 次 | 1,362 寫入／秒，p50 22 ms，落盤 319 次 |
-| log 254→1,900 筆（1 KiB 的值） | p50 5.0 → 12.4 ms | p50 6.2 → 6.2 ms（持平） |
-| 重啟（2.6 MB 的 WAL） | 476 ms | 119 ms |
+| 1 個用戶端 | 279 寫入／秒，p50 3.4 ms | 272 寫入／秒，p50 3.5 ms |
+| 8 個用戶端 | 533 寫入／秒，p50 13.8 ms，leader 落盤 480 次 | 880 寫入／秒，p50 8.1 ms，落盤 209 次 |
+| 32 個用戶端 | 600 寫入／秒，p50 55.2 ms，leader 落盤 1,920 次 | 1,767 寫入／秒，p50 17.4 ms，落盤 349 次 |
+| log 254→1,900 筆（1 KiB 的值） | p50 3.9 → 10.6 ms | p50 3.6 → 3.6 ms（持平） |
+| 重啟（WAL 2,665,811 bytes） | 411 ms | 107 ms |
 
-  單一用戶端在兩次執行間從 3.9 到 5.8 ms 不等，屬於機器的變動，與 N2 一致（沒有明顯改善）。
+  單一用戶端沒有明顯改善，與 N2 一致：一次只來一筆，就沒有東西可以合併。
 - **Mutation**：S5 新增 8 個案例（其中 1 個必須由模擬器抓到），共 57 個；結果以完整驗收的 `mutations.json` 為準。
 
 ### 14.6 獨立審查後的更正（2026-11-15）
@@ -293,3 +296,30 @@ leader 處理一筆寫入要經過好幾個事件，每個事件都付一次。
 - **階段 14 的契約本身過不了（審查 F7）。** 契約要求 `write-benchmark.json` 的 `runs` 不得為空，但 `scripts/verify_gate.py` 對 `required_nonempty` 只認字串與物件，
   清單一律判錯，所以這條要求永遠無法滿足；階段 14 從沒跑完過，因此沒人發現。已讓檢查器認得清單（保留「不得為空」），並補兩個測試。
 - 審查的 F2、F3、F5（測試缺口）尚未處理，列在 [交接文件](HANDOFF_CLAUDE.md)。
+
+## 15. S6 收尾：S5 審查留下的事（2026-11-15）
+
+路線圖「2026-11-15 的計畫修改」把 S6 縮減成這一節：補 S5 獨立審查的 F2～F5，驗收一次就結束。
+節點的正常行為不變，只多一個測試用的 failpoint。實作所用的模型：`claude-opus-5-5`。
+
+### 15.1 要做的事
+
+| 審查 | 補什麼 | 對應的 mutation 案例 |
+|---|---|---|
+| F2 接收端的批次上限 | core：follower 收到 256 筆的 AppendEntries 會接受，257 筆會拒絕。protocol：`valid_for` 也以 256 為界。真實 process：落後 100 筆、沒有快照可用的 follower 從 log 追上（審查者的探針） | `s5_follower_limit_still_32`、`s5_envelope_limit_still_32` |
+| F3 `validate_delta` | `invalid_deltas_are_refused_without_writing` 補三個案例：新 entry 的 term 小於前一筆；命令不合法（key 太長）；空 log 的第一筆 term 為 0 | `s5_delta_entry_term_may_decrease`、`s5_delta_command_unchecked`、`s5_delta_first_term_zero` |
+| F4 §14.5 的數字 | 改成 S5 最終驗收那份報告的數字，寫明出處（已改） | — |
+| F5 恆真的斷言 | 拿掉 `batches <= batched_writes`：每批至少一筆，這條永遠成立。真實 process 裡確實有合批，改由下一列的新測試證明 | — |
+| F5 crash 測試不保證整批 | 新 failpoint `after_sync_of_a_batch_before_ack`：落盤的變動含兩筆以上的用戶端寫入才觸發。新的真實 process 測試：32 個用戶端並行寫入，leader 在這樣一批落盤後、回覆前結束；重啟後重試，每筆只執行一次。原本的測試不動 | — |
+| F5 node 端切批 | 節點單元測試：排隊的寫入超過 512 KiB 時至少切成兩批，每一筆都得到 `OK` | `s5_node_never_splits_proposals` |
+| F5 golden WAL | 用 S5 之前的程式（tag `s1-s4-review-verified`）照審查者的步驟寫出一份 WAL，存成測試檔；新測試用 `save_delta` 走同樣的步驟，位元組必須完全相同 | — |
+| F7 的預檢 | `scripts/preflight_phase.py` 也拿現有的報告檢查契約的報告規則，不寫 receipt；指紋不符只提醒 | — |
+
+契約 `acceptance/final.json` 的階段 14 登記新的測試與六個 mutation 案例，`modified_tests` 記下拿掉恆真斷言的那個測試。檢查器不改。
+教學 16～19 分別寫 F6、F7、F2、F3。
+
+### 15.2 不保證的事
+
+- 新的 crash 測試要靠並行寫入湊成一批。32 筆若剛好每筆各自成批，failpoint 不會觸發，測試會**失敗**，不會悄悄通過。
+- golden WAL 只釘住一組固定的步驟。其他輸入仍靠 `deltas_write_the_same_bytes_as_whole_states` 比對 `save` 與 `save_delta`。
+- 審查 §8 那個無法解釋的失敗（`an_oversize_state_is_not_serialized_again_until_the_log_doubles`）不另外追查；驗收時若再出現，照實記錄。
