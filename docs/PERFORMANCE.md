@@ -323,3 +323,29 @@ leader 處理一筆寫入要經過好幾個事件，每個事件都付一次。
 - 新的 crash 測試要靠並行寫入湊成一批。32 筆若剛好每筆各自成批，failpoint 不會觸發，測試會**失敗**，不會悄悄通過。
 - golden WAL 只釘住一組固定的步驟。其他輸入仍靠 `deltas_write_the_same_bytes_as_whole_states` 比對 `save` 與 `save_delta`。
 - 審查 §8 那個無法解釋的失敗（`an_oversize_state_is_not_serialized_again_until_the_log_doubles`）不另外追查；驗收時若再出現，照實記錄。
+
+### 15.3 實作補記（2026-11-15）
+
+S6 全部由 `claude-opus-5-5` 在同一個 session 完成（接手 `claude-sonnet-5-5` 的審查交接）。
+
+**與 §15.1 的差異**
+
+| 項目 | 實際做法 |
+|---|---|
+| 契約 | 規格寫「登記在階段 14」；實際依契約的成長規則（每個路線圖階段追加自己的階段）新增**階段 15**，含 3 個 Rust 測試、2 個真實 process 測試、4 個預檢測試，以及六個必須偵測到的 mutation 案例。`planned_phases` 清空。階段 14 的兩個測試記在 `modified_tests` |
+| failpoint | `after_sync_of_a_batch_before_ack` 觸發時，trace 列出那一批的用戶端編號（字串，因為 u128 放不進 JSON 的數字）；新測試據此確認那一批的寫入沒有被回覆 |
+| 預檢 | 和檢查器一樣，檢查「到這個階段為止」每個階段的報告規則（有些階段的規則是單一物件，不是清單）。報告違反規則一律算問題，舊報告缺新的 mutation 案例也算：照原樣檢查器會拒絕，要重新產生後再跑一次 |
+| 節點測試 | `queued_writes_share_one_barrier_and_status_survives_a_large_map` 改用和切批測試共用的 helper 建 actor，斷言不變 |
+| golden WAL | 步驟取自審查者的探針 `g6_old.rs`；用 tag `s1-s4-review-verified` 重新產生，sha256 和審查紀錄相同（`crates/raft-storage/testdata/README.md`） |
+
+**遇到的 bug**：都只出現在剛寫好的程式、第一次執行就發現，沒有寫成教學：預檢的第一版假設每個階段的報告規則都是清單，遇到單一物件就出錯；
+golden 測試的型別讓 clippy 報 `type_complexity`；教學 19 的重現輸出混進了 mutant 的編譯警告。
+
+**「把行為當工具」的檢查**：節點只多一個 failpoint，平常不啟用；failpoint 的 trace 多一個欄位，除了新測試沒有程式讀它。沒有測試依賴被改變的行為。
+
+**證據（驗收之前）**
+
+- 六個新的 mutation 案例在隔離的來源副本（`target/s6-mutants/`）中全部偵測到，三個 control 都通過（`artifacts/audit/s6-20261115/`，不在版本控制內）。審查時它們在 S5 的測試下存活（審查報告 F2、F3、F5）。
+- 新的 crash 測試連跑 10 次都通過；它的 failpoint 只在兩筆以上的寫入一起落盤時觸發，所以每次通過都代表真實 process 裡確實有合批。
+- 教學 16～19 的重現與練習都實際跑過，四個練習的推論和實測一致。
+- 完整驗收（63 個 mutation 案例、模擬器、讀寫 benchmark、P00～P15）的結果以 `scripts/status.py`、tag `s6-review-fixes-verified` 與 commit 訊息為準；本節在驗收之前定稿。
