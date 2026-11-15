@@ -808,6 +808,8 @@ impl Wal {
             }
             let transaction = serde_json::from_slice(&payload)
                 .map_err(|e| invalid(format!("invalid transaction: {e}")))?;
+            let transaction: Transaction = transaction;
+            self.entries_copied += transaction.append.len() as u64;
             apply_transaction(&mut self.state, transaction)?;
             self.sequence = next_sequence;
             offset += record_len;

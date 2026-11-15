@@ -190,10 +190,17 @@ class Cluster:
             response=retry([self.address(n) for n in self.ids],payload,timeout)
         with self.history_lock:
             self.history.append({**payload,"invocation_time":start,"response_time":time.monotonic(),"status":response["status"],"result":response.get("result")})
-            (self.directory/"history.json").write_text(json.dumps(self.history,indent=2))
         return response
 
+    def save_history(self):
+        # Written once, when the cluster closes. Until S5 it was rewritten after
+        # every request, which made each request cost as much as the whole
+        # history so far and distorted the S5 baseline (lesson 14).
+        with self.history_lock:
+            (self.directory/"history.json").write_text(json.dumps(self.history,indent=2))
+
     def close(self):
+        self.save_history()
         for n in list(self.processes):
             self.kill(n)
         if self.proxy:

@@ -748,6 +748,7 @@ impl Cluster {
             Event::Heartbeat { .. } => "heartbeat",
             Event::Message(_) => "message",
             Event::Propose(_) => "propose",
+            Event::ProposeBatch(_) => "propose-batch",
             Event::RpcTimeout { .. } => "rpc-timeout",
             Event::Compact { .. } => "compact",
             Event::Read { .. } => "read",

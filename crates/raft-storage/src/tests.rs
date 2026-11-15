@@ -3,7 +3,7 @@
 use super::*;
 use kv_state::StateMachine;
 use raft_core::Core;
-use raft_protocol::{ClientRequest, Command, Operation, Voters};
+use raft_protocol::{ClientRequest, Command, Delta, Operation, Voters};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1276,4 +1276,180 @@ fn configuration_entries_and_snapshot_voters_survive_reopen() {
     );
     let core = Core::restore(1, wal.state().clone(), wal.snapshot().cloned()).unwrap();
     assert_eq!(core.configuration(), Some((3, voters)));
+}
+
+// ---- S5: deltas (docs/PERFORMANCE.md §6.3) ----------------------------------
+
+/// A sequence of changes: appends, a vote, a truncation, a new term.
+fn changes() -> Vec<DurableState> {
+    let mut states = vec![];
+    let mut s = state(1, Some(1));
+    states.push(s.clone());
+    for (index, value) in ["A", "B", "C"].into_iter().enumerate() {
+        s.push(entry(index as u64 + 1, 1, value));
+        states.push(s.clone());
+    }
+    s.term = 2;
+    s.voted_for = Some(2);
+    states.push(s.clone());
+    s.truncate_from(2);
+    s.push(entry(2, 2, "B2"));
+    s.push(entry(3, 2, "C2"));
+    states.push(s.clone());
+    states
+}
+
+/// G6: `save_delta` writes exactly the bytes `save` writes for the same change.
+#[test]
+fn deltas_write_the_same_bytes_as_whole_states() {
+    let (whole, delta) = (TestDir::new(), TestDir::new());
+    let mut by_state = Wal::open(&whole.0, 1).unwrap();
+    let mut by_delta = Wal::open(&delta.0, 1).unwrap();
+    for next in changes() {
+        by_state.save(&next).unwrap();
+        let mut moved = by_delta.state().clone();
+        let change = {
+            // What the core hands over: the state it reached, marked from the
+            // first index it touched.
+            let mut reached = moved.clone();
+            reached.mark_clean();
+            let common = reached
+                .entries()
+                .iter()
+                .zip(next.entries())
+                .take_while(|(a, b)| a == b)
+                .count() as u64;
+            if common < reached.last_index() {
+                reached.truncate_from(common + 1);
+            }
+            for e in next.entries_from(common + 1).unwrap_or(&[]) {
+                reached.push(e.clone());
+            }
+            reached.term = next.term;
+            reached.voted_for = next.voted_for;
+            reached.delta()
+        };
+        by_delta.save_delta(&change).unwrap();
+        moved.apply(&change);
+        assert_eq!(by_delta.state(), &next);
+    }
+    drop((by_state, by_delta));
+    assert_eq!(
+        fs::read(whole.wal()).unwrap(),
+        fs::read(delta.wal()).unwrap()
+    );
+    assert_eq!(
+        Wal::open(&delta.0, 1).unwrap().state(),
+        changes().last().unwrap()
+    );
+}
+
+/// The checks `save` made by comparing whole logs still refuse, on the delta
+/// alone, every change the log could not have made; the file is untouched.
+#[test]
+fn invalid_deltas_are_refused_without_writing() {
+    let dir = TestDir::new();
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    let mut s = state(2, Some(1));
+    for index in 1..=3 {
+        s.push(entry(index, 2, "x"));
+    }
+    wal.save(&s).unwrap();
+    let before = fs::read(dir.wal()).unwrap();
+    let good = |truncate_from, append: Vec<LogEntry>| Delta {
+        term: 2,
+        voted_for: Some(1),
+        truncate_from,
+        append,
+    };
+    for (what, delta) in [
+        (
+            "term goes back",
+            Delta {
+                term: 1,
+                ..good(4, vec![])
+            },
+        ),
+        (
+            "vote changed in the same term",
+            Delta {
+                voted_for: Some(2),
+                ..good(4, vec![])
+            },
+        ),
+        (
+            "vote cleared in the same term",
+            Delta {
+                voted_for: None,
+                ..good(4, vec![])
+            },
+        ),
+        (
+            "vote for node 8",
+            Delta {
+                term: 3,
+                voted_for: Some(8),
+                ..good(4, vec![])
+            },
+        ),
+        ("gap after the log", good(5, vec![entry(5, 2, "y")])),
+        ("truncation at index 0", good(0, vec![])),
+        ("index does not follow", good(4, vec![entry(5, 2, "y")])),
+        (
+            "entry term above the current term",
+            good(4, vec![entry(4, 3, "y")]),
+        ),
+        (
+            "entry term below the previous entry",
+            Delta {
+                term: 3,
+                ..good(2, vec![entry(2, 3, "y"), entry(3, 2, "z")])
+            },
+        ),
+        (
+            "same index and term, other command",
+            good(3, vec![entry(3, 2, "other")]),
+        ),
+        ("term 0 entry", good(4, vec![entry(4, 0, "y")])),
+    ] {
+        assert!(wal.save_delta(&delta).is_err(), "{what}");
+        assert!(
+            !wal.poisoned(),
+            "{what}: a refused change is not an I/O failure"
+        );
+        assert_eq!(fs::read(dir.wal()).unwrap(), before, "{what}");
+        assert_eq!(wal.state(), &s, "{what}");
+    }
+    // A legitimate truncation by a newer term is accepted.
+    wal.save_delta(&Delta {
+        term: 3,
+        voted_for: None,
+        truncate_from: 3,
+        append: vec![entry(3, 3, "new")],
+    })
+    .unwrap();
+    assert_eq!(wal.state().entry(3), Some(&entry(3, 3, "new")));
+}
+
+/// G5: recovery handles each record's own entries once.
+#[test]
+fn recovery_work_grows_linearly_with_the_records() {
+    let work = |records: u64| {
+        let dir = TestDir::new();
+        let mut wal = Wal::open(&dir.0, 1).unwrap();
+        let mut s = state(1, Some(1));
+        for index in 1..=records {
+            s.push(entry(index, 1, "v"));
+            wal.save_delta(&s.delta()).unwrap();
+            s.mark_clean();
+        }
+        drop(wal);
+        Wal::open(&dir.0, 1).unwrap().entries_copied
+    };
+    assert_eq!(work(100), 100);
+    assert_eq!(
+        work(400),
+        400,
+        "four times the records, four times the work"
+    );
 }

@@ -17,6 +17,10 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const QUEUE: usize = 1024;
+/// Inputs taken from the queue in one go (docs/PERFORMANCE.md §6.1).
+const DRAIN: usize = 256;
+/// Largest key-value map the debug status embeds (docs/PERFORMANCE.md §6.5).
+const STATUS_KV_BYTES: usize = 256 * 1024;
 const CONNECTIONS: usize = 128;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(3);
 /// docs/MEMBERSHIP.md §10: a catch-up may take about 10 s, plus the commit.
@@ -335,6 +339,9 @@ struct Actor {
     reads_failed: u64,
     changes: BTreeMap<u64, WaitingChange>,
     next_change: u64,
+    /// Batches proposed and the writes in them (docs/PERFORMANCE.md §6.4).
+    batches: u64,
+    batched_writes: u64,
 }
 impl Actor {
     fn trace(&self, kind: &str, details: Value) {
@@ -360,11 +367,24 @@ impl Actor {
         self.contact = Some((Instant::now() + MIN_ELECTION, generation));
     }
     fn status(&self) -> Value {
-        json!({"id":self.core.id,"pid":std::process::id(),"role":format!("{:?}",self.core.role),
+        // A large map would exceed the 1 MiB frame and the node could not
+        // answer at all (docs/PERFORMANCE.md §6.5, lesson 14).
+        let kv = serde_json::to_value(self.kv.values()).unwrap_or(Value::Null);
+        let kv_bytes = serde_json::to_vec(&kv).map_or(0, |bytes| bytes.len());
+        let kv = if kv_bytes > STATUS_KV_BYTES {
+            Value::Null
+        } else {
+            kv
+        };
+        json!({"kv_omitted":kv.is_null(),"kv_bytes":kv_bytes,
+            "persists":self.wal.persists,"wal_entries_copied":self.wal.entries_copied,
+            "core_entries_copied":self.core.entries_copied,"append_rpcs":self.core.append_rpcs,
+            "append_entries_sent":self.core.append_entries_sent,
+            "batches":self.batches,"batched_writes":self.batched_writes,"id":self.core.id,"pid":std::process::id(),"role":format!("{:?}",self.core.role),
             "term":self.core.state.term,"commit_index":self.core.commit_index,
             "last_applied":self.kv.applied_index(),"last_log_index":self.core.state.last_index(),
             "durable_index":self.core.durable_index,"durable_sequence":self.wal.durable_sequence(),
-            "leader_hint":self.core.leader_hint,"kv":self.kv.values(),
+            "leader_hint":self.core.leader_hint,"kv":kv,
             "session_count":self.kv.session_count(),"effect_count":self.kv.effect_count(),
             "snapshot_index":self.core.state.base().index,"snapshot_term":self.core.state.base().term,
             "snapshot_bytes":self.core.snapshot().map_or(0,|s|s.data.len()),
@@ -628,6 +648,9 @@ impl Actor {
             Event::Propose(request) => {
                 json!({"event":"propose","client_id":request.client_id.to_string(),"sequence":request.sequence})
             }
+            Event::ProposeBatch(requests) => {
+                json!({"event":"propose_batch","writes":requests.len()})
+            }
             Event::ElectionTimeout { generation } => {
                 json!({"event":"election_timeout","generation":generation})
             }
@@ -801,103 +824,144 @@ impl Actor {
                 )
                 .min()
                 .unwrap_or(Duration::from_millis(100));
-            match self.rx.recv_timeout(wait) {
-                #[cfg(test)]
-                Ok(Input::Stop) => return Ok(()),
-                Ok(Input::Status(reply)) => {
-                    let _ = reply.try_send(self.status());
+            // Group commit (docs/PERFORMANCE.md §6.1): take everything that has
+            // already arrived, without waiting. Messages, timeouts, reads and
+            // membership requests are handled in arrival order; the writes
+            // among them are proposed together afterwards, so they share one
+            // durability barrier and a follower's acknowledgement no longer
+            // queues behind one fsync per waiting request.
+            let first = match self.rx.recv_timeout(wait) {
+                Ok(input) => input,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            };
+            let mut inputs = vec![first];
+            while inputs.len() < DRAIN {
+                match self.rx.try_recv() {
+                    Ok(input) => inputs.push(input),
+                    Err(_) => break,
                 }
-                Ok(Input::Peer(envelope, reply)) => {
-                    if let Some(reply) = reply {
-                        if self.incoming.len() >= QUEUE {
+            }
+            let mut writes = vec![];
+            for input in inputs {
+                match input {
+                    #[cfg(test)]
+                    Input::Stop => return Ok(()),
+                    Input::Status(reply) => {
+                        let _ = reply.try_send(self.status());
+                    }
+                    Input::Peer(envelope, reply) => {
+                        if let Some(reply) = reply {
+                            if self.incoming.len() >= QUEUE {
+                                continue;
+                            }
+                            self.incoming
+                                .entry((envelope.from, envelope.rpc_id))
+                                .or_default()
+                                .push(reply);
+                        } else {
+                            self.rpc_deadlines.remove(&(envelope.from, envelope.rpc_id));
+                        }
+                        self.step(Event::Message(envelope))?;
+                    }
+                    Input::RpcTimeout(peer, rpc_id) => {
+                        // An immediate connect/refusal/EOF is not permission to spin.
+                        // Keep the original total deadline; the timer retires and
+                        // retries this correlation with the same bounded cadence.
+                        if self.rpc_deadlines.contains_key(&(peer, rpc_id)) {
+                            self.trace(
+                                "transport_failure",
+                                json!({"peer":peer,"rpc_id":rpc_id,"retry":"at_original_deadline"}),
+                            );
+                        }
+                    }
+                    Input::Membership(change, reply) => {
+                        // The leader must be able to reach a node it adds (§10).
+                        if let Change::Add(node) = change
+                            && !self.config.has(node)
+                        {
+                            let _ = reply.try_send(ClientResponse::error(
+                                "INVALID_ARGUMENT",
+                                self.core.leader_hint,
+                            ));
                             continue;
                         }
-                        self.incoming
-                            .entry((envelope.from, envelope.rpc_id))
-                            .or_default()
-                            .push(reply);
-                    } else {
-                        self.rpc_deadlines.remove(&(envelope.from, envelope.rpc_id));
-                    }
-                    self.step(Event::Message(envelope))?;
-                }
-                Ok(Input::RpcTimeout(peer, rpc_id)) => {
-                    // An immediate connect/refusal/EOF is not permission to spin.
-                    // Keep the original total deadline; the timer retires and
-                    // retries this correlation with the same bounded cadence.
-                    if self.rpc_deadlines.contains_key(&(peer, rpc_id)) {
-                        self.trace(
-                            "transport_failure",
-                            json!({"peer":peer,"rpc_id":rpc_id,"retry":"at_original_deadline"}),
-                        );
-                    }
-                }
-                Ok(Input::Membership(change, reply)) => {
-                    // The leader must be able to reach a node it adds (§10).
-                    if let Change::Add(node) = change
-                        && !self.config.has(node)
-                    {
-                        let _ = reply.try_send(ClientResponse::error(
-                            "INVALID_ARGUMENT",
-                            self.core.leader_hint,
-                        ));
-                        continue;
-                    }
-                    self.next_change += 1;
-                    let id = self.next_change;
-                    self.changes.insert(
-                        id,
-                        WaitingChange {
-                            reply,
-                            deadline: Instant::now() + MEMBERSHIP_TIMEOUT,
-                        },
-                    );
-                    self.step(Event::ChangeMembership { id, change })?;
-                }
-                Ok(Input::Client(request, reply)) => {
-                    if self.pending.values().map(Vec::len).sum::<usize>()
-                        + self.reads.len()
-                        + self.changes.len()
-                        >= QUEUE
-                    {
-                        let _ = reply.try_send(ClientResponse::error(
-                            "TIMEOUT_UNKNOWN",
-                            self.core.leader_hint,
-                        ));
-                        continue;
-                    }
-                    if !request.operation.valid() {
-                        let _ = reply.try_send(ClientResponse::error(
-                            "INVALID_ARGUMENT",
-                            self.core.leader_hint,
-                        ));
-                        continue;
-                    }
-                    // S3: a GET never enters the log (docs/READ_INDEX.md).
-                    if let Operation::Get { key } = request.operation {
-                        self.next_read += 1;
-                        let id = self.next_read;
-                        self.reads.insert(
+                        self.next_change += 1;
+                        let id = self.next_change;
+                        self.changes.insert(
                             id,
-                            WaitingRead {
-                                key,
+                            WaitingChange {
                                 reply,
-                                deadline: Instant::now() + CLIENT_TIMEOUT,
+                                deadline: Instant::now() + MEMBERSHIP_TIMEOUT,
                             },
                         );
-                        self.step(Event::Read { id })?;
-                        continue;
+                        self.step(Event::ChangeMembership { id, change })?;
                     }
-                    self.pending
-                        .entry((request.client_id, request.sequence))
-                        .or_default()
-                        .push((request.clone(), reply));
-                    self.step(Event::Propose(request))?;
+                    Input::Client(request, reply) => {
+                        if self.pending.values().map(Vec::len).sum::<usize>()
+                            + self.reads.len()
+                            + self.changes.len()
+                            >= QUEUE
+                        {
+                            let _ = reply.try_send(ClientResponse::error(
+                                "TIMEOUT_UNKNOWN",
+                                self.core.leader_hint,
+                            ));
+                            continue;
+                        }
+                        if !request.operation.valid() {
+                            let _ = reply.try_send(ClientResponse::error(
+                                "INVALID_ARGUMENT",
+                                self.core.leader_hint,
+                            ));
+                            continue;
+                        }
+                        // S3: a GET never enters the log (docs/READ_INDEX.md).
+                        if let Operation::Get { key } = request.operation {
+                            self.next_read += 1;
+                            let id = self.next_read;
+                            self.reads.insert(
+                                id,
+                                WaitingRead {
+                                    key,
+                                    reply,
+                                    deadline: Instant::now() + CLIENT_TIMEOUT,
+                                },
+                            );
+                            self.step(Event::Read { id })?;
+                            continue;
+                        }
+                        self.pending
+                            .entry((request.client_id, request.sequence))
+                            .or_default()
+                            .push((request.clone(), reply));
+                        writes.push(request);
+                    }
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             }
+            self.propose(writes)?;
         }
+    }
+    /// Propose the collected writes: one batch unless they exceed its bounds.
+    fn propose(&mut self, mut writes: Vec<ClientRequest>) -> io::Result<()> {
+        while !writes.is_empty() {
+            let mut bytes = 0;
+            let mut count = 0;
+            for request in writes.iter().take(MAX_BATCH_ENTRIES) {
+                // The entry adds an index and a term to the request: 64 bytes cover them.
+                bytes += serde_json::to_vec(request).map_or(usize::MAX, |b| b.len() + 64);
+                if bytes > MAX_BATCH_BYTES && count > 0 {
+                    break;
+                }
+                count += 1;
+            }
+            let rest = writes.split_off(count);
+            self.batches += 1;
+            self.batched_writes += writes.len() as u64;
+            self.step(Event::ProposeBatch(writes))?;
+            writes = rest;
+        }
+        Ok(())
     }
 }
 
@@ -1012,6 +1076,8 @@ fn main() -> io::Result<()> {
         reads_failed: 0,
         changes: BTreeMap::new(),
         next_change: 0,
+        batches: 0,
+        batched_writes: 0,
     }
     .run()
 }
@@ -1083,6 +1149,8 @@ mod tests {
             reads_failed: 0,
             changes: BTreeMap::new(),
             next_change: 0,
+            batches: 0,
+            batched_writes: 0,
         };
         let (client_tx, _client_rx) = mpsc::sync_channel(1);
         // A write, so that the leader must replicate into the saturated pool.
@@ -1189,6 +1257,8 @@ mod tests {
             reads_failed: 0,
             changes: BTreeMap::new(),
             next_change: 0,
+            batches: 0,
+            batched_writes: 0,
         };
         // What the actor does between events: apply what is committed, then
         // look whether a snapshot is due.
@@ -1328,5 +1398,105 @@ mod tests {
         config.routes.clear();
         config.nodes[1].client_addr = config.nodes[0].peer_addr;
         assert!(config.validate().is_err());
+    }
+
+    /// docs/PERFORMANCE.md G2, G8: writes that are already queued when the
+    /// actor looks share one durability barrier; every one is answered; and
+    /// the status still answers when the map is too large to embed.
+    #[test]
+    fn queued_writes_share_one_barrier_and_status_survives_a_large_map() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/node-pool-tests")
+            .join(format!(
+                "batch-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        let mut wal = Wal::open(&dir, 1).unwrap();
+        let state = bootstrap_state(1);
+        wal.save(&state).unwrap();
+        let config: Config = toml::from_str(include_str!("../../../config/cluster.toml")).unwrap();
+        let (tx, rx) = mpsc::sync_channel(QUEUE);
+        let mut actor = Actor {
+            core: Core::new(1, state).unwrap(),
+            wal,
+            kv: StateMachine::default(),
+            config,
+            tx: tx.clone(),
+            rx,
+            incoming: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            outbound_active: Arc::new(AtomicUsize::new(0)),
+            rpc_deadlines: BTreeMap::new(),
+            election: None,
+            contact: None,
+            heartbeat: None,
+            random: 1,
+            snapshot_every: None,
+            snapshots_taken: 0,
+            snapshots_installed: 0,
+            snapshot_limit: MAX_SNAPSHOT,
+            snapshot_attempts: 0,
+            oversize_retry_at: 0,
+            reads: BTreeMap::new(),
+            next_read: 0,
+            reads_served: 0,
+            reads_failed: 0,
+            changes: BTreeMap::new(),
+            next_change: 0,
+            batches: 0,
+            batched_writes: 0,
+        };
+        // A single-voter cluster: node 1 elects itself and commits its no-op.
+        actor
+            .step(Event::ElectionTimeout { generation: 0 })
+            .unwrap();
+        assert_eq!(actor.core.role, Role::Leader);
+        let before = actor.wal.persists;
+        let value = "v".repeat(MAX_VALUE);
+        let mut replies = vec![];
+        for client in 0..96u128 {
+            let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+            tx.send(Input::Client(
+                ClientRequest {
+                    client_id: client,
+                    sequence: 1,
+                    operation: Operation::Put {
+                        key: format!("key-{client}"),
+                        value: value.clone(),
+                    },
+                },
+                reply_tx,
+            ))
+            .unwrap();
+            replies.push(reply_rx);
+        }
+        let worker = thread::spawn(move || {
+            let result = actor.run();
+            (actor, result)
+        });
+        for reply in replies {
+            let answer = reply.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(answer.status, "OK", "{answer:?}");
+        }
+        let (status_tx, status_rx) = mpsc::sync_channel(1);
+        tx.send(Input::Status(status_tx)).unwrap();
+        let status = status_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the status answers with a map of about 400 KiB");
+        assert_eq!(status["kv_omitted"], true);
+        assert!(status["kv_bytes"].as_u64().unwrap() > STATUS_KV_BYTES as u64);
+        tx.send(Input::Stop).unwrap();
+        let (actor, result) = worker.join().unwrap();
+        result.unwrap();
+        // 96 writes of 4 KiB are 384 KiB: one batch fits them all. Allow a few
+        // more barriers for writes that arrived after the actor started.
+        let persisted = actor.wal.persists - before;
+        assert!(persisted <= 4, "96 queued writes took {persisted} barriers");
+        assert_eq!(actor.batched_writes, 96);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

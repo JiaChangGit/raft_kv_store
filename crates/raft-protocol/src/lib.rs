@@ -7,6 +7,11 @@ pub const MAX_FRAME: usize = 1024 * 1024;
 pub const MAX_KEY: usize = 256;
 pub const MAX_VALUE: usize = 4096;
 pub const CLUSTER: &str = "raft-kv-v1";
+/// Most entries in one AppendEntries or one proposed batch, and the most
+/// encoded bytes they may add up to (docs/PERFORMANCE.md §6.1, §6.2). Half a
+/// megabyte leaves room in the 1 MiB frame; one entry always fits.
+pub const MAX_BATCH_ENTRIES: usize = 256;
+pub const MAX_BATCH_BYTES: usize = 512 * 1024;
 /// Largest snapshot a node writes, loads or accepts from a leader.
 pub const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
 /// Largest snapshot chunk per InstallSnapshot. Hex doubles it to 512 KiB,
@@ -198,6 +203,24 @@ pub struct LogEntry {
     pub index: LogIndex,
     pub term: Term,
     pub command: Command,
+}
+impl LogEntry {
+    /// Bytes this entry takes inside a JSON message or WAL transaction.
+    pub fn encoded_len(&self) -> usize {
+        serde_json::to_vec(self).map_or(usize::MAX, |bytes| bytes.len())
+    }
+}
+/// How many of `entries`, from the front, fit one batch: at most
+/// [`MAX_BATCH_ENTRIES`] and [`MAX_BATCH_BYTES`], but never fewer than one.
+pub fn batch_len(entries: &[LogEntry]) -> usize {
+    let mut bytes = 0;
+    for (count, entry) in entries.iter().take(MAX_BATCH_ENTRIES).enumerate() {
+        bytes += entry.encoded_len();
+        if bytes > MAX_BATCH_BYTES && count > 0 {
+            return count;
+        }
+    }
+    entries.len().min(MAX_BATCH_ENTRIES)
 }
 /// Position just before the first entry still held in the log: the last index
 /// covered by the latest snapshot and its term. `(0, 0)` means no snapshot.
@@ -533,7 +556,7 @@ impl Envelope {
                     ..
                 } => {
                     *leader_id == self.from
-                        && entries.len() <= 32
+                        && entries.len() <= MAX_BATCH_ENTRIES
                         && prev_log_index.checked_add(entries.len() as u64).is_some()
                         && entries.windows(2).all(|p| p[0].term <= p[1].term)
                         && entries.iter().enumerate().all(|(i, e)| {

@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 #[cfg(test)]
 mod membership_tests;
 #[cfg(test)]
+mod perf_tests;
+#[cfg(test)]
 mod read_tests;
 #[cfg(test)]
 mod snapshot_tests;
@@ -57,6 +59,10 @@ pub enum Event {
     },
     Message(Envelope),
     Propose(ClientRequest),
+    /// Several writes proposed together (docs/PERFORMANCE.md §6.1): one log
+    /// entry each, in this order, behind a single durability barrier and one
+    /// round of replication. `Propose` is a batch of one.
+    ProposeBatch(Vec<ClientRequest>),
     RpcTimeout {
         peer: NodeId,
         rpc_id: u64,
@@ -245,6 +251,9 @@ pub struct Core {
     sealed: (Term, Option<NodeId>),
     /// Entries copied into `Persist` effects so far (docs/PERFORMANCE.md §6.4).
     pub entries_copied: u64,
+    /// AppendEntries requests sent, and the entries they carried.
+    pub append_rpcs: u64,
+    pub append_entries_sent: u64,
     failed: bool,
 }
 impl Core {
@@ -305,6 +314,8 @@ impl Core {
             pending_change: None,
             sealed,
             entries_copied: 0,
+            append_rpcs: 0,
+            append_entries_sent: 0,
             failed: false,
         })
     }
@@ -474,23 +485,33 @@ impl Core {
                     self.replicate(peer, &mut effects);
                 }
             }
-            Event::Propose(request) => {
-                if !request.operation.valid() {
-                    effects.push(Effect::Reject(request, "INVALID_ARGUMENT"));
-                } else if self.role != Role::Leader {
-                    effects.push(Effect::Reject(request, "NOT_LEADER"));
-                } else {
-                    self.state.push(LogEntry {
-                        index: self.state.last_index() + 1,
-                        term: self.state.term,
-                        command: Command::Client(request),
-                    });
-                    self.replicate_all(&mut effects);
-                }
-            }
+            Event::Propose(request) => self.propose(vec![request], &mut effects),
+            Event::ProposeBatch(requests) => self.propose(requests, &mut effects),
             _ => {}
         }
         self.seal(effects)
+    }
+    /// Group commit: every valid request becomes an entry; the step's one
+    /// barrier then covers them all. An invalid request is rejected alone.
+    fn propose(&mut self, requests: Vec<ClientRequest>, effects: &mut Vec<Effect>) {
+        let mut appended = false;
+        for request in requests {
+            if !request.operation.valid() {
+                effects.push(Effect::Reject(request, "INVALID_ARGUMENT"));
+            } else if self.role != Role::Leader {
+                effects.push(Effect::Reject(request, "NOT_LEADER"));
+            } else {
+                self.state.push(LogEntry {
+                    index: self.state.last_index() + 1,
+                    term: self.state.term,
+                    command: Command::Client(request),
+                });
+                appended = true;
+            }
+        }
+        if appended {
+            self.replicate_all(effects);
+        }
     }
     /// End of a step: one durability barrier for whatever changed (or none).
     ///
@@ -796,15 +817,16 @@ impl Core {
             // The entry before `next` was compacted: only the snapshot can help.
             return self.send_snapshot_chunk(peer, effects);
         };
-        let entries: Vec<_> = self
+        // Everything the follower lacks, up to one batch (§6.2): while a
+        // request is in flight new entries accumulate, so batches grow with load.
+        let available = self
             .state
             .entries_from(next)
-            .expect("next lies after the base")
-            .iter()
-            .take(32)
-            .cloned()
-            .collect();
+            .expect("next lies after the base");
+        let entries = available[..batch_len(available)].to_vec();
         let count = entries.len() as u64;
+        self.append_rpcs += 1;
+        self.append_entries_sent += count;
         let rpc_id = self.send(
             peer,
             Rpc::AppendEntries {
@@ -1166,7 +1188,7 @@ impl Core {
                 entries,
                 leader_commit,
             } => {
-                let valid_entries = entries.len() <= 32
+                let valid_entries = entries.len() <= MAX_BATCH_ENTRIES
                     && prev_log_index.checked_add(entries.len() as u64).is_some()
                     && entries.iter().enumerate().all(|(i, e)| {
                         e.index == prev_log_index + i as u64 + 1
