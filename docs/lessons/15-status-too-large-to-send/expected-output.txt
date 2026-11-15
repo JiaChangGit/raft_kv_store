@@ -1,0 +1,13 @@
+
+== before the fix (s1-s4-review-verified)
+   before: 300 values of 4 KiB written (about 1.2 MiB of data)
+   status: NO ANSWER (EOFError: incomplete frame)
+   Cluster.wait_leader: TIMED OUT (it asks every node for its status)
+
+== after the fix (current source)
+   after: 300 values of 4 KiB written (about 1.2 MiB of data)
+   status: answered, role Leader, kv_omitted True, kv_bytes 1232591
+   Cluster.wait_leader: found the leader
+
+== RESULT
+Before: the status cannot be sent once the map exceeds the frame. After: it answers and says the map was left out.

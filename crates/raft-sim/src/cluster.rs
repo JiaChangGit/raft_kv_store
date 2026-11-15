@@ -132,6 +132,8 @@ pub struct Oracle {
     pub stale_leader_requests: u64,
     /// Whole snapshots delivered in one InstallSnapshot message (lesson 11).
     pub one_message_snapshots: u64,
+    /// Proposals of more than one write (docs/PERFORMANCE.md §10).
+    pub multi_write_batches: u64,
 }
 impl Oracle {
     fn read_started(&mut self, id: u64) {
@@ -428,6 +430,7 @@ pub struct Cluster {
     pub trace: Vec<TraceRow>,
     next_client: u64,
     next_stale_read: u64,
+    next_batch_client: u64,
     next_admin: u64,
     admin: Option<AdminRequest>,
     pub seed: u64,
@@ -466,6 +469,7 @@ impl Cluster {
             trace: vec![],
             next_client: 0,
             next_stale_read: 0,
+            next_batch_client: 0,
             next_admin: 0,
             admin: None,
             seed,
@@ -971,15 +975,41 @@ impl Cluster {
                 _ => Some(Operation::Delete { key }),
             };
             match operation {
-                Some(operation) => self.event(
-                    node,
-                    Event::Propose(ClientRequest {
+                Some(operation) => {
+                    let mut batch = vec![ClientRequest {
                         client_id: self.next_client as u128,
                         sequence: 1,
                         operation,
-                    }),
-                    faults,
-                )?,
+                    }];
+                    // S5 (docs/PERFORMANCE.md §7): one write in three is proposed
+                    // together with up to three more, as the node does with writes
+                    // that queued up; now and then one of them is invalid and must
+                    // be rejected alone.
+                    if self.random.next_u64().is_multiple_of(3) {
+                        let more = 1 + self.random.next_u64() % 3;
+                        // Their own client ids: the 64 ordinary operations (and
+                        // with them the reads) stay as many as before (lesson 12).
+                        for _ in 0..more {
+                            self.next_batch_client += 1;
+                            let id = 2_000_000 + self.next_batch_client;
+                            let key = if self.random.next_u64().is_multiple_of(4) {
+                                "x".repeat(MAX_KEY + 1)
+                            } else {
+                                format!("k{}", id % 3)
+                            };
+                            batch.push(ClientRequest {
+                                client_id: id as u128,
+                                sequence: 1,
+                                operation: Operation::Put {
+                                    key,
+                                    value: format!("v{id}"),
+                                },
+                            });
+                        }
+                        self.oracle.multi_write_batches += 1;
+                    }
+                    self.event(node, Event::ProposeBatch(batch), faults)?
+                }
                 None => {
                     let id = self.next_client;
                     self.oracle.read_started(id);
@@ -1055,6 +1085,8 @@ pub struct Campaign {
     pub stale_leader_requests: u64,
     /// Whole snapshots delivered in one message (lesson 11).
     pub one_message_snapshots: u64,
+    /// Proposals of more than one write (S5).
+    pub multi_write_batches: u64,
 }
 pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
     let mut report = Campaign {
@@ -1090,6 +1122,7 @@ pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
         even_configurations: 0,
         stale_leader_requests: 0,
         one_message_snapshots: 0,
+        multi_write_batches: 0,
     };
     for seed in 0..seeds {
         let mut cluster = Cluster::new(seed);
@@ -1120,6 +1153,7 @@ pub fn run_campaign(seeds: u64, events: u64) -> Campaign {
         report.leader_removals += oracle.leader_removals;
         report.stale_leader_requests += oracle.stale_leader_requests;
         report.one_message_snapshots += oracle.one_message_snapshots;
+        report.multi_write_batches += oracle.multi_write_batches;
         for (size, count) in oracle.configuration_sizes.iter().enumerate() {
             report.configuration_sizes[size] += count;
         }

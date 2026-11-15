@@ -30,6 +30,10 @@ fn simulation_randomized_invariants() {
             report.one_message_snapshots > 0,
             "no snapshot was ever delivered in a single message"
         );
+        assert!(
+            report.multi_write_batches > 0,
+            "no proposal ever carried more than one write"
+        );
     }
 }
 

@@ -46,7 +46,7 @@ ReadIndex 與 membership 都依賴「目前的成員是誰、多數是幾台」�
 | S2 Snapshot 與壓縮（**已完成**，tag `s2-snapshot-compaction-verified`） | 狀態機快照（KV＋每個 client 最新一筆的 session）、WAL 從快照之後重寫、分塊的 InstallSnapshot、落後節點追趕、安裝中斷的往前完成。規格 `SNAPSHOT_COMPACTION.md`，教學 02、03。「每個事件複製整份狀態」依決定 D4 延到 S5 | 目前到處假設「log 的位置＝index」，要全面改成帶起始位移；這是影響面最大的一次重構 |
 | S3 ReadIndex（**已完成**，tag `s3-read-index-verified`） | GET 不寫入 log：leader 先 commit 本任期 entry，記下 readIndex，以讀取到達後送出的一輪 AppendEntries 取得多數確認，套用到 readIndex 後回覆；GET 不再去重。規格 `READ_INDEX.md`。量測：GET 不再產生 WAL record | 多數的計算集中在一處，S4 改為依成員設定計算。S4 待辦「確認不足時不確認任何回合」已在 S4 完成（`MEMBERSHIP.md` G9） |
 | S4 Membership change（**已完成**，tag `s4-membership-verified`） | 一次增減一台；設定以 log entry 表示，寫入即生效；一台引導、其他逐一加入；先追趕再加入（固定 10 輪）；2015 修正；leader 不在設定中時不計自己、commit 後退位；干擾防護；節點編號 1～7。規格與補記 `MEMBERSHIP.md`，教學 08～10 | 2015 年反例以五個 core 逐步重現。實作中發現 V1 起的「barrier 一律排最前」在 S4 失效（教學 09）。刪減方案仍適用：若 S6 不過，移除本功能、回到固定三台 |
-| S5 效能（**進行中**，規格 `PERFORMANCE.md` 已於 2026-11-14 核准） | group commit（多筆交易共用一次 fsync）、批次複製、前後 benchmark 對照 | 不得改變「先持久化、後回覆」的次序 |
+| S5 效能（**已完成**，tag `s5-performance-verified`；規格與補記 `PERFORMANCE.md`，教學 14、15） | group commit（多筆交易共用一次 fsync）、批次複製、前後 benchmark 對照 | 不得改變「先持久化、後回覆」的次序 |
 | S6 整體強化 | 所有功能同時開啟的模擬（多種子、長時間）、故障注入下的線性一致性、mutation、由不同模型做獨立審查、乾淨副本重建 | 功能兩兩交互作用的 bug 最可能在這裡出現 |
 | S7 公開整理 | 中英 README、架構圖、教學索引、移除本機絕對路徑、AI 協作說明 | 不改程式行為 |
 

@@ -20,6 +20,8 @@
 | 11 | [快照裝到一半被終止，節點從此開不了機](11-install-from-a-newer-term/README.md) | follower 用一則訊息裝下 term 比自己新的快照，在兩個檔案之間被終止後，每次啟動都被拒絕 | 草稿（待有人照做一遍） |
 | 12 | [一千萬個事件全部通過，因為模擬器不再去問該問的節點](12-simulator-stopped-asking-stale-leaders/README.md) | S4 把模擬的請求一律送給最新的 leader，讀取的不變量從此碰不到它要抓的情況 | 草稿（待有人照做一遍） |
 | 13 | [資料超過快照上限之後，每做一件事都先白做一次大工程](13-oversize-snapshot-serialized-every-event/README.md) | 超過 64 MiB 後，節點每個事件都重新序列化整個狀態機再丟掉 | 草稿（待有人照做一遍） |
+| 14 | [量測工具量到的是它自己](14-the-benchmark-measured-itself/README.md) | 測試工具每送一個請求就重寫整份歷史檔，讓效能基準多出一個「來源不明、隨資料成長」的成本 | 草稿（待有人照做一遍） |
+| 15 | [資料超過 1 MiB，節點就說不出自己的狀態](15-status-too-large-to-send/README.md) | 狀態查詢把整個 KV 放進回覆，超過訊框上限就送不出去，所有靠它找 leader 的工具一起失效 | 草稿（待有人照做一遍） |
 
 ## 怎麼讀
 

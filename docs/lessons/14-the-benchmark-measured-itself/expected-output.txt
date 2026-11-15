@@ -1,0 +1,11 @@
+
+== before the fix: s1-s4-review-verified node and its tools/cluster.py; 3000 writes of 1 KiB, log kept short
+   Cluster.invoke  p50 ms per 500 writes:   6.7   9.7  11.6  14.1  16.8  18.1   history.json 3.7 MiB
+   kv_client.call  p50 ms per 500 writes:   4.7   4.6   4.6   4.5   4.7   4.6   history.json 0.0 MiB
+
+== after the fix: the same node, the current tools/cluster.py
+   Cluster.invoke  p50 ms per 500 writes:   4.5   4.6   4.6   4.5   4.6   4.6   history.json 0.0 MiB
+   kv_client.call  p50 ms per 500 writes:   4.6   4.5   4.6   4.4   4.6   4.6   history.json 0.0 MiB
+
+== RESULT
+Only the old Cluster.invoke row grows: the growth was the history file being rewritten after every request, not the node.

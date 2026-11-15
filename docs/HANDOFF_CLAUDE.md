@@ -25,8 +25,9 @@ git status --short && git log --oneline -3 && git tag
 |---|---|
 | S0 基礎、S1 儲存格式、S2 快照與壓縮、S3 ReadIndex、S4 成員變更 | 已完成，各有 tag（`s0-…` 到 `s4-membership-verified`） |
 | S1～S4 的獨立審查 | 2026-11-14 補做並修正；S1 只做到「不同 session」（見下） |
-| **S5 效能** | 規格 `docs/PERFORMANCE.md` 已於 2026-11-14 核准，實作中 |
-| S6 整體強化、S7 公開整理 | 未開始 |
+| S5 效能 | 2026-11-15 完成（tag `s5-performance-verified`），補記 `docs/PERFORMANCE.md` §14；實作模型見 §14.1 |
+| **S6 整體強化** | **下一個階段**，開始前先寫規格；S5 也需要獨立審查（Fable 與 Opus 都寫過，需第三個模型） |
+| S7 公開整理 | 未開始 |
 
 ## 版本與未提交的變更
 
