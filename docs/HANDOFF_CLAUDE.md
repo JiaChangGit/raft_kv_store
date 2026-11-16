@@ -1,16 +1,20 @@
 # 接手文件
 
-更新日期：2026-11-16（S8 完成之後）。這份文件取代 S5 審查者寫的版本（舊版在 Git 歷史中：`git show 54319e6:docs/HANDOFF_CLAUDE.md`）。
+更新日期：2026-11-16（S8 後續完成之後）。這份文件取代 S5 審查者寫的版本（舊版在 Git 歷史中：`git show 54319e6:docs/HANDOFF_CLAUDE.md`）。
 它描述寫下時的狀態；接手時請先用下面的命令核對，**以實際查到的為準，不以這份文字為準**。
 
 ## 一開始先做什麼
 
+在專案根目錄執行。每一行後面是寫下這份文件時的實際結果；**看到的不同時，以看到的為準**，先弄清楚原因再往下做。
+
 ```bash
-cd /home/user/src/Distributed_Key-Value_Store_with_Raft
 . "$HOME/.cargo/env"                    # 非登入的 shell 裡 cargo 不在 PATH 上
-git status --short && git log --oneline -5 && git tag
-.venv/bin/python scripts/status.py      # 每個階段最近一次驗收，以及是否對應目前的來源
-uptime && ps -eo pid,pcpu,etime,comm --sort=-pcpu | head -5   # 機器是不是安靜的（見「踩過的坑」）
+git status --short                      # 預期：沒有輸出
+git tag                                 # 預期：含 s6-review-fixes-verified、s7-zh-style-prototype、s8-framework-analysis、s8-framework-changes
+.venv/bin/python scripts/status.py      # 預期：P00～P08、P10～P15 都是「PASS [source changed / not run]」
+git -C ../ai-general-framework status --short | wc -l   # 預期：10（使用者自己還沒 commit 的修改，不要動）
+git -C ../agf-worktrees/s8-follow-up log --oneline -1   # 預期：c981eb5 之後的一個 commit（框架修改的分支，等使用者決定）
+uptime && ps -eo pid,pcpu,etime,comm --sort=-pcpu | head -5   # 預期：load 低，沒有吃滿 CPU 的行程（見「踩過的坑」）
 ```
 
 **`git tag` 有沒有 `s6-review-fixes-verified`，是 S6 是否驗收通過的第一個線索**：這個 tag 只在 P00～P15 都是 `PASS [current source]` 之後才建立。
@@ -22,7 +26,7 @@ Raft 的驗收結果對應 tag `s6-review-fixes-verified` 那個 commit，S9 收
 
 ## 目標與目前的位置
 
-專案的目的是**學習**，以及**分析使用者自己的 AI 框架**（`/home/user/src/ai-general-framework`，唯讀）的優缺點、提出未來的優化建議；也要能在面試時展示。
+專案的目的是**學習**，以及**分析使用者自己的 AI 框架**（相鄰目錄 `../ai-general-framework`，唯讀，除非使用者點名）的優缺點、提出未來的優化建議；也要能在面試時展示。
 只維護一個最後版本；程式由 AI 完成，每個遇到的 bug 寫成新手導向的教學。最後整理成公開的 GitHub 儲存庫，push 由使用者自己做。
 
 2026-11-15 使用者縮減了計畫：只做做得出來的事和重點功能（[路線圖](ROADMAP.md)「2026-11-15 的計畫修改」）。
@@ -33,6 +37,7 @@ Raft 的驗收結果對應 tag `s6-review-fixes-verified` 那個 commit，S9 收
 | S6 收尾（縮減） | 已完成並驗收（tag `s6-review-fixes-verified`，`claude-opus-5-5`）：S5 審查的 F2～F5、預檢報告結構、教學 16～19、契約階段 15 |
 | S7 中文 AI 味檢查 | 已完成（tag `s7-zh-style-prototype`，`claude-opus-5-5`）：`framework-study/zh-style/`，先讀 `report.md` |
 | S8 框架分析與對照實驗 | 已完成（tag `s8-framework-analysis`，`claude-opus-5-5`）：`framework-study/analysis/`，先讀 `report.md` |
+| S8 後續：依報告修改框架 | 已完成（tag `s8-framework-changes`，`claude-opus-5-5`）：`framework-study/changes/`，先讀 `RESULTS.md`。框架的修改在分支 `s8-follow-up`，**等使用者決定要不要 merge** |
 | **S9 公開整理（完整版）** | **下一個階段**，未開始。先寫規格給使用者同意；最後從 P00 完整重跑驗收 |
 
 ## 這個 session 做了什麼（2026-11-15）
@@ -47,6 +52,7 @@ Raft 的驗收結果對應 tag `s6-review-fixes-verified` 那個 commit，S9 收
 6. 起草 S7 前唯讀查框架，發現 `docs/writing.md` 早已涵蓋大半的 AI 味特徵、也部署在本專案，卻沒被讀到（L52），S7 因此改成「拿指引檢查實際文字，量腳本的價值」。
 7. S7（2026-11-16 核准）：規則式提示腳本與 12 個測試、14 個實例、對照表、試跑報告。抽樣 53 處只有 17% 值得改，推估只找得到約 4% 的問題；使用者抽查 10 筆標註全部同意（L53）。
 8. S8（2026-11-16 核准）：使用者登入桌面 app 內附的 CLI 後，以無頭 session 做三個實驗（33 次，CLI 估算 2.28 美元），加上元件盤點與分析報告。兩次隔離缺陷在執行中發現並修正、重跑（L54、L55）；使用者抽查 3 筆評分全部同意。
+9. S8 後續（使用者回「都處理」，再點名「框架一起改」；規格 2026-11-16 核准）：框架分支 `s8-follow-up` 有 6 個 commit（規則入口檢查、交接核對、權限範本、規則樣板、`evals/host/` 評測工具、審查修正、結果摘要），本專案的 `CLAUDE.md` 接上規則入口。探測發現專案的 deny 規則在這整個對話裡沒有生效（L59）；換模型審查找到 10 項問題並修正（L62）。18 次 session，CLI 估算 1.19 美元。
 
 ## 已決定的事與理由
 
@@ -65,9 +71,10 @@ S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`�
 
 ## 還沒做的事與未知
 
+- **等使用者決定的三件事**（`framework-study/changes/RESULTS.md` 最後一節）：deny 規則要放在哪裡才會生效；框架分支要不要 merge（merge 後在本專案跑 `agf project update --target . --host claude`）；skill 叫用的措辭要不要再調。
 - **S9 的規格**：路線圖的 S9 列（中英 README、架構圖、教學索引、移除本機絕對路徑、標明過時的 V1 文件、AI 協作說明）。AI 協作說明可摘要 S8 報告；
   要決定 `framework-study/` 與 `artifacts/` 的哪些部分公開（實驗的原始事件流含本機路徑，不在版本控制內）。
-- **S8 的實驗工具**：`framework-study/analysis/experiments/run_session.py` 可重複使用；受試目錄要放在專案之外，並禁止讀取原專案（各實驗 README 的「執行中發現的問題」）。
+- **實驗工具**：框架分支的 `evals/host/` 是 S8 工具的改良版（預檢、Bash 預設拿掉、用 PID 停止）；S8 的 `run_session.py` 保留原樣當紀錄。受試目錄要放在專案之外，並禁止讀取原專案。
 - S7 腳本的已知寫法錯誤：R5 的輕動詞規則會把「進行的」「做出的」也算進去；要再用，先修這一點。
 - **教學 01～19 都是草稿**：沒有第二個人照著第 3 節做過。
 - **審查 §8 那個無法解釋的失敗**（`an_oversize_state_is_not_serialized_again_until_the_log_doubles`）沒有追查。
@@ -77,22 +84,23 @@ S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`�
 
 ## 下一步
 
-1. 核對 `git tag`：應該有 `s6-review-fixes-verified`、`s7-zh-style-prototype` 與 `s8-framework-analysis`。`status.py` 顯示 `source changed` 是因為 S7、S8 的檔案，見上方說明。
-2. 起草 S9 的規格給使用者看，先不要實作。
-3. 每個階段完成時，在規格補記寫下**實作所用的模型**。
+1. 執行「一開始先做什麼」，和預期結果比對。
+2. 問使用者上面「等使用者決定的三件事」，尤其是 deny 規則：不處理的話，下一個 session 仍然只靠自律。
+3. 起草 S9 的規格給使用者看，先不要實作。寫 README 與 AI 協作說明前，先讀 `.agf/managed/guides/writing.md`。
+4. 每個階段完成時，在規格補記寫下**實作所用的模型**；規格要有「模型分工」一節（路線圖的每階段流程）。
 
 ## 操作範圍
 
-- 修改只限本專案；`/home/user/src/ai-general-framework` 唯讀（`.claude/settings.json` 有 deny 規則，但見「踩過的坑」的第一條）。
+- 修改只限本專案；`../ai-general-framework` 唯讀，除非使用者在當次對話點名。2026-11-16 的點名只涵蓋那次的分支 `s8-follow-up`，而且框架本身的工作目錄從沒動過。`.claude/settings.json` 的 deny 規則**只在從專案目錄啟動時生效**（見「踩過的坑」第一條）。
 - 不 push、不建立 PR、不部署。本機 commit 與 tag 依使用者當次的指示。
 - 不為了通過驗收而削弱測試或改契約；改既有測試的期待時，寫進契約的 `modified_tests` 並告訴使用者。
-- 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L56）。
+- 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L63）。
 - 以自然的台灣繁體中文溝通；分清「已執行」「推論」「未驗證」。
 
 ## 踩過的坑（接手的人大概也會遇到）
 
-- **唯讀調查時不要 `cd` 進框架。** `cd` 會延續到之後的命令，宿主也會把主要工作目錄改成框架；session 從 `/home/user/src` 開始時，專案的 deny 規則是否生效沒有驗證過（L50）。
-  用絕對路徑或子 shell `(cd 目錄 && 命令)`。
+- **專案的 deny 規則只在從專案目錄啟動時生效。** session 從 `/home/user/src` 啟動時，子目錄的 `.claude/settings.json` 不會載入；2026-11-16 實測，在專案裡執行 `git push -h` 沒有被擋（L59）。看 `readlink /proc/$PPID/cwd` 就知道這個 session 從哪裡啟動。
+- **唯讀調查時不要 `cd` 進框架。** `cd` 會延續到之後的命令，宿主也會把主要工作目錄改成框架（L50、L61）。用 `git -C`、絕對路徑或子 shell `(cd 目錄 && 命令)`。
 - **長時間的工作會被打斷。** 這個 WSL 在 session 結束時似乎會整個重啟（推論）；`/tmp` 是 tmpfs，重啟就清空，也吃記憶體。要留的證據寫到 `artifacts/`，大型建置放 `artifacts/runs/` 或 `target/`。
   驗收用 `scripts/run_phase.sh NN` 可以從某一階段續跑（需前一階段已有通過紀錄），`revalidate_all.py` 則從頭開始。
 - **擷取輸出一定要有上限。** 失控的 mutant 每秒可以寫 50 MB；`mutation_check.py` 經 `scripts/capped_run.py` 執行每個案例（教學 16）。自己寫腳本時也一樣。
@@ -104,7 +112,9 @@ S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`�
 - **專案 skill 的載入**：這次宿主把 `.claude/skills` 的 skill 列成「套用於專案目錄」；之前從 `/home/user/src` 啟動時曾經沒有列出（L47）。列不出來時，直接讀 `.claude/skills/<名稱>/SKILL.md` 照做。
 - **RTK hook 會改寫 Bash 命令**，偶爾讓自動權限審查要求「原樣重送改寫後的命令」；照它給的命令重送即可。需要原始輸出時用 `rtk proxy <命令>`。
 - **非登入的 shell 找不到 `cargo`。** 先 `. "$HOME/.cargo/env"`。
-- `pkill -f <樣式>` 會連自己所在的 shell 一起殺掉；用 PID。
+- `pkill -f <樣式>` 會連自己所在的 shell 一起殺掉；用 PID（框架分支的 `trigger.py stop` 會先核對 PID）。
+- **無頭 session 的允許清單沒有 Bash，`find`、`head` 仍會在工作目錄裡執行**；要整個拿掉用 `--disallowedTools Bash`（L59、`framework-study/changes/RESULTS.md` 2.10）。
+- **commit 訊息裡的數字從剛跑完的輸出複製**，不要憑印象加總（L63）。
 
 ## 重要材料的位置
 
@@ -120,10 +130,12 @@ S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`�
 | 論文出處筆記 | `docs/reference/raft-notes.md` |
 | golden WAL 與它的來歷 | `crates/raft-storage/testdata/` |
 | S7 的成果（中文 AI 味：實例、對照表、提示腳本、試跑報告） | `framework-study/zh-style/`（先讀 `report.md`） |
+| S8 的分析與實驗；S8 後續的規格、探測與結果 | `framework-study/analysis/`（`report.md`）；`framework-study/changes/`（`RESULTS.md`） |
+| 框架的修改（分支）與合併預演 | `../agf-worktrees/s8-follow-up`（分支 `s8-follow-up`）；`../agf-worktrees/merge-rehearsal`（預演用的 clone，可以刪） |
 | receipt、報告、審查的重現材料（不在版本控制內） | `artifacts/acceptance-final/`、`artifacts/reports/`、`artifacts/benchmarks/`、`artifacts/audit/independent-review-20261115-s5/` |
 
 ## 可以直接交給下一個 session 的第一句話
 
-> 請先讀 `CLAUDE.md` 與 `docs/HANDOFF_CLAUDE.md`，執行「一開始先做什麼」的命令並回報：工作樹有哪些未提交的變更、`git tag` 有沒有 `s6-review-fixes-verified` 到 `s8-framework-analysis`、機器是否安靜。
-> 然後依 `docs/ROADMAP.md` 的 S9 列與 `framework-study/analysis/report.md`，起草 S9（公開整理）的規格給我看，先不要實作。
+> 請先讀 `CLAUDE.md` 與 `docs/HANDOFF_CLAUDE.md`，執行「一開始先做什麼」的命令，逐條和預期結果比對後回報。
+> 接著問我 `framework-study/changes/RESULTS.md` 最後一節的三件事，再依 `docs/ROADMAP.md` 的 S9 列起草 S9（公開整理）的規格給我看，先不要實作。
 > 相鄰的 ai-general-framework 保持唯讀，不要 push、建立 PR 或部署。

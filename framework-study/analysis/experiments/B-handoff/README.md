@@ -21,3 +21,6 @@ Read 不限於工作目錄，刪掉副本裡的交接文件，擋不住它讀到
 Bash 白名單拿掉 `cat`、`ls`（Bash 不受 Read 規則約束）。四次全部重跑，條件一致。第一次嘗試保留在 `results-attempt1.json`、`outputs-attempt1/` 與 `artifacts/runs/s8-20261116/B-attempt1/`，不納入比較。
 這件事本身也是結果：交接文件與入口檔裡的絕對路徑，讓副本無法隔離。
 
+## 更正（2026-11-16，S8 後續）
+
+上面「執行中發現的問題」寫 Read 的規則同時約束 Grep、Glob。當時的探測（`deny-probe.jsonl`）只測了 Read 與 Glob，Grep 那一半是推論。S8 後續補測後才證實 Read 的規則也擋 Grep（[S8 後續的結果](../../../changes/RESULTS.md) 2.10）。本實驗的結論不受影響：受試者沒有用 Grep 讀過被禁止的路徑。

@@ -21,6 +21,9 @@ description: Turn a bug found while developing this Raft KV store into a beginne
 
 ## 流程
 
+動筆前先讀 `.agf/managed/guides/writing.md`（框架的寫作指引：話題與人稱、名詞化、主詞和動詞的距離）。
+S6 的四篇教學都是在沒讀它的情況下寫的（`docs/FRAMEWORK_EXPERIENCE_LOG.md` L52）。
+
 1. 在 `docs/lessons/` 取下一個編號，建立 `NN-簡短名稱/`，複製樣板為 `README.md`，狀態標「草稿」。
 2. 先寫 `repro.sh`。它只在暫存目錄寫入、可重複執行、結束時印出一行明確的結論
    （例如 `BUG REPRODUCED: term went from 2 back to 1`）。需要舊版程式時，用
