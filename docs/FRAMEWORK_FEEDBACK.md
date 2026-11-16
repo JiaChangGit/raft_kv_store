@@ -1,5 +1,7 @@
 # 框架實際使用與回饋
 
+> **2026-11-16 起，這份文件由 [S8 的分析報告](../framework-study/analysis/report.md) 取代。** 這裡保留原文作為早期紀錄；仍有效的建議已併入新報告，之後只更新新報告。
+
 ai-general-framework維持唯讀，HEAD識別與檔案hash在artifacts/reports/framework-source.json
 及environment.json。目標配置sharedtools與read-research/trace-code/review-change/
 debug-root-cause/guide-learning，AGENTS原樣保留並明確引用project-rules。

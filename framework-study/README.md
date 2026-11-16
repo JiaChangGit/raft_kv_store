@@ -6,5 +6,6 @@
 | 資料夾 | 階段 | 內容 |
 |---|---|---|
 | [zh-style/](zh-style/) | S7 | 中文「AI 味」：實例分析、對照表、規則式提示腳本與它的試跑報告。先讀 [report.md](zh-style/report.md) |
+| [analysis/](analysis/) | S8 | 框架的元件盤點、三個對照實驗與分析報告。先讀 [report.md](analysis/report.md) |
 
 這裡的檔案計入 Raft 驗收的來源指紋；加入之後 `scripts/status.py` 會顯示 `source changed`，S9 收尾時從 P00 重跑一次。
