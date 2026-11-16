@@ -9,7 +9,7 @@
 
 - 以自然、清楚的台灣繁體中文溝通；進行較長工作時定期回報進度，說明實際證據與限制。
 - 本專案在 WSL 上。相鄰目錄的 `ai-general-framework`（`../ai-general-framework`）保持唯讀，除非使用者在當次對話點名；
-  2026-11-16 點名的框架修改做在分支 `s8-follow-up`（worktree `../agf-worktrees/s8-follow-up`），框架本身的工作目錄不動。
+  2026-11-16 點名的框架修改，經使用者同意後已快轉併進框架的 main；使用者自己還沒 commit 的 10 個修改原樣保留，不要動。
   不可覆寫三份原始規格，亦不可為了通過 gate 降低要求。
 - 執行 `.venv/bin/python scripts/status.py` 查看每個階段最近一次驗收、是否對應目前的來源；
   勿將舊 receipt 當成目前來源的通過證據。
@@ -34,8 +34,8 @@
   S6（tag `s6-review-fixes-verified`）的規格與補記在 `docs/PERFORMANCE.md` §15，驗收契約是新的階段 15，教學 16～19。
   S7（tag `s7-zh-style-prototype`）已完成，成果在 `framework-study/zh-style/`（先讀 `report.md`）；不屬於 Raft，不在驗收契約內。
   S8（tag `s8-framework-analysis`）已完成：元件盤點、三個對照實驗與分析報告在 `framework-study/analysis/`（先讀 `report.md`）。
-  S8 後續（tag `s8-framework-changes`）已完成：框架的修改在分支 `s8-follow-up`，規格、探測與結果在 `framework-study/changes/`（先讀 `RESULTS.md`）；
-  其中三件事等使用者決定（該檔最後一節）。下一個是 S9（公開整理），開始前先寫規格並取得使用者同意。
+  S8 後續（tag `s8-framework-changes`）已完成：框架的修改已併進框架的 main，規格、探測與結果在 `framework-study/changes/`（先讀 `RESULTS.md`）；
+  使用者對三件事的決定已執行（該檔最後一節）。下一個是 S9（公開整理），開始前先寫規格並取得使用者同意。
 - S1～S4 的獨立審查已於 2026-11-14 補做並修正（紀錄 `docs/INDEPENDENT_REVIEW_S1_S4.md`，教學 11～13）；S1 的審查只做到不同 session。
   改模擬器的工作負載或設定前，先讀教學 11、12：固定的參數與「挑最合理的對象」都曾讓整條路徑測不到。
   寫任何「逐一植入錯誤再建置」的腳本前，先讀教學 06（共用建置目錄會互相污染）。
@@ -54,6 +54,7 @@
 - `docs/`、`scripts/`、`acceptance/` 與程式都計入來源指紋，改動後既有 receipt 即不適用於目前來源；
   `.claude/` 與 `.agents/` 自 2026-11-12 起排除在指紋外。
   `.claude/settings.json` 以 deny 規則擋下框架目錄的寫入與 push／建立 PR。**這些規則只在從專案目錄啟動 Claude Code 時生效**：
-  2026-11-16 實測，從上層目錄啟動的 session 不會載入它們（`framework-study/changes/RESULTS.md`）。
+  2026-11-16 實測，從上層目錄啟動的 session 不會載入它們（`framework-study/changes/RESULTS.md`）；從 `/home/user/src` 啟動的 session
+  改由 `/home/user/src/.claude/settings.json` 的同一組規則保護（2026-11-16 起，新開的 session 才生效）。
 - 保留使用者資料、現有未追蹤檔案及本機證據；不自行 push、建立 PR 或部署。
   測試、工具、框架配置的實際狀態與適用權限請依交接文件和當前環境確認。
