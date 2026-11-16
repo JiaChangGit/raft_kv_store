@@ -54,7 +54,7 @@
 - `docs/`、`scripts/`、`acceptance/` 與程式都計入來源指紋，改動後既有 receipt 即不適用於目前來源；
   `.claude/` 與 `.agents/` 自 2026-11-12 起排除在指紋外。
   `.claude/settings.json` 以 deny 規則擋下框架目錄的寫入與 push／建立 PR。**這些規則只在從專案目錄啟動 Claude Code 時生效**：
-  2026-11-16 實測，從上層目錄啟動的 session 不會載入它們（`framework-study/changes/RESULTS.md`）；從 `/home/user/src` 啟動的 session
-  改由 `/home/user/src/.claude/settings.json` 的同一組規則保護（2026-11-16 起，新開的 session 才生效）。
+  2026-11-16 實測，從上層目錄啟動的 session 不會載入它們（`framework-study/changes/RESULTS.md`）；從上一層目錄啟動的 session
+  改由 `../.claude/settings.json` 的同一組規則保護（2026-11-16 起，新開的 session 才生效）。
 - 保留使用者資料、現有未追蹤檔案及本機證據；不自行 push、建立 PR 或部署。
   測試、工具、框架配置的實際狀態與適用權限請依交接文件和當前環境確認。

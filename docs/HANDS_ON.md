@@ -9,7 +9,6 @@
 在 WSL 的專案根目錄執行：
 
 ```bash
-cd /home/user/src/Distributed_Key-Value_Store_with_Raft
 . "$HOME/.cargo/env"
 cargo build --workspace --locked
 .venv/bin/python -m tools.learning_demo --output-dir artifacts/runs/my-first-demo

@@ -1,5 +1,7 @@
 # Commit rule 與 Figure 8
 
+> **V1 時期撰寫（當時固定三個節點）。** Figure 8 與「只直接提交本任期 entry」的推導仍然適用，函式仍是 `Core::advance_commit`；但「三個固定節點」「至少兩個節點的 durable match」在 S4 之後改成「目前設定的多數」（[成員變更規格](MEMBERSHIP.md)）。
+
 來源：Raft extended paper Figure 2、Figure 3、§5.4.2、Figure 8；本專案原始
 ALL_IN_ONE_SPEC.md 的 P02。正式設定始終三個固定節點；論文 Figure 8 的五節點
 只用作反例推理，沒有變更正式拓樸。

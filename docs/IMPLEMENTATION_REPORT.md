@@ -1,5 +1,7 @@
 # V1 實作報告
 
+> **歷史文件：V1（2026-11-12 以前）的實作報告。** 之後的變更：S1 改用 [WAL 格式 2](STORAGE_FORMAT_V2.md)、S2 加入[快照與 log 壓縮](SNAPSHOT_COMPACTION.md)、S3 的 GET 改走 [ReadIndex](READ_INDEX.md)（不再寫進 log）、S4 加入[成員變更](MEMBERSHIP.md)（節點 1～7，多數依目前的設定計算）、S5 做了[效能改善](PERFORMANCE.md)。現在的結構見[架構說明](ARCHITECTURE.md)。
+
 ## 成果與來源
 
 固定三個Linux process、IDs1/2/3、quorum2、一個Raftgroup。七個Rustcrates的責任見

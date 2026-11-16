@@ -1,37 +1,90 @@
 # Rust Raft KV Store
 
-從零實作的單一 Raft group 教學與工程實驗專案。節點編號 1～7，成員設定存在 Raft log 中、
-一次增減一台（[成員變更規格](docs/MEMBERSHIP.md)），多數依目前的設定計算；預設以三個獨立的
-Linux process 執行。同一份 `raft-core` 用於虛擬模擬器與 TCP runtime。
+[中文版](README.zh-TW.md)
 
-原始套件、gates.json、runner/checker 未提供。三份原始 Markdown 完整保留，
-本專案採用另行定義的驗收契約，不宣稱等同原 gate 或形式化證明。目前有效的是
-[最終驗收契約](docs/ACCEPTANCE_FINAL.md)（`acceptance/final.json`）；較早的
-[替代驗收 v1](docs/ACCEPTANCE_V1.md) 保留為歷史紀錄。目前結果請執行
-`.venv/bin/python scripts/status.py`，並以 `artifacts/acceptance-final/` 內的 receipt 為準；
-程式存在不代表所有驗收已完成。後續規劃見 [路線圖](docs/ROADMAP.md)，開發中遇到的 bug 見 [Bug 教學](docs/lessons/README.md)。
+A key-value store replicated with Raft, written from scratch in Rust as a learning and portfolio project.
+It runs one Raft group of up to seven nodes, changes membership one server at a time, takes snapshots and compacts its log, serves linearizable reads through ReadIndex, and batches writes with group commit.
+The same `raft-core` runs inside a deterministic simulator and inside the real TCP nodes.
 
-## 環境與建置
+Most of the code, tests and documents were written by AI models under the author's direction; [how that worked](#how-this-was-built-with-ai) is described below, including its limits.
+Most documents under `docs/` are in Traditional Chinese.
 
-在 WSL2 Linux home/ext4 執行，不用 `/mnt/c` 作 WAL 或效能結論。已安裝的工具
-版本與範圍見 `artifacts/reports/environment.json`。Rust 使用 rustup 與固定版本
-`rust-toolchain.toml`，Python 依賴僅安裝在 `.venv`，不需要 sudo 執行本專案。
+## What it does, stage by stage
+
+| Stage | Added | Specification |
+|---|---|---|
+| V1 | Three fixed nodes: election, replication, commit, a write-ahead log, crash recovery, client deduplication, a deterministic simulator, fault-injecting proxies | [V1 report](docs/IMPLEMENTATION_REPORT.md) (historical) |
+| S1 | WAL format 2: checksummed record headers, a file header, safe handling of a torn tail | [STORAGE_FORMAT_V2](docs/STORAGE_FORMAT_V2.md) |
+| S2 | Snapshots, log compaction, chunked InstallSnapshot | [SNAPSHOT_COMPACTION](docs/SNAPSHOT_COMPACTION.md) |
+| S3 | ReadIndex: a GET no longer enters the log | [READ_INDEX](docs/READ_INDEX.md) |
+| S4 | Membership changes one server at a time; node IDs 1–7; the configuration lives in the log | [MEMBERSHIP](docs/MEMBERSHIP.md) |
+| S5–S6 | Group commit, batched replication, writing only what changed; fixes from an independent review | [PERFORMANCE](docs/PERFORMANCE.md) |
+| S7–S8 | Studies of the AI framework used to build this (not part of the store) | [framework-study/](framework-study/README.md) |
+| S9 | This public clean-up | [PUBLIC_RELEASE](docs/PUBLIC_RELEASE.md) |
+
+## Architecture
+
+```mermaid
+---
+config:
+  look: neo
+---
+flowchart LR
+    C["client tools"] -->|"TCP frame"| N["raft-node"]
+    N -->|"Event"| R["raft-core"]
+    R -->|"Effect"| N
+    N -->|"save_delta"| S["raft-storage"]
+    N -->|"apply"| K["kv-state"]
+    N <-->|"frame"| T["transport"]
+    M["raft-sim"] -->|"same Core"| R
+    X["cluster.py"] -->|"processes, faults"| N
+    R -.->|"types"| P["protocol"]
+```
+
+`raft-core` is pure: it takes an `Event` and returns ordered `Effect`s, and never touches the clock, the network or the disk.
+In `raft-node`, one actor thread owns the core, the WAL and the state machine; other threads only move frames and events.
+A write follows this path on the leader:
+
+```mermaid
+---
+config:
+  look: neo
+---
+sequenceDiagram
+    participant C as client
+    participant A as leader actor
+    participant R as leader core
+    participant W as leader WAL
+    participant F as follower
+    participant K as KV
+    C->>A: PUT frame
+    A->>R: ProposeBatch
+    R-->>A: Persist, then Send
+    A->>W: save_delta
+    W-->>A: synced
+    A->>R: persisted
+    A->>F: AppendEntries
+    Note over F: syncs before replying
+    F-->>A: AppendResponse
+    A->>R: Message
+    R-->>A: Apply
+    A->>K: apply
+    A-->>C: OK and old value
+```
+
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has four diagrams (components, a write, a ReadIndex read, adding a member), each with the files and functions it was traced from.
+
+## Quick start
+
+You need Linux (developed on WSL2 Ubuntu, with data on ext4), Rust through rustup (the version is pinned in `rust-toolchain.toml`) and Python 3. Run everything from the repository root.
 
 ```bash
-cd /home/user/src/Distributed_Key-Value_Store_with_Raft
-. "$HOME/.cargo/env"
-. .venv/bin/activate
-bash scripts/preflight.sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
 cargo build --workspace --locked
 ```
 
-重建 Python 環境時：`python3 -m venv .venv`，再執行
-`.venv/bin/python -m pip install -r requirements-dev.txt`。這些命令會下載依賴／寫檔。
-
-## 手動啟動與 client
-
-叢集第一次建立時，只有節點 1 以 `--bootstrap` 引導（它的第一筆 log 是「只含自己」的設定），
-其餘節點以空白資料目錄啟動，再逐一加入（博士論文 §4.4）。三個 terminal 分別執行（各 terminal 先載入 cargo env）：
+Start three nodes, each in its own terminal. Only node 1 bootstraps, and only once for the whole cluster; the others start empty.
 
 ```bash
 cargo run -p raft-node -- --id 1 --config config/cluster.toml --data-dir data/node-1 --bootstrap
@@ -39,99 +92,62 @@ cargo run -p raft-node -- --id 2 --config config/cluster.toml --data-dir data/no
 cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/node-3
 ```
 
-再從另一個 terminal 把節點 2、3 加進設定：
+From another terminal, add nodes 2 and 3 to the configuration, then write and read a key:
 
 ```bash
 .venv/bin/python tools/kv_admin.py --config config/cluster.toml add 2
 .venv/bin/python tools/kv_admin.py --config config/cluster.toml add 3
-```
-
-`--bootstrap` 只對完全空白的資料目錄生效，重啟時帶著也沒關係；但**整個叢集只引導一台、只引導一次**。
-`config/cluster.toml` 是位址表：列出節點在哪裡，誰有投票權由 log 中的設定決定。
-同一資料目錄不能由兩個 process 共用，也不能交換 node identity。另一個 terminal：
-
-```bash
 .venv/bin/python -m tools.kv_client --address 127.0.0.1:7201 --address 127.0.0.1:7202 --address 127.0.0.1:7203 --client-id 7 --sequence 0 Put x A
 .venv/bin/python -m tools.kv_client --address 127.0.0.1:7201 --address 127.0.0.1:7202 --address 127.0.0.1:7203 --client-id 7 --sequence 1 Get x
 ```
 
-每個 client 同時只有一筆 logical request。TIMEOUT_UNKNOWN 使用相同 ID/sequence/content
-重試；新請求增加 sequence。Put/Delete 回傳先前值，Get 回傳當時值。
-新的 GET 走 ReadIndex（[規格](docs/READ_INDEX.md)）：不寫進 Raft log，只由已在讀取到達後以多數確認自己仍是 leader 的節點，在狀態機套用到 readIndex 後回覆；debug status 的 KV map 不提供線性化讀取契約。
-停止節點可用 Ctrl-C；故障測試另外使用 SIGKILL，並保留原資料目錄重啟。
+A client sends one request at a time. After `TIMEOUT_UNKNOWN`, retry with the same client ID, sequence and content; a new request uses the next sequence. Put and Delete return the previous value.
+`tools/kv_admin.py ... status` shows each node, and `remove N` takes a node out. To replace a failed node, add the new one first, then remove the old one.
+Do not re-add a node ID with a wiped data directory and do not bootstrap a second node: this version does not detect either mistake, and both can break safety.
+[docs/HANDS_ON.md](docs/HANDS_ON.md) walks through an election, a write, killing the leader and restarting it (in Chinese).
 
-## 成員變更
+## Verification
 
-```bash
-.venv/bin/python tools/kv_admin.py --config config/cluster.toml status
-.venv/bin/python tools/kv_admin.py --config config/cluster.toml add 4
-.venv/bin/python tools/kv_admin.py --config config/cluster.toml remove 2
-```
-
-要加入的節點必須已列在位址表中並已啟動（空白資料目錄）；leader 先讓它追上 log（最多約 10 秒），
-追不上就回覆 `CATCH_UP_FAILED`，設定不變。一次只能進行一個變更，其他請求會得到 `CHANGE_IN_PROGRESS`。
-換掉一台故障的節點時**先加新的、再移除舊的**，過程中都能容忍一台故障；被移除的節點等變更完成後再關掉。
-不要把一個節點編號以清空的資料目錄重新加入，也不要對第二台節點引導：這兩種操作錯誤本版不偵測，
-可能破壞安全性（規格 N2）。縮小到少於三台時工具會提示，因為這時無法容忍任何故障。
-
-重複執行上面的固定 client ID／sequence 時，既有資料目錄會保留 session，
-因此是重試舊請求，不是新操作。要完整體驗隔離的三程序啟動、PUT／GET、
-SIGKILL 與原目錄重啟，可依 [實際操作帶讀](docs/HANDS_ON.md) 使用新的資料目錄。
-
-## 驗證
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo build --workspace --bins
-.venv/bin/python -m pytest -q tests
-.venv/bin/python scripts/verify_gate.py 00
-```
-
-後續依序執行 `01` 到 `08`、`10` 到 `13`（`scripts/revalidate_all.py` 會依序全部執行）。每次 gate 累積先前必測、精確 discovery、逐項實跑、
-完整 Rust 回歸與對應 process tests；失敗保留原始輸出，不改條件繞過。
-`scripts/run_phase.sh XX` 只是單階段驗收 wrapper，不呼叫模型或自動產生程式。
-測試 profile 僅優化執行速度，隨機測試預設仍是 1000 seeds × 10000 events。
-
-```bash
-cargo run --release -p raft-sim -- --seeds 1000 --events 10000 --output artifacts/reports/verification.json
-.venv/bin/python -m tools.benchmark --directory artifacts/runs/benchmark-manual --output artifacts/reports/benchmark.json --samples 12
-.venv/bin/python scripts/mutation_check.py
-```
-
-Mutation 只修改 `artifacts/mutations/` 隔離副本，展示錯誤 quorum、舊 term 提交及
-反向排程會被測試抓到，不修改正式程式或 gate。process tests 的 PID、WAL、history、
-fault schedule 與 logs 留在 `artifacts/runs/`；這些本機資料預設不納入 Git。
-
-## 設計與帶讀
-
-| 模組 | 責任 |
+| What | How |
 |---|---|
-| raft-protocol | 強型別 RPC、ID、成員設定（`Voters`）、尺寸與格式限制 |
-| raft-core | 純 Event → 有序 Effect，共識狀態單一擁有者 |
-| raft-sim | 虛擬時計、MockDisk、故障排程、成員變更工作負載、獨立 I1～I10 observer |
-| raft-storage | checksummed append-only WAL transaction、sync、recovery |
-| kv-state | deterministic KV、完整 replicated session records |
-| raft-transport | 有界 frame 讀寫與 RPC correlation |
-| raft-node | actor、同步 storage barrier、TCP、timers、client reply |
+| Unit and integration tests | `cargo test --workspace`, `.venv/bin/python -m pytest -q tests` |
+| Lints | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings` |
+| Simulation | 1,000 seeds × 10,000 events per seed, with independent invariant observers (`raft-sim`) |
+| Crashes | failpoints at the write, sync, acknowledge, commit, apply and reply boundaries; real processes killed with SIGKILL and restarted on the same data |
+| Network faults | proxies that drop, delay, duplicate and reorder whole frames; histories checked for linearizability |
+| Mutation testing | 63 planted bugs, each run in an isolated copy; every one must make a test fail |
+| Acceptance contract | 15 phases (P00–P08, P10–P15) in `acceptance/final.json`, run by `scripts/verify_gate.py` |
 
-推薦讀 [API 契約](docs/API_CONTRACT.md)、[commit 規則](docs/COMMIT_RULE_REVIEW.md)、
-[WAL 格式 2](docs/STORAGE_FORMAT_V2.md)、[client 契約](docs/CLIENT_CONTRACT.md)、
-[故障排程](docs/FAULT_SCHEDULE_FORMAT.md)、[帶讀與練習](docs/LEARNING_GUIDE.md)。
-Raft 原始權威來源為 [extended paper](https://raft.github.io/raft.pdf) Figure 2/3、§5.4；
-本專案規格與論文的差異必須明示。
+`.venv/bin/python scripts/status.py` shows the latest result of each phase and whether it matches the current source.
+`bash scripts/final_acceptance.sh` reruns everything from the mutation tests to P15; it can resume after an interruption and stops if a source file changes. It took about 45 minutes on the author's machine.
+The tag `s9-public-verified` is created only after every phase passed on the exact source of that commit. Receipts and reports are written to `artifacts/`, which is not under version control.
 
-## 框架與限制
+## What is not verified
 
-使用相鄰 `ai-general-framework` 的 shared tools 與五個按需 skills；該 checkout 維持唯讀。
-`.agf/managed/project-rules.md` 指向有效入口；沒有假設宿主已自動載入或框架會永久記憶。
-經驗與限制見 [框架回饋](docs/FRAMEWORK_FEEDBACK.md)。跨對話接手讀
-[WORKLOG](docs/WORKLOG.md)，再核對目前檔案與實際結果。
-獨立審查發現、負向回歸與乾淨副本的操作方式見[工程強化紀錄](docs/ENGINEERING_HARDENING.md)。
+- There is no formal proof, of Raft or of this code.
+- There is no long soak test. Real-process linearizability checks look at no more than 24 operations at a time.
+- The simulator's administrator sends one membership change at a time, and each seed has 64 client operations.
+- S1 was reviewed only by another session of the same model, not by a different model.
+- The bug lessons are drafts: nobody else has followed them yet.
+- SIGKILL is not a power failure; a successful `sync_all` is trusted to mean the data is on disk.
+- Membership operator mistakes (re-adding a wiped node, bootstrapping twice) are not detected.
+- Performance numbers come from one WSL machine and say nothing about other hardware.
+- The diagrams were checked only as Mermaid source; no renderer works on the author's machine.
 
-無 session GC、TLS、sharding 或 Multi-Raft。Snapshot 與 log 壓縮見 [規格](docs/SNAPSHOT_COMPACTION.md)；
-session 數不設上限；本專案用於有限規模實驗，不作長期 production database。
-成員變更沒有形式化證明，操作錯誤不會被偵測，限制見 [規格的不保證](docs/MEMBERSHIP.md)。
-非 Byzantine 模型；假設成功的 sync_all 由 OS/磁碟正確履行，SIGKILL 不等於硬體斷電。
-安全性與進展分開：永久失去多數時不保證可用。效能數字只代表該次單機 WSL 環境。
+## Documents
+
+[docs/README.md](docs/README.md) sorts every document into current guides, specifications, records and historical versions.
+Start with [docs/LEARNING_GUIDE.md](docs/LEARNING_GUIDE.md) (one PUT through the whole system) or the [bug lessons](docs/lessons/README.md).
+Records keep the paths of the author's machine as they were written; `CLAUDE.md`, `AGENTS.md` and `.claude/` are the author's local setup for AI tools.
+
+## How this was built with AI
+
+The author set the goals, approved a specification before every stage, spot-checked results and kept every outward action (push, pull requests, deployment) to themselves. AI models wrote the specifications, code, tests, lessons and reports.
+Every stage followed the same order: specification, approval, failing tests, implementation, simulation and fault tests, independent review, lessons, acceptance, then a local commit and tag.
+Three independent reviews, each by a model other than the one that wrote most of the reviewed work, found real defects: a recovery bug, a weakened simulator check and a boundary bug in S1–S4; in S5, an acceptance phase that had never finished although the documents called it done; in the framework changes, a usage counter that could print arbitrary words from private transcripts.
+The limits are real too: the same model often wrote and graded, experiments ran each condition only once or twice, and the sessions whose start directory was recorded all started one level above the project, so the project's permission rules were never loaded and "read-only" and "no push" depended on the model's own restraint.
+[docs/AI_COLLABORATION.md](docs/AI_COLLABORATION.md) has the details (in Chinese), and [framework-study/](framework-study/README.md) has the study of the AI framework itself.
+
+## Licence
+
+MIT; see [LICENSE](LICENSE).

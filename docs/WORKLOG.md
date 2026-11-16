@@ -1,5 +1,7 @@
 # 實作工作紀錄
 
+> **V1 時期的工作紀錄（2026-11-10 起），之後不再更新。** 2026-11-12 以後的經過寫在[路線圖](ROADMAP.md)、各階段的規格補記與[交接文件](HANDOFF_CLAUDE.md)。
+
 ## 2026-11-10：範圍與驗收基準
 
 使用者確認在 `/home/user/src/Distributed_Key-Value_Store_with_Raft` 建立完整 V1，沒有額外原始套件，允許準備必要環境。`ai-general-framework` 維持唯讀；目標專案可配置其指引與 skills。未授權的 push、PR 與部署不在本次交付內。

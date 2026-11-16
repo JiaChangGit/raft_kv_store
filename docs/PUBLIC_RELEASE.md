@@ -18,7 +18,7 @@
 ## 3. 現況（2026-11-16 盤點）
 
 - **README.md** 只有中文。寫的驗收階段只到 13（現在到 15）；接手指向 `WORKLOG.md`（現在是交接文件）；指向已被取代的「框架回饋」；有一行 `cd` 到本機絕對路徑；沒有架構圖、各階段摘要、沒驗證的事與授權。
-- **本機絕對路徑**：受版本控制的檔案裡，`/home/user` 出現在 30 個檔：`framework-study/` 22 個（實驗的原始紀錄與當時的腳本）、`docs/` 5 個、`README.md`、`CLAUDE.md`、`.claude/settings.json`（deny 規則必須用絕對路徑）。另有 6 個檔帶暫存目錄的路徑。三份原始規格裡沒有。
+- **本機絕對路徑**：受版本控制的檔案裡，家目錄的絕對路徑出現在 30 個檔：`framework-study/` 22 個（實驗的原始紀錄與當時的腳本）、`docs/` 5 個、`README.md`、`CLAUDE.md`、`.claude/settings.json`（deny 規則必須用絕對路徑）。另有 6 個檔帶暫存目錄的路徑。三份原始規格裡沒有。
 - **授權**：沒有 LICENSE。
 - **作者資訊與秘密**：commit 作者用的是 GitHub 的 noreply 信箱。用常見的金鑰樣式掃過工作樹，沒有命中；這台機器沒有安裝秘密掃描工具。
 - **文件**：已標示為歷史或已被取代的有 4 份（`ACCEPTANCE_V1`、`STORAGE_FORMAT_V1`、`FRAMEWORK_FEEDBACK`、`FRAMEWORK_IMPROVEMENT_PROPOSALS`）。V1 時期寫成、還沒標示的有 `IMPLEMENTATION_REPORT`、`VERIFICATION_FINDINGS`、`ENGINEERING_HARDENING`、`WORKLOG`、`COMMIT_RULE_REVIEW`、`FAULT_SCHEDULE_FORMAT`，以及 `diagrams/` 的兩張圖。帶讀文件與契約文件在 S2～S4 已經補過差異。
@@ -56,7 +56,7 @@
 - **會繼續被人讀的文件**（README、`CLAUDE.md`、`AGENTS.md`、交接文件、`HANDS_ON.md`、各階段規格、帶讀）：改成相對於專案根目錄的寫法。
 - **紀錄**（經驗紀錄、`WORKLOG.md`、`TEST_RECORD_20261114.md`、審查報告、`framework-study/` 的原始結果與輸出、實驗當時的腳本）：不改寫，在 `framework-study/README.md` 與文件地圖寫明「原始紀錄保留作者機器上的路徑」。
 - **`.claude/settings.json`**：deny 規則要絕對路徑才有效，保留；README 說明這是作者本機的設定。
-- 完成後列出所有剩下的 `/home/user`，逐筆對照是不是上面「不改寫」的類別。
+- 完成後用 `git grep -F "$HOME"` 列出剩下的家目錄路徑，逐筆對照是不是上面「不改寫」的類別。
 
 ### 4.5 文件地圖與過時文件的標示
 
@@ -89,7 +89,7 @@
 ## 5. 驗收條件
 
 - 兩份 README 涵蓋 4.1 的章節。快速開始的指令，在一份乾淨的 clone 裡照著做一遍：建置、啟動三台、PUT／GET、加入節點。
-- `git grep /home/user` 只剩 4.4 列為「不改寫」的檔。
+- `git grep -F "$HOME"` 只剩 4.4 列為「不改寫」的檔。
 - 每份文件都在 `docs/README.md` 有分類；第 3 節列的 V1 文件都有標示。
 - 每張架構圖都寫了對照的程式位置。
 - `scripts/check_lessons.py` 通過；P00～P15 全部 `PASS [current source]`；tag 已建立。

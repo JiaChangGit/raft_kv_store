@@ -53,7 +53,7 @@ Raft 的驗收結果對應 tag `s6-review-fixes-verified` 那個 commit，S9 收
 7. S7（2026-11-16 核准）：規則式提示腳本與 12 個測試、14 個實例、對照表、試跑報告。抽樣 53 處只有 17% 值得改，推估只找得到約 4% 的問題；使用者抽查 10 筆標註全部同意（L53）。
 8. S8（2026-11-16 核准）：使用者登入桌面 app 內附的 CLI 後，以無頭 session 做三個實驗（33 次，CLI 估算 2.28 美元），加上元件盤點與分析報告。兩次隔離缺陷在執行中發現並修正、重跑（L54、L55）；使用者抽查 3 筆評分全部同意。
 9. S8 後續（使用者回「都處理」，再點名「框架一起改」；規格 2026-11-16 核准）：框架分支 `s8-follow-up` 有 6 個 commit（規則入口檢查、交接核對、權限範本、規則樣板、`evals/host/` 評測工具、審查修正、結果摘要），本專案的 `CLAUDE.md` 接上規則入口。探測發現專案的 deny 規則在這整個對話裡沒有生效（L59）；換模型審查找到 10 項問題並修正（L62）。18 次 session，CLI 估算 1.19 美元。
-10. 使用者回「全部依你建議」：deny 規則放進 `/home/user/src/.claude/settings.json`（新 session 才生效，L64）；框架分支以暫存、快轉、放回的方式併進 main，沒有替使用者 commit（L65），本專案跑了 `agf project update`；skill 措辭重新量測：更明確的版本兩輪 5／8、改寫後的版本兩輪 4／8，照開跑前登記的規則採用前者（差距在雜訊內），已併進框架 main 並部署（L66）。
+10. 使用者回「全部依你建議」：deny 規則放進上一層目錄的 `../.claude/settings.json`（新 session 才生效，L64）；框架分支以暫存、快轉、放回的方式併進 main，沒有替使用者 commit（L65），本專案跑了 `agf project update`；skill 措辭重新量測：更明確的版本兩輪 5／8、改寫後的版本兩輪 4／8，照開跑前登記的規則採用前者（差距在雜訊內），已併進框架 main 並部署（L66）。
 
 ## 已決定的事與理由
 
@@ -91,7 +91,7 @@ S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`�
 
 ## 操作範圍
 
-- 修改只限本專案；`../ai-general-framework` 唯讀，除非使用者在當次對話點名。2026-11-16 點名的修改已併進框架的 main；使用者未提交的 10 個修改不要動。deny 規則在本專案與 `/home/user/src` 的 `.claude/settings.json` 各有一份，都是新開的 session 才生效（見「踩過的坑」第一條）。
+- 修改只限本專案；`../ai-general-framework` 唯讀，除非使用者在當次對話點名。2026-11-16 點名的修改已併進框架的 main；使用者未提交的 10 個修改不要動。deny 規則在本專案與上一層目錄的 `.claude/settings.json` 各有一份，都是新開的 session 才生效（見「踩過的坑」第一條）。
 - 不 push、不建立 PR、不部署。本機 commit 與 tag 依使用者當次的指示。
 - 不為了通過驗收而削弱測試或改契約；改既有測試的期待時，寫進契約的 `modified_tests` 並告訴使用者。
 - 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L66）。
@@ -99,7 +99,7 @@ S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`�
 
 ## 踩過的坑（接手的人大概也會遇到）
 
-- **專案的 deny 規則只在從專案目錄啟動時生效。** session 從 `/home/user/src` 啟動時，子目錄的 `.claude/settings.json` 不會載入；2026-11-16 實測，在專案裡執行 `git push -h` 沒有被擋（L59）。看 `readlink /proc/$PPID/cwd` 就知道這個 session 從哪裡啟動。2026-11-16 起 `/home/user/src/.claude/settings.json` 也有同一組規則；改了設定要開新 session 才算數（L64）。
+- **專案的 deny 規則只在從專案目錄啟動時生效。** session 從專案的上一層目錄啟動時，子目錄的 `.claude/settings.json` 不會載入；2026-11-16 實測，在專案裡執行 `git push -h` 沒有被擋（L59）。看 `readlink /proc/$PPID/cwd` 就知道這個 session 從哪裡啟動。2026-11-16 起 `../.claude/settings.json` 也有同一組規則；改了設定要開新 session 才算數（L64）。
 - **唯讀調查時不要 `cd` 進框架。** `cd` 會延續到之後的命令，宿主也會把主要工作目錄改成框架（L50、L61）。用 `git -C`、絕對路徑或子 shell `(cd 目錄 && 命令)`。
 - **長時間的工作會被打斷。** 這個 WSL 在 session 結束時似乎會整個重啟（推論）；`/tmp` 是 tmpfs，重啟就清空，也吃記憶體。要留的證據寫到 `artifacts/`，大型建置放 `artifacts/runs/` 或 `target/`。
   驗收用 `scripts/run_phase.sh NN` 可以從某一階段續跑（需前一階段已有通過紀錄），`revalidate_all.py` 則從頭開始。
@@ -109,7 +109,7 @@ S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`�
   想在驗收進行中繼續工作：把來源複製到 `target/` 底下（不在指紋內）再跑，例如這次的 `target/s6-mutants/`；或只在暫存目錄寫草稿。
 - **契約寫完立刻預檢。** `scripts/preflight_phase.py NN` 會跑該階段自己的測試，並用磁碟上的報告檢查到該階段為止的報告規則；舊報告缺新的 mutation 案例也會列成問題，重新產生後再跑一次（教學 17）。
 - **改處理順序、放寬或收緊上限之前，先讀教學 07、12、16、18**：測試悄悄停止測試、卡住而不是失敗、只測了邊界的一側。寫「逐一植入錯誤再建置」的腳本前先讀教學 06。
-- **專案 skill 的載入**：這次宿主把 `.claude/skills` 的 skill 列成「套用於專案目錄」；之前從 `/home/user/src` 啟動時曾經沒有列出（L47）。列不出來時，直接讀 `.claude/skills/<名稱>/SKILL.md` 照做。
+- **專案 skill 的載入**：這次宿主把 `.claude/skills` 的 skill 列成「套用於專案目錄」；之前從上一層目錄啟動時曾經沒有列出（L47）。列不出來時，直接讀 `.claude/skills/<名稱>/SKILL.md` 照做。
 - **RTK hook 會改寫 Bash 命令**，偶爾讓自動權限審查要求「原樣重送改寫後的命令」；照它給的命令重送即可。需要原始輸出時用 `rtk proxy <命令>`。
 - **非登入的 shell 找不到 `cargo`。** 先 `. "$HOME/.cargo/env"`。
 - `pkill -f <樣式>` 會連自己所在的 shell 一起殺掉；用 PID（框架分支的 `trigger.py stop` 會先核對 PID）。

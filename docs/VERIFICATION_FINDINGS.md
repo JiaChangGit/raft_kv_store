@@ -1,5 +1,7 @@
 # 驗證結果與界線
 
+> **歷史文件：V1 的驗證紀錄。** 它對應已停用的 `acceptance/v1.json`。目前有效的是[最終驗收契約](ACCEPTANCE_FINAL.md)；之後各階段的發現寫在各自的規格補記，以及 [S1～S4 的獨立審查](INDEPENDENT_REVIEW_S1_S4.md)與 [S5 的獨立審查](INDEPENDENT_REVIEW_S5.md)。
+
 本專案使用 alternative-acceptance-v1，原始 gate 資產不可取得。最新階段結果不手抄成
 固定 PASS 表：請讀 `artifacts/acceptance-v1/phase-XX.last-attempt.json`，核對 status、
 source fingerprint、contract/checker SHA、命令及 evidence_directory。舊成功 receipt

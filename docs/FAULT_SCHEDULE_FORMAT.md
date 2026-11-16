@@ -1,5 +1,7 @@
 # 故障排程與重現
 
+> **V1 時期撰寫。** 故障排程的格式與重現方式仍然適用；S4 之後 `tools.cluster.Cluster` 可以啟動 1～7 台（預設 3 台），route 與 PID 的數量隨節點數而定。
+
 `tools.cluster.Cluster` 為每次實驗產生六條方向性 route、三個獨立 PID 與原資料目錄。
 faults.jsonl 記錄 sequence、monotonic time、rule/source/target/mode 及每個 frame 的 rpc_id。
 模式 allow/drop/delay/duplicate/reorder 作用於完整 frame；reorder 成對交換，單筆超時 flush。
