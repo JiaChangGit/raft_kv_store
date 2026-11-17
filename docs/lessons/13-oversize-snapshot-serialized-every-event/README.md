@@ -52,7 +52,7 @@ docs/lessons/13-oversize-snapshot-serialized-every-event/repro.sh
    after event 10: the snapshot check took   50 ms
    ten events: 500 ms spent on snapshot checks; snapshots taken: 0
 
-== current source  (after the fix)
+== s1-s4-review-verified  (after the fix)
    after event  1: the snapshot check took   52 ms
    after event  2: the snapshot check took    0 ms
    ...

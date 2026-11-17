@@ -11,12 +11,15 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/shared-target.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 say() { printf '\n== %s\n' "$*"; }
 TEST=quorum_is_two_of_three
+# The lesson was written during S3. S4 removed the fixed QUORUM constant this script
+# edits, so it copies that stage's tree rather than HEAD.
+TAG=s3-read-index-verified
 
 # copy NAME PRESERVE: copy the workspace; PRESERVE=yes keeps old modification
 # times like Python's shutil.copytree (copy2) did in scripts/mutation_check.py.
 copy() {
   mkdir "$WORK/$1"
-  git -C "$ROOT" archive HEAD | tar -x -C "$WORK/$1" --touch
+  git -C "$ROOT" archive "$TAG" | tar -x -C "$WORK/$1" --touch
   if [ "$2" = yes ]; then
     # Give every file the modification time it has in the original checkout.
     (cd "$WORK/$1" && find . -type f | while read -r f; do
@@ -32,6 +35,8 @@ test_in() {  # test_in COPY TARGET: run the quorum test, print what cargo did
 
 say "1. Copy 'mutant': QUORUM changed to 3 (file written now)"
 copy mutant no
+grep -q "pub const QUORUM: usize = 2;" "$WORK/mutant/crates/raft-protocol/src/lib.rs" \
+  || { echo "the QUORUM line is not in $TAG; the lesson needs updating"; exit 1; }
 sed -i 's/pub const QUORUM: usize = 2;/pub const QUORUM: usize = 3;/' "$WORK/mutant/crates/raft-protocol/src/lib.rs"
 grep -n "pub const QUORUM" "$WORK/mutant/crates/raft-protocol/src/lib.rs" | sed 's/^/   source: /'
 test_in mutant shared

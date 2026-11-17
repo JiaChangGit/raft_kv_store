@@ -11,6 +11,9 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/oversize-snapshot.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 say() { printf '\n== %s\n' "$*"; }
 BEFORE=s4-membership-verified
+# The fix landed with the S1-S4 review. Later stages add fields to Actor, which the
+# probe in oversize_actor.rs cannot know about, so both sides are fixed tags.
+AFTER=s1-s4-review-verified
 
 run() {  # run NAME FIELDS REPORT: append the lesson's test to that version's actor and run it
   local dir="$WORK/$1"
@@ -32,9 +35,9 @@ mkdir "$WORK/before"
 git -C "$ROOT" archive "$BEFORE" | tar -x -C "$WORK/before"
 run before 'snapshot_too_large: false,' ''
 
-say "current source  (after the fix)"
+say "$AFTER  (after the fix)"
 mkdir "$WORK/after"
-(cd "$ROOT" && git ls-files -co --exclude-standard -z | tar --null -T - -cf -) | tar -x -C "$WORK/after"
+git -C "$ROOT" archive "$AFTER" | tar -x -C "$WORK/after"
 run after 'snapshot_limit: MAX_SNAPSHOT, snapshot_attempts: 0, oversize_retry_at: 0,' \
   'println!("LESSON serializations: {}; next attempt at applied index {}", actor.snapshot_attempts, actor.oversize_retry_at);'
 

@@ -66,12 +66,15 @@ def main():
                 raise AssertionError("PUT 的舊值或 GET 的值不符預期")
             log = output / "cluster" / f"node-{leader}.jsonl"
             rows = [json.loads(line) for line in log.read_text().splitlines()]
+            persist = next(i + 1 for i, row in enumerate(rows)
+                           if row["kind"] == "persist" and row["last_log_index"] == put["committed_index"])
             positions = {
-                "propose": next(i + 1 for i, row in enumerate(rows)
-                                if row["kind"] == "event" and row["details"].get("event") == "propose"
-                                and row["details"].get("client_id") == "701" and row["details"].get("sequence") == 0),
-                "persist": next(i + 1 for i, row in enumerate(rows)
-                                if row["kind"] == "persist" and row["last_log_index"] == put["committed_index"]),
+                # Since S5 the node proposes the writes it has collected as one
+                # batch, and the trace names the batch, not each client. This
+                # demo sends one write, so it is in the last batch before its persist.
+                "propose": max(i + 1 for i, row in enumerate(rows[:persist])
+                               if row["kind"] == "event" and row["details"].get("event") == "propose_batch"),
+                "persist": persist,
                 "apply": next(i + 1 for i, row in enumerate(rows)
                               if row["kind"] == "apply" and row["details"].get("index") == put["committed_index"]),
             }
