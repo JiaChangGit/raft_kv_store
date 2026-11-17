@@ -470,7 +470,7 @@
         "docs/lessons/21-a-fresh-clone-fails-its-first-test-run/expected-output.txt",
         "docs/lessons/21-a-fresh-clone-fails-its-first-test-run/answers.md"
       ],
-      "notes": "No new feature. Three defects fixed: a single-voter leader never answered a read (lesson 20); WALs opened at once under a parent directory that did not exist yet raced to create it (lesson 21); log indexes near u64::MAX passed every validator and then overflowed (MAX_LOG_INDEX). The storage review planted 30 changes and 14 went unnoticed; the tests above guard the ones worth guarding, and the s10_* mutation cases plant each removal. The hands-on demo had been failing since S5 and is now run by a test. The source fingerprint now covers what Git would track (scripts/test_verify_gate.py); this changes the checker, so every phase is rerun. No earlier test's assertions changed; the replaced checker unit test test_host_configuration_is_outside_fingerprint_but_sources_are_not was never named in this contract."
+      "notes": "No new feature. Three defects fixed: a single-voter leader never answered a read (lesson 20); WALs opened at once under a parent directory that did not exist yet raced to create it (lesson 21); log indexes near u64::MAX passed every validator and then overflowed (MAX_LOG_INDEX). The storage review planted 30 changes and 16 went unnoticed; the tests above now catch 12 of them, each registered as an s10_* mutation case. The other four (a duplicate voters check in Envelope::valid_for, a message from the node itself, a zero-length frame, the snapshot file size limit) are checked again elsewhere or matter little and are left as they were. The hands-on demo had been failing since S5 and is now run by a test. The source fingerprint now covers what Git would track (scripts/test_verify_gate.py); this changes the checker, so every phase is rerun. No earlier test's assertions changed; the replaced checker unit test test_host_configuration_is_outside_fingerprint_but_sources_are_not was never named in this contract."
     }
   },
   "reports": {
@@ -934,7 +934,9 @@
           "s10_delta_base_check_only_zero",
           "s10_no_record_size_bound",
           "s10_kv_restore_size_unchecked",
-          "s10_kv_session_operation_unchecked"
+          "s10_kv_session_operation_unchecked",
+          "s10_snapshot_decode_skips_valid",
+          "s10_envelope_append_unbounded"
         ]
       }
     ]

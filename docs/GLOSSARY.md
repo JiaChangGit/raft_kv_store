@@ -1,6 +1,6 @@
 # 名詞與縮寫
 
-這份清單收錄文件裡出現的專有名詞與縮寫。每一條寫三件事：它是什麼、用一個例子說明、在這個專案的哪裡。
+這份清單收錄文件裡出現的專有名詞與縮寫。每一條寫兩件事：白話的意思（能舉例的就附一個例子），以及它在這個專案的哪裡。
 英文保留原文，因為程式、論文與錯誤訊息都用原文；第一次讀時可以先看「白話」那一欄。
 
 數字（上限、逾時）取自 2026-11-17 的程式；改程式時請一起更新。
@@ -23,7 +23,7 @@
 | apply（套用） | 依 index 順序，把已 commit 的命令真正執行在狀態機上，例如把 x 設成 A | `Effect::Apply`、`StateMachine::apply` |
 | 狀態機（state machine） | 執行命令的那個東西。這裡是一個 key-value 對照表 | `crates/kv-state` |
 | NoOp | 新 leader 當選後立刻寫入的一筆空命令。它被 commit，代表 leader 已經知道之前 commit 到哪裡 | `Command::NoOp` |
-| RPC（Remote Procedure Call，遠端程序呼叫） | 一台機器請另一台做事並等回覆。Raft 用兩種：RequestVote（要票）、AppendEntries（複製 entry） | `Rpc`（`raft-protocol`） |
+| RPC（Remote Procedure Call，遠端程序呼叫） | 一台機器請另一台做事並等回覆。Raft 的基本兩種是 RequestVote（要票）與 AppendEntries（複製 entry）；這個專案另有 InstallSnapshot（送快照） | `Rpc`（`raft-protocol`） |
 | Figure 8 | Raft 論文的一張圖：舊 term 的 entry 即使已在多數節點上，也不能直接 commit，否則可能被蓋掉。所以 leader 只直接 commit 本任期的 entry | `Core::advance_commit`；[commit 規則](COMMIT_RULE_REVIEW.md) |
 
 ## 寫到磁碟與回復
@@ -52,7 +52,7 @@
 | 線性一致（linearizable） | 每個操作看起來像在「送出」與「收到回覆」之間的某一瞬間完成。讀取一定看得到在它開始前已完成的寫入 | `tools/linearizability.py` 檢查歷史紀錄 |
 | ReadIndex | 不寫 log 的讀取：leader 記下當下的 commit index（readIndex），再送一輪訊息確認自己仍被多數承認，等狀態機套用到 readIndex 才回答 | [ReadIndex 規格](READ_INDEX.md)；教學 20 |
 | lease read（租約讀取） | 靠時間假設跳過確認的讀取。這個專案不做，因為它依賴時鐘 | — |
-| client ID、sequence | 每個用戶端有一個編號，每個請求有一個遞增的序號。重送時用同一組，系統就知道是同一個請求 | [client 契約](CLIENT_CONTRACT.md) |
+| client ID、sequence | 每個 client 有一個編號，每個請求有一個遞增的序號。重送時用同一組，系統就知道是同一個請求 | [client 契約](CLIENT_CONTRACT.md) |
 | 去重（deduplication） | 同一個寫入請求被送了兩次（例如回覆遺失後重試），只執行一次，第二次回傳第一次的結果 | `kv-state` 的 session |
 | session | 每個 client 最近一筆寫入的紀錄：序號、命令、結果。用來去重 | `Session`（`kv-state`） |
 | `TIMEOUT_UNKNOWN` | 「不知道成功了沒有」。可能已經 commit，也可能沒有。用同一組 client ID 與 sequence 重試是安全的 | client 等待上限 3 秒 |
@@ -68,7 +68,7 @@
 | 單步變更（single-server change） | 一次只加或移除一台，新舊設定的多數必定重疊，所以不需要 joint consensus | — |
 | joint consensus | 論文的另一種做法：一次改多台，中間有一段新舊設定同時生效。這個專案不做 | — |
 | bootstrap（引導） | 第一次啟動叢集時，讓一台以「只有自己」的設定開始，其他節點再逐一加入 | `--bootstrap` |
-| 追趕（catch-up） | 新節點加入前，先讓它追上 leader 的 log：最多 10 輪，最後一輪少於 4 次心跳才算追上，超過 100 次心跳就放棄 | `CATCH_UP_*` 常數 |
+| 追趕（catch-up） | 新節點加入前，先讓它追上 leader 的 log：固定 10 輪，第 10 輪少於 4 次心跳才算追上；整個過程超過 100 次心跳就放棄 | `CATCH_UP_*` 常數 |
 | 2015 年的修正 | 單步變更原本有一個反例，Ongaro 在 2015 年的 raft-dev 郵件補上規則：leader 要先在本任期 commit 一筆 entry，才能開始成員變更 | 教學 08；[論文筆記](reference/raft-notes.md) |
 | PreVote、learner、leader transfer | 其他常見的擴充：選舉前先試探、不投票的追趕節點、主動交出 leader。這個專案都不做 | — |
 
@@ -92,7 +92,7 @@
 | failpoint | 測試用的開關：讓 process 走到某個位置時自己結束，用來測「剛好在這裡當機」 | `RAFT_FAILPOINT` |
 | SIGKILL | 立刻終止 process，不給它清理的機會。用來模擬當機；它不等於斷電 | — |
 | proxy（代理） | 夾在兩個節點之間轉送訊息的小程式，可以丟棄、延遲、重複、調換訊息 | `tools/fault_proxy.py` |
-| mutation 測試 | 故意在程式裡植入一個錯誤（mutant），看測試會不會失敗。沒失敗，代表那段程式沒有測試守著 | `scripts/mutation_check.py`，76 個案例 |
+| mutation 測試 | 故意在程式裡植入一個錯誤（mutant），看測試會不會失敗。沒失敗，代表那段程式沒有測試把關 | `scripts/mutation_check.py`，78 個案例 |
 | 等價突變（equivalent mutant） | 植入的改動其實沒有改變行為，測試當然抓不到 | 教學 10 |
 | 驗收契約（acceptance contract） | 一份 JSON，列出每個階段必須通過的測試與報告規則 | `acceptance/final.json` |
 | receipt（收據） | 某個階段驗收通過後寫下的紀錄：命令、結果、來源指紋 | `artifacts/acceptance-final/` |

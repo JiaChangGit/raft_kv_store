@@ -25,7 +25,7 @@ Most documents under `docs/` are in Traditional Chinese; [docs/GLOSSARY.md](docs
 | S4 | Membership changes one server at a time; node IDs 1–7; the membership configuration lives in the log | [MEMBERSHIP](docs/MEMBERSHIP.md) |
 | S5–S6 | Group commit, batched replication, writing only what changed; fixes from an independent review | [PERFORMANCE](docs/PERFORMANCE.md) |
 | S9 | Documents, diagrams and a licence for publication, and a full acceptance rerun from scratch | — |
-| S10 | A final review: three defects and one robustness problem fixed, 14 unguarded checks covered by tests, a broken demo and two broken lesson scripts repaired | [DEVELOPMENT](docs/DEVELOPMENT.md) |
+| S10 | A final review: three defects and one robustness problem fixed, tests for 12 checks that no test guarded, a broken demo and two broken lesson scripts repaired | [DEVELOPMENT](docs/DEVELOPMENT.md) |
 
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) explains the order of the stages, what was deliberately left out and what each review found.
 
@@ -112,7 +112,7 @@ After a few seconds, once node 1 is the leader, add nodes 2 and 3 to the members
 ```
 
 What to expect:
-- `add 2` first prints a warning that two nodes cannot tolerate a failure. It is a reminder, not an error; the reply is `"status": "OK", "result": "1,2"`.
+- `add 2` replies `"status": "OK", "result": "1,2"`, then prints a warning that two nodes cannot tolerate a failure. It is a reminder, not an error.
 - `add 3` replies `"result": "1,2,3"`.
 - Put replies `"status": "OK", "result": null`; `null` means x had no previous value.
 - Get replies `"result": "A"`.
@@ -131,7 +131,7 @@ To replace a failed node, add the new one first, then remove the old one. Do not
 | Simulation | 1,000 seeds (a seed fixes every random choice, so a run can be repeated exactly) × 10,000 events, checking invariants, conditions that must hold at every step, such as at most one leader per term |
 | Crashes | failpoints (test switches that make a process stop itself at a chosen point) between writing, syncing, acknowledging, committing, applying and replying; real processes killed with SIGKILL and restarted on the same data |
 | Network faults | proxies that drop, delay, duplicate and reorder whole frames; histories checked for linearizability |
-| Mutation testing | 76 planted bugs, each run in an isolated copy; every one must make a test fail |
+| Mutation testing | 78 planted bugs, each run in an isolated copy; every one must make a test fail |
 | Lesson reproductions | the reproduction script of each of the 21 bug lessons still runs and reaches the saved conclusion (`bash scripts/run_lesson_repros.sh`) |
 | Acceptance contract | 16 phases in `acceptance/final.json`, run by `scripts/verify_gate.py`. P00–P08 are the nine phases of the original specification; S1–S6 and S10 added P10–P16, one each. P09 is not used |
 

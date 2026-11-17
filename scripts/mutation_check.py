@@ -353,6 +353,14 @@ CASES=[
      "    match fs::create_dir(path) {\n        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}\n        result => result?,\n    }\n",
      "    fs::create_dir(path)?;\n",
      "opens_racing_to_create_the_same_parent_all_succeed","raft-storage"),
+    ("s10_snapshot_decode_skips_valid",STORAGE,
+     "    if !snapshot.valid() {\n        return Err(invalid(\"snapshot position or membership is invalid\"));",
+     "    if false {\n        return Err(invalid(\"snapshot position or membership is invalid\"));",
+     "a_resealed_snapshot_header_with_bad_fields_is_refused","raft-storage"),
+    ("s10_envelope_append_unbounded","crates/raft-protocol/src/lib.rs",
+     "                        && prev_log_index\n                            .checked_add(entries.len() as u64)\n                            .is_some_and(|last| last <= MAX_LOG_INDEX)\n",
+     "",
+     "indexes_beyond_the_limit_are_refused","raft-protocol"),
 ]
 
 def classify(test,stdout,stderr):

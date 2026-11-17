@@ -99,7 +99,7 @@ sequenceDiagram
     A-->>C: TIMEOUT_UNKNOWN
 ```
 
-有趣的是，`finish_reads` 本身早就算對了。它算「除了 leader 自己，還需要幾個 follower 確認」：
+`finish_reads` 本身其實早就算對了。它算的是「除了 leader 自己，還需要幾個 follower 確認」：
 
 ```rust
 let needed = voters.majority().saturating_sub(usize::from(voters.contains(self.id)));
@@ -175,6 +175,8 @@ cargo test -p raft-core a_single_voter_leader_answers_a_read_without_waiting
 解答在 [answers.md](answers.md)。
 
 ## 10. 面試時怎麼講
+
+下面是以作者的口吻寫的講稿，「我」指作者；你可以換成自己的經驗。
 
 **兩分鐘版本：**
 

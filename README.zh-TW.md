@@ -25,7 +25,7 @@ Raft 是一種共識演算法：讓幾台機器對「資料依什麼順序更新
 | S4 | 成員變更，一次一台；節點編號 1～7；成員設定存在 log 裡 | [MEMBERSHIP](docs/MEMBERSHIP.md) |
 | S5～S6 | group commit、批次複製、落盤只寫變動的部分；獨立審查後的修正 | [PERFORMANCE](docs/PERFORMANCE.md) |
 | S9 | 整理文件、架構圖與授權，並從頭重跑完整驗收 | — |
-| S10 | 最後一次複查：修正三個缺陷與一個健壯性問題，補上 14 個沒有測試守著的檢查，修好壞掉的示範與教學腳本 | [開發歷程](docs/DEVELOPMENT.md) |
+| S10 | 最後一次複查：修正三個缺陷與一個健壯性問題，為審查找到的 12 段沒有測試把關的檢查補上測試，修好壞掉的示範與教學腳本 | [開發歷程](docs/DEVELOPMENT.md) |
 
 每個階段為什麼這樣排、刻意不做什麼、每次審查找到什麼，寫在 [開發歷程](docs/DEVELOPMENT.md)。
 
@@ -111,14 +111,14 @@ cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/no
 ```
 
 預期的結果：
-- `add 2` 會先印一行警告：只有兩台時，任何一台故障都會讓叢集停下來。這是提醒，不是錯誤；接著回 `"status": "OK", "result": "1,2"`。
+- `add 2` 回 `"status": "OK", "result": "1,2"`，接著印一行警告：只有兩台時，任何一台故障都會讓叢集停下來。這是提醒，不是錯誤。
 - `add 3` 回 `"result": "1,2,3"`。
 - Put 回 `"status": "OK", "result": null`：`null` 表示 x 原本沒有值。
 - Get 回 `"result": "A"`。
 
 每個 client 一次只送一個請求。收到 `TIMEOUT_UNKNOWN` 時，用相同的 client ID、sequence 與內容重試；新的請求用下一個 sequence。Put 與 Delete 會回傳先前的值。
 `.venv/bin/python tools/kv_admin.py --config config/cluster.toml status` 印出叢集的摘要：leader、term、成員、成員設定的位置與它是否已 commit。`remove N` 移除一台。
-換掉故障的節點時，先加入新的，再移除舊的。不要把清空資料目錄的節點編號重新加入，也不要讓第二台節點引導：這一版偵測不到這兩種操作錯誤，而它們都可能破壞安全性。
+換掉故障的節點時，先加入新的，再移除舊的。有兩件事不要做：把清空過資料目錄的節點用原來的編號重新加入，以及讓第二台節點也用 `--bootstrap` 啟動。這一版偵測不到這兩種操作錯誤，做了可能破壞安全性，例如同一個 term 出現兩個 leader（原因見 [自問自答](docs/FAQ.md) Q20）。
 [docs/HANDS_ON.md](docs/HANDS_ON.md) 用一行命令跑完選舉、寫入、終止 leader 再重新啟動，並解釋每個數字是怎麼來的。
 
 ## 驗證到哪裡
@@ -130,7 +130,7 @@ cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/no
 | 模擬 | 1,000 個種子（決定隨機事件的數字，同一個種子能重跑出完全相同的過程），每個種子 10,000 個事件；每一步都檢查不變量，也就是任何時刻都必須成立的條件，例如同一個 term 最多一個 leader |
 | 當機 | failpoint（讓 process 在指定位置自行終止的測試開關）設在寫入、同步、回覆 ACK、commit、套用、回覆 client 之間；真實 process 用 SIGKILL 終止，再以原資料目錄重啟 |
 | 網路故障 | proxy 以完整的 frame 為單位丟棄、延遲、重複、調換順序；歷史紀錄做線性一致性檢查 |
-| mutation 測試 | 76 個刻意植入的錯誤，各自在隔離的副本裡跑，每一個都必須讓某個測試失敗 |
+| mutation 測試 | 78 個刻意植入的錯誤，各自在隔離的副本裡跑，每一個都必須讓某個測試失敗 |
 | 教學的重現 | 21 篇 bug 教學的重現腳本都能執行，結論和保存的輸出相同（`bash scripts/run_lesson_repros.sh`） |
 | 驗收契約 | `acceptance/final.json` 的 16 個階段，由 `scripts/verify_gate.py` 執行。P00～P08 是最初規格的九個階段，S1～S6 與 S10 依序各加了 P10～P16；P09 沒有使用 |
 

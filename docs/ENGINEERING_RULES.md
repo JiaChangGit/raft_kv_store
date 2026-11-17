@@ -8,7 +8,7 @@
 - **不使用現成的 Raft 函式庫，不使用 `unsafe` Rust，不做 lease read。**
 - **模擬器與真實節點用同一份 `raft-core`。** 不另寫一套選舉或複製邏輯給測試用。
 - **一個 actor 擁有共識的狀態。** 其他執行緒只負責收發訊息。
-- **先持久化，再做依賴它的事。** term、投票與 log 的變動落盤之後，才送出依賴它們的訊息或回覆。
+- **先落盤，再做依賴它的事。** term、投票與 log 的變動落盤之後，才送出依賴它們的訊息或回覆。
 - **儲存失敗就停（fail closed）。** 寫入或同步失敗後不再接受寫入，不猜測、不繼續服務。
 - **leader 只直接 commit 本任期、而且已在多數節點落盤的 entry。**
 - **回復時只還原已落盤的 term、投票、log 與快照。** 快照只涵蓋已 commit 的 entry；快照之後的 entry 要等合法的 leader 重新確認，才能套用。
@@ -23,7 +23,7 @@
 | 節點與多數 | 固定三台、多數是 2 | 節點編號 1～7；每個節點以 log 中最新的成員設定（沒有就用快照的）為準，commit、選舉、ReadIndex 的多數都是那個設定的多數 | S4（[成員變更](MEMBERSHIP.md)） |
 | 成員變更 | 不做 | 一次只加或移除一台；leader 要在本任期 commit 過一筆 entry、而且 log 裡沒有其他未 commit 的成員設定時，才寫入新的設定 | S4 |
 | 快照 | 不做 | 依 [快照與壓縮](SNAPSHOT_COMPACTION.md) | S2 |
-| 讀取 | 每個 GET 都寫進 log | ReadIndex：leader 在本任期 commit 過、並以讀取到達之後開始的一輪多數確認自己的身分，才在套用位置 ≥ readIndex 時回答；讀取從不寫 log | S3（[ReadIndex](READ_INDEX.md)） |
+| 讀取 | 每個 GET 都寫進 log | ReadIndex：讀取不寫 log。leader 要同時滿足三個條件才回答：本任期已 commit 過一筆 entry；讀取到達之後，又有一輪多數節點確認它仍是 leader；狀態機已套用到 readIndex | S3（[ReadIndex](READ_INDEX.md)） |
 | 去重 | 完整的請求表 | 每個 client 只記最新一筆寫入（client ID、sequence、命令、原本的結果），可由 log 重建；較舊的 sequence 拒絕、不執行 | S2 |
 | GET 的去重 | 和寫入一樣 | 不去重 | S3 |
 

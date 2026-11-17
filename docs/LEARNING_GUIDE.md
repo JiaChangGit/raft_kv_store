@@ -44,7 +44,7 @@ client 送出的 JSON（外面還要加 4 bytes 的長度，才是一個完整�
 | 5 | actor：`Actor::execute` 執行 `Persist`，`Wal::save_delta` 寫入並 `fsync`（這次約 1.8 毫秒），成功後呼叫 `Core::persisted` | 節點 1 的磁碟上有 index 5；`durable_index` 變成 5 |
 | 6 | actor：送出兩則 AppendEntries，每則一條執行緒 | 訊息在路上；follower 還沒確認 |
 | 7 | 節點 3：`Core::message` 核對 term、`prev_log_index` 4 與它的 term，接上 index 5，自己落盤後才回覆成功 | 節點 3 的磁碟上也有 index 5 |
-| 8 | 節點 1：AppendResponse 分支核對 `rpc_id`、term 與 epoch，把節點 3 的 match 更新成 5，呼叫 `advance_commit` | 自己加節點 3 是多數，而且 index 5 是本任期的 entry：commit 到 5 |
+| 8 | 節點 1：AppendResponse 分支核對 `rpc_id`、term 與 epoch，記下節點 3 已有 index 5，呼叫 `advance_commit` | 節點 1 自己加上節點 3，是三台中的兩台，已經是多數；而且 index 5 是本任期的 entry：commit 到 5 |
 | 9 | core：`apply_committed` 產生 `Effect::Apply`；actor 呼叫 `StateMachine::apply` | `lesson-x` 變成 `A`；session 記下 client 701 的 sequence 0 與結果 |
 | 10 | actor：`Actor::reply_request` 找到步驟 2 記下的連線，回覆 `OK`、舊值 `null`、committed index 5 | client 收到成功 |
 
@@ -70,7 +70,7 @@ actor 執行完一整串 effect 才處理下一個事件，所以在事件與事
 
 | 論文的規則 | 在程式裡 | 反過來想：少了它會怎樣 |
 |---|---|---|
-| Figure 2：term、投票、log 要持久化 | WAL 記錄 term、投票與 log 的變動 | 先回覆投票才落盤，當機重開後可能在同一個 term 投給另一台 |
+| Figure 2：term、投票、log 要落盤 | WAL 記錄 term、投票與 log 的變動 | 先回覆投票才落盤，當機重開後可能在同一個 term 投給另一台 |
 | §5.4.1：投票只給 log 至少一樣新的 candidate | RequestVote 先比最後一筆的 term，再比 index | log 比較長但 term 比較舊的節點，不一定比較新 |
 | §5.4.2、Figure 8：只直接 commit 本任期的 entry | `advance_commit` 的 `term_at(n) == Some(self.state.term)` | 舊 term 的 entry 在多數上，仍可能被之後的 leader 蓋掉 |
 | Figure 3：log matching | AppendEntries 核對 `prev_log_index` 與它的 term，衝突時截掉後面 | 空的心跳不能證明 follower 多出來的尾巴和 leader 一致 |
@@ -78,7 +78,8 @@ actor 執行完一整串 effect 才處理下一個事件，所以在事件與事
 | 博士論文第 4 章：一次一台的成員變更 | 成員設定存在 log 裡、寫入就生效；先追趕、再寫入；本任期 commit 後才開始 | 一次改兩台，新舊設定的多數可能不重疊 |
 | 博士論文 §6.3：client 請求只執行一次 | 每個 client 最近一筆寫入的 session | 回覆遺失後重送，同一筆寫入會被執行兩次 |
 
-這個專案的叢集可以是 1～7 台。論文 Figure 8 的劇本要五台才畫得出來；單元測試 `previous_term_entry_requires_current_term_commit` 不重演整個劇本，而是直接設定 leader 記錄的各 follower 進度，檢查「舊 term 的 entry 已在多數上」時 commit index 仍不前進，等本任期的 entry 也到多數才前進。
+論文 Figure 8 的劇本要五台才畫得出來，這個專案的叢集可以是 1～7 台。單元測試 `previous_term_entry_requires_current_term_commit` 不重演整個劇本，而是直接設定 leader 記下的各 follower 進度。
+它先檢查：舊 term 的 entry 已在多數上時，commit index 仍然不動；再檢查：本任期的 entry 也到了多數，commit index 才前進。
 
 ## 當機之後：為什麼不直接重播整個 WAL？
 

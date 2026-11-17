@@ -165,6 +165,8 @@ cargo test -p raft-storage opens_racing_to_create_the_same_parent_all_succeed
 
 ## 10. 面試時怎麼講
 
+下面是以作者的口吻寫的講稿，「我」指作者；你可以換成自己的經驗。
+
 **兩分鐘版本：**
 
 - 情境：專案有一支腳本，把原始碼複製到新目錄從頭建置、跑全部測試，模擬「別人第一次 clone」。很久沒跑，最後一次複查時跑了一次。

@@ -135,7 +135,7 @@ stateDiagram-v2
 | 送出請求 | `tools/kv_admin.py add N` → `client_listener` 解析成 `Input::Membership`；`Actor::run` 先確認 N 在位址表裡，否則回 `INVALID_ARGUMENT` |
 | 受理 | `Core::change_membership`：不是 leader 回 `NOT_LEADER`；已有變更進行中回 `CHANGE_IN_PROGRESS` |
 | 等本任期 commit | `Core::proceed_change`：leader 要先在本任期 commit 一筆 entry，才處理成員變更（raft-dev 郵件在 2015 年補上的規則，教學 08）；之後它確認最新的成員設定已經 commit |
-| 追趕 | `Phase::CatchingUp` 與 `Core::catch_up_progress`：最多 10 輪，最後一輪少於 4 次心跳才算追上；超過 100 次心跳就放棄，回 `CATCH_UP_FAILED` |
+| 追趕 | `Phase::CatchingUp` 與 `Core::catch_up_progress`：固定 10 輪，第 10 輪少於 4 次心跳才算追上；整個過程超過 100 次心跳就放棄，回 `CATCH_UP_FAILED` |
 | 寫入成員設定 | `Core::append_config` 把 `Command::Config` 加進 log，並調整要複製的對象 |
 | 完成 | `Core::after_commit`：成員設定 commit 後產生 `Effect::MembershipDone`，actor 回 OK；leader 自己不在新的成員設定裡時，在這裡退位 |
 
