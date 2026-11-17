@@ -16,9 +16,9 @@ from datetime import datetime, timezone
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "acceptance/final.json"
 RECEIPTS = "artifacts/acceptance-final"
-# .claude and .agents hold framework-managed host copies (checked by `agf project status`),
-# not program behaviour; they are outside the source fingerprint by user decision 2026-11-12.
-EXCLUDED = {".git", ".agf", ".claude", ".agents", ".venv", "target", "artifacts", "__pycache__", ".pytest_cache"}
+# Directories skipped when the root is not a Git work tree (for example the copy
+# clean_rebuild.py makes). Inside a work tree Git decides; see `source_paths`.
+EXCLUDED = {".git", ".venv", "target", "artifacts", "__pycache__", ".pytest_cache"}
 # The JSON type a key named in a report schema's required_nonempty must have; any other key is a
 # string. Until S5 review F7 `runs` was missing here, so the phase 14 requirement "runs is not
 # empty" read it as a string and could never be met.
@@ -29,20 +29,39 @@ def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def snapshot(root: Path) -> tuple[dict[str, str], str]:
-    files = {}
+def source_paths(root: Path) -> list[Path]:
+    """The files that make up the source. At the top of a Git work tree that is
+    what Git tracks plus new files it does not ignore, so build output, evidence
+    and anything a developer keeps only locally (listed in .gitignore or
+    .git/info/exclude) never changes the fingerprint. Elsewhere every file
+    outside EXCLUDED counts."""
+    top = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True)
+    if top.returncode == 0 and Path(top.stdout.strip()).resolve() == root.resolve():
+        listing = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            capture_output=True, check=True).stdout.decode()
+        # A tracked file deleted from the work tree is not part of the source.
+        paths = [root / name for name in listing.split("\0") if name]
+        return sorted(path for path in paths if path.is_symlink() or path.exists())
+    paths = []
     for base, directories, names in os.walk(root):
         directories[:] = sorted(d for d in directories if d not in EXCLUDED)
         for name in directories:
             if (Path(base) / name).is_symlink():
                 raise ValueError(f"Source directory symlink is not captured: {Path(base) / name}")
-        for name in sorted(names):
-            path = Path(base) / name
-            if "Zone.Identifier" in name or name.endswith(".pyc"):
-                continue
-            if path.is_symlink():
-                raise ValueError(f"Source file symlink is not captured: {path}")
-            files[path.relative_to(root).as_posix()] = sha(path)
+        paths.extend(Path(base) / name for name in names)
+    return sorted(paths)
+
+
+def snapshot(root: Path) -> tuple[dict[str, str], str]:
+    files = {}
+    for path in source_paths(root):
+        if "Zone.Identifier" in path.name or path.name.endswith(".pyc"):
+            continue
+        if path.is_symlink():
+            raise ValueError(f"Source file symlink is not captured: {path}")
+        files[path.relative_to(root).as_posix()] = sha(path)
     return files, hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
 
 

@@ -183,9 +183,37 @@ class ContractContinuityTests(unittest.TestCase):
             if phase is not None:
                 self.assertIn(name, phase["rust_tests"] + phase["pytest_nodes"], name)
 
-    def test_host_configuration_is_outside_fingerprint_but_sources_are_not(self):
-        self.assertTrue({".claude", ".agents"} <= gate.EXCLUDED)
-        self.assertFalse({"docs", "scripts", "crates", "tests", "tools", "acceptance"} & gate.EXCLUDED)
+    def test_fingerprint_covers_what_git_would_track_and_matches_a_plain_copy(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        directory = Path(temporary.name)
+        root = directory / "repo"
+        root.mkdir()
+        run = lambda *argv: subprocess.run(["git", "-C", str(root), *argv], check=True, capture_output=True)
+        run("init", "-q")
+        (root / ".gitignore").write_text("/build/\n")
+        (root / "src").mkdir()
+        (root / "src/tracked.rs").write_text("tracked")
+        run("add", ".gitignore", "src/tracked.rs")
+        (root / "src/new.rs").write_text("not added yet, but not ignored")
+        (root / "build").mkdir()
+        (root / "build/output.bin").write_text("ignored by .gitignore")
+        (root / "notes.md").write_text("ignored only on this machine")
+        (root / ".git/info/exclude").write_text("/notes.md\n")
+        files, fingerprint = gate.snapshot(root)
+        self.assertEqual(set(files), {".gitignore", "src/tracked.rs", "src/new.rs"})
+        # clean_rebuild.py copies exactly these files to a directory that is
+        # not a work tree; the copy must get the same fingerprint.
+        copy = directory / "copy"
+        for name in files:
+            (copy / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / name, copy / name)
+        self.assertEqual(gate.snapshot(copy)[1], fingerprint)
+        # Changing a source file changes the fingerprint; an ignored one does not.
+        (root / "notes.md").write_text("edited")
+        self.assertEqual(gate.snapshot(root)[1], fingerprint)
+        (root / "src/new.rs").write_text("edited")
+        self.assertNotEqual(gate.snapshot(root)[1], fingerprint)
 
 
 if __name__ == "__main__":
