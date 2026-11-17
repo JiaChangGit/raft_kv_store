@@ -8,47 +8,47 @@
 只讀三篇的話，照這個順序：
 
 1. [WAL 長度欄位毀損](01-wal-length-corruption/README.md)：一個壞掉的數字，讓節點忘記自己投過的票。從磁碟、checksum 這些看得到的東西開始，最容易進入。
-2. [先 commit 的反而後套用](09-apply-overtaken-by-its-barrier/README.md)：一步順序排錯，狀態機就照錯的順序套用。先讀[帶讀](../LEARNING_GUIDE.md)的寫入流程。
+2. [剛選出的 leader 把早就 commit 的設定當成「進行中」](08-judged-before-the-term-commit/README.md)：新 leader 還不知道哪些 entry 已 commit，就先判斷有沒有進行中的成員變更，於是每次換 leader 後，成員變更都被誤拒。先讀[帶讀](../LEARNING_GUIDE.md)的寫入流程。
 3. [放寬了上限，卻沒有測試守著它](18-a-limit-nobody-tested/README.md)：所有測試都通過，系統卻有一種情況永遠卡住；看「測試通過」和「功能正確」差在哪裡。
 
 ## 依 bug 的種類
 
-19 篇都是草稿：還沒有人照第 3 節實際做過一遍。「發現於」指寫成這篇教學的階段。
+19 篇都是草稿：還沒有人照各篇的「親手重現」（每篇的第 3 節）實際做過一遍。「出處」是發現這個 bug 的階段或審查。
 
 ### 資料寫到磁碟與回復
 
 需要的背景：WAL 與 checksum 是什麼、重啟後哪些狀態必須留住（[WAL 格式 2](../STORAGE_FORMAT_V2.md)）。
 
-| 編號 | 題目 | 一句話 | 發現於 |
+| 編號 | 題目 | 一句話 | 出處 |
 |---|---|---|---|
 | 01 | [WAL 長度欄位毀損](01-wal-length-corruption/README.md) | 磁碟上一個數字壞掉，節點重開後默默刪掉 log，忘了自己投過票 | S1 |
-| 11 | [快照裝到一半被終止，節點從此開不了機](11-install-from-a-newer-term/README.md) | follower 用一則訊息裝下 term 比自己新的快照，在兩個檔案之間被終止後，每次啟動都被拒絕 | S1～S4 的審查 |
+| 11 | [快照裝到一半被終止，節點從此開不了機](11-install-from-a-newer-term/README.md) | follower 安裝快照時，process 在某兩個步驟之間被終止；之後每次啟動，都以「快照比持久化的 term 新」拒絕 | S1～S4 的審查 |
 
 ### 共識的判斷時機與順序
 
 需要的背景：commit 的規則（[commit 規則](../COMMIT_RULE_REVIEW.md)）與成員變更（[規格](../MEMBERSHIP.md)）；先讀[帶讀](../LEARNING_GUIDE.md)的寫入流程更好。
 
-| 編號 | 題目 | 一句話 | 發現於 |
+| 編號 | 題目 | 一句話 | 出處 |
 |---|---|---|---|
 | 08 | [剛選出的 leader 把早就 commit 的設定當成「進行中」](08-judged-before-the-term-commit/README.md) | 新 leader 還不知道什麼已 commit 就先做判斷，每次換 leader 後成員變更都被誤拒 | S4 |
-| 09 | [先 commit 的反而後套用](09-apply-overtaken-by-its-barrier/README.md) | 落盤 barrier 排在 Apply 前面，它完成時又 commit 了更新的 entry，69 比 68 先套用 | S4 |
+| 09 | [先 commit 的反而後套用](09-apply-overtaken-by-its-barrier/README.md) | 等落盤的 barrier 排在 Apply 前面；barrier 完成時又 commit 了更新的 entry，於是第 69 筆比第 68 筆先套用 | S4 |
 
 ### 卡住或變慢：進度與資源
 
 需要的背景：快照與 log 壓縮（[規格](../SNAPSHOT_COMPACTION.md)）、批次上限（[效能規格](../PERFORMANCE.md)）。
 
-| 編號 | 題目 | 一句話 | 發現於 |
+| 編號 | 題目 | 一句話 | 出處 |
 |---|---|---|---|
 | 03 | [壓縮開了，leader 卻沒東西可送](03-compaction-without-install-snapshot/README.md) | 只做 log 壓縮、還沒有 InstallSnapshot，第一個落後的 follower 就讓 leader 停住 | S2 |
 | 13 | [資料超過快照上限之後，每做一件事都先白做一次大工程](13-oversize-snapshot-serialized-every-event/README.md) | 超過 64 MiB 後，節點每個事件都重新序列化整個狀態機再丟掉 | S1～S4 的審查 |
-| 15 | [資料超過 1 MiB，節點就說不出自己的狀態](15-status-too-large-to-send/README.md) | 狀態查詢把整個 KV 放進回覆，超過訊框上限就送不出去，所有靠它找 leader 的工具一起失效 | S5 |
-| 18 | [放寬了上限，卻沒有測試守著它](18-a-limit-nobody-tested/README.md) | follower 的批次上限改回 32，所有測試照過，落後超過 32 筆的 follower 卻永遠追不上 | S5 的審查 |
+| 15 | [資料超過 1 MiB，節點就說不出自己的狀態](15-status-too-large-to-send/README.md) | 狀態查詢把整個 KV 放進回覆，超過frame上限就送不出去，所有靠它找 leader 的工具一起失效 | S5 |
+| 18 | [放寬了上限，卻沒有測試守著它](18-a-limit-nobody-tested/README.md) | S5 把複製請求的上限從 32 筆放寬到 256 筆，卻沒有測試守著 follower 這一側；改回 32 所有測試照樣通過，落後超過 32 筆的 follower 卻從此追不上 | S5 的審查 |
 
-### 測試還是綠的，卻已經不測了
+### 測試悄悄失效或卡住
 
 需要的背景：模擬器與 mutation 測試各自在驗什麼（[驗收契約](../ACCEPTANCE_FINAL.md)）。
 
-| 編號 | 題目 | 一句話 | 發現於 |
+| 編號 | 題目 | 一句話 | 出處 |
 |---|---|---|---|
 | 07 | [測試還是綠的，卻已經不測了](07-test-silently-stopped-testing/README.md) | S3 讓 GET 不再複製，一個用 GET 製造複製工作的回歸測試悄悄失效 | S3 |
 | 12 | [一千萬個事件全部通過，因為模擬器不再去問該問的節點](12-simulator-stopped-asking-stale-leaders/README.md) | S4 把模擬的請求一律送給最新的 leader，讀取的不變量從此碰不到它要抓的情況 | S1～S4 的審查 |
@@ -59,7 +59,7 @@
 
 需要的背景：同上一組；這幾篇的 bug 不在 KV store 裡，而在檢查它的工具裡。
 
-| 編號 | 題目 | 一句話 | 發現於 |
+| 編號 | 題目 | 一句話 | 出處 |
 |---|---|---|---|
 | 02 | [測試偶爾說目錄已被佔用](02-flaky-lock-inherited-by-child/README.md) | 別的測試 fork 出的子程序，暫時帶走了這個測試的檔案鎖 | S2 |
 | 04 | [檢查測試的工具也會說錯話](04-mutation-checker-false-survivors/README.md) | mutation 工具把「已失敗」與「沒執行」的測試報成「存活」 | S2 |

@@ -3,10 +3,16 @@
 [English](README.md)
 
 用 Rust 從零實作、以 Raft 複製的 key-value store，是學習與面試展示用的專案。
-它跑一個最多七台的 Raft group，成員一次增減一台；會建立快照並壓縮 log；GET 走 ReadIndex，讀到的結果是線性一致的；寫入以 group commit 合併落盤。
-同一份 `raft-core` 同時用在可重現的模擬器，以及真正透過 TCP 溝通的節點。
+Raft 是一種共識演算法：讓幾台機器對「資料依什麼順序更新」取得一致，只要多數機器還活著，就能繼續寫入，而且讀不到互相矛盾的結果。
 
-大部分的程式、測試與文件是 AI 模型在作者指揮下寫的；[怎麼做的](#怎麼和-ai-一起做)寫在最後，也寫了這個做法的限制。
+這份實作做到的事：
+- 一個 Raft group，最多七台，成員一次增減一台。
+- 會建立快照、壓縮 log。
+- GET 走 ReadIndex，讀到的結果是線性一致的。
+- 同一輪的多筆寫入合併成一次落盤（group commit）。
+- 同一份 `raft-core` 同時用在可重現的模擬器，以及真正透過 TCP 溝通的節點。
+
+大部分的程式、測試與文件是 AI 模型在作者指揮下寫的；[怎麼做的](#怎麼和-ai-一起做)寫在最後，包括這個做法的限制。
 
 ## 各階段做了什麼
 
@@ -16,10 +22,10 @@
 | S1 | WAL 格式 2：每筆 record 的 header 有 checksum、檔頭、安全處理寫到一半的尾巴 | [STORAGE_FORMAT_V2](docs/STORAGE_FORMAT_V2.md) |
 | S2 | 快照、log 壓縮、分塊傳送的 InstallSnapshot | [SNAPSHOT_COMPACTION](docs/SNAPSHOT_COMPACTION.md) |
 | S3 | ReadIndex：GET 不再寫進 log | [READ_INDEX](docs/READ_INDEX.md) |
-| S4 | 成員變更，一次一台；節點編號 1～7；設定存在 log 裡 | [MEMBERSHIP](docs/MEMBERSHIP.md) |
+| S4 | 成員變更，一次一台；節點編號 1～7；成員設定存在 log 裡 | [MEMBERSHIP](docs/MEMBERSHIP.md) |
 | S5～S6 | group commit、批次複製、落盤只寫變動的部分；獨立審查後的修正 | [PERFORMANCE](docs/PERFORMANCE.md) |
 | S7～S8 | 研究用來開發本專案的 AI 框架（不屬於 KV store 本身） | [framework-study/](framework-study/README.md) |
-| S9 | 這次的公開整理 | [PUBLIC_RELEASE](docs/PUBLIC_RELEASE.md) |
+| S9 | 整理文件、架構圖與授權，並從頭重跑完整驗收 | [PUBLIC_RELEASE](docs/PUBLIC_RELEASE.md) |
 
 ## 架構
 
@@ -57,9 +63,9 @@ sequenceDiagram
     participant K as KV
     C->>A: PUT frame
     A->>R: ProposeBatch
-    R-->>A: Persist 與 Send
+    R-->>A: 先 Persist 再 Send
     A->>W: save_delta
-    W-->>A: 已同步
+    W-->>A: 已落盤
     A->>R: persisted
     A->>F: AppendEntries
     Note over F: 先落盤才回覆
@@ -75,6 +81,7 @@ sequenceDiagram
 ## 快速開始
 
 需要 Linux（開發環境是 WSL2 Ubuntu，資料放在 ext4）、用 rustup 安裝的 Rust（版本固定在 `rust-toolchain.toml`），以及 Python 3。所有命令都在專案根目錄執行。
+如果 `cargo` 不在 PATH 上（非登入的 shell 常見），先執行 `. "$HOME/.cargo/env"`。
 
 ```bash
 python3 -m venv .venv
@@ -83,6 +90,7 @@ cargo build --workspace --locked
 ```
 
 開三個 terminal，各啟動一台。只有節點 1 帶 `--bootstrap`，整個叢集也只引導這一次；其他節點以空的資料目錄啟動。
+`--bootstrap` 只對完全空白的資料目錄有作用，之後重啟時帶著也沒關係。節點會持續印出 JSON 格式的紀錄，可以導到檔案。
 
 ```bash
 cargo run -p raft-node -- --id 1 --config config/cluster.toml --data-dir data/node-1 --bootstrap
@@ -90,7 +98,7 @@ cargo run -p raft-node -- --id 2 --config config/cluster.toml --data-dir data/no
 cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/node-3
 ```
 
-在另一個 terminal 把節點 2、3 加進設定，再寫入並讀回一個 key：
+等幾秒，節點 1 成為 leader 之後，在另一個 terminal 把節點 2、3 加進成員設定，再寫入並讀回一個 key：
 
 ```bash
 .venv/bin/python tools/kv_admin.py --config config/cluster.toml add 2
@@ -99,9 +107,15 @@ cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/no
 .venv/bin/python -m tools.kv_client --address 127.0.0.1:7201 --address 127.0.0.1:7202 --address 127.0.0.1:7203 --client-id 7 --sequence 1 Get x
 ```
 
+預期的結果：
+- `add 2` 會先印一行警告：只有兩台時，任何一台故障都會讓叢集停下來。這是提醒，不是錯誤；接著回 `"status": "OK", "result": "1,2"`。
+- `add 3` 回 `"result": "1,2,3"`。
+- Put 回 `"status": "OK", "result": null`：`null` 表示 x 原本沒有值。
+- Get 回 `"result": "A"`。
+
 每個 client 一次只送一個請求。收到 `TIMEOUT_UNKNOWN` 時，用相同的 client ID、sequence 與內容重試；新的請求用下一個 sequence。Put 與 Delete 會回傳先前的值。
-`tools/kv_admin.py ... status` 列出各節點的狀態，`remove N` 移除一台。換掉故障的節點時，先加入新的，再移除舊的。
-不要把清空資料目錄的節點編號重新加入，也不要讓第二台節點引導：這一版偵測不到這兩種操作錯誤，而它們都可能破壞安全性。
+`.venv/bin/python tools/kv_admin.py --config config/cluster.toml status` 印出叢集的摘要：leader、term、成員、成員設定的位置與它是否已 commit。`remove N` 移除一台。
+換掉故障的節點時，先加入新的，再移除舊的。不要把清空資料目錄的節點編號重新加入，也不要讓第二台節點引導：這一版偵測不到這兩種操作錯誤，而它們都可能破壞安全性。
 [docs/HANDS_ON.md](docs/HANDS_ON.md) 帶你實際看一次選舉、寫入、終止 leader 再重新啟動。
 
 ## 驗證到哪裡
@@ -110,15 +124,16 @@ cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/no
 |---|---|
 | 單元與整合測試 | `cargo test --workspace`、`.venv/bin/python -m pytest -q tests` |
 | 格式與靜態檢查 | `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` |
-| 模擬 | 1,000 個種子，每個種子 10,000 個事件，由獨立的不變量觀察者檢查（`raft-sim`） |
-| 當機 | 在寫入、同步、回覆 ACK、commit、套用、回覆 client 之間設 failpoint；真實 process 用 SIGKILL 終止，再以原資料目錄重啟 |
+| 模擬 | 1,000 個種子（決定隨機事件的數字，同一個種子能重跑出完全相同的過程），每個種子 10,000 個事件；每一步都檢查不變量，也就是任何時刻都必須成立的條件，例如同一個 term 最多一個 leader |
+| 當機 | failpoint（讓 process 在指定位置自行終止的測試開關）設在寫入、同步、回覆 ACK、commit、套用、回覆 client 之間；真實 process 用 SIGKILL 終止，再以原資料目錄重啟 |
 | 網路故障 | proxy 以完整的 frame 為單位丟棄、延遲、重複、調換順序；歷史紀錄做線性一致性檢查 |
 | mutation 測試 | 63 個刻意植入的錯誤，各自在隔離的副本裡跑，每一個都必須讓某個測試失敗 |
-| 驗收契約 | `acceptance/final.json` 的 15 個階段（P00～P08、P10～P15），由 `scripts/verify_gate.py` 執行 |
+| 驗收契約 | `acceptance/final.json` 的 15 個階段，由 `scripts/verify_gate.py` 執行。P00～P08 是最初規格的九個階段，S1～S6 依序各加了 P10～P15；P09 沒有使用 |
 
+每個階段驗收通過後，會在 `artifacts/` 留下 receipt（記錄命令、結果與來源指紋的檔案）；`artifacts/` 不在版本控制內。
 `.venv/bin/python scripts/status.py` 列出每個階段最近一次的結果，以及它是否對應目前的來源。
 `bash scripts/final_acceptance.sh` 從 mutation 測試一路重跑到 P15，中斷後可以續跑，來源檔一變就停；在作者的機器上約 45 分鐘。
-tag `s9-public-verified` 只在每個階段都對那個 commit 的來源通過後才建立。receipt 與報告寫在 `artifacts/`，不在版本控制內。
+tag `s9-public-verified` 只在每個階段都對那個 commit 的來源通過後才建立。
 
 ## 沒有驗證的事
 
@@ -134,17 +149,18 @@ tag `s9-public-verified` 只在每個階段都對那個 commit 的來源通過�
 
 ## 文件
 
-[docs/README.md](docs/README.md) 把每份文件分成現行說明、規格、紀錄與歷史四類。
-入門可以從 [docs/LEARNING_GUIDE.md](docs/LEARNING_GUIDE.md)（跟著一筆 PUT 看完整個系統）或 [bug 教學](docs/lessons/README.md) 開始。
+先讀這三份：[架構說明](docs/ARCHITECTURE.md)、[跟著一筆 PUT 看完整個系統](docs/LEARNING_GUIDE.md)、[bug 教學](docs/lessons/README.md)。
+[docs/README.md](docs/README.md) 把每份文件分成現行說明、規格、紀錄、歷史與原始材料五類。
 紀錄類文件保留撰寫當時作者機器上的路徑；`CLAUDE.md`、`AGENTS.md` 與 `.claude/` 是作者在本機給 AI 工具的設定。
 
 ## 怎麼和 AI 一起做
 
-作者訂目標、每個階段開始前核准規格、抽查結果，所有對外的操作（push、PR、部署）都由作者自己做；規格、程式、測試、教學與報告由 AI 模型撰寫。
-每個階段都照同樣的順序：規格、核准、先寫會失敗的測試、實作、模擬與故障測試、獨立審查、教學、驗收，最後在本機 commit 並打 tag。
-三次獨立審查，審查者都不是寫出大部分受審內容的那個模型，各自找到了真正的缺陷：S1～S4 的一個回復缺陷、一個變弱的模擬器檢查與一個邊界缺陷；S5 有一個驗收階段從沒跑完，文件卻寫成已完成；框架的修改裡，一支使用次數統計工具會把私人對話紀錄裡的任意字原樣輸出。
-限制也是真的：寫的和評的常是同一個模型；實驗每個條件只跑一兩次；有紀錄啟動目錄的 session 全都從專案的上一層啟動，所以專案的權限規則從沒載入，「框架唯讀」「不 push」靠的是模型自己遵守。
-細節見 [docs/AI_COLLABORATION.md](docs/AI_COLLABORATION.md)；對 AI 框架本身的研究在 [framework-study/](framework-study/README.md)。
+- **分工。** 作者訂目標、每個階段開始前核准規格、抽查結果，所有對外的操作（push、PR、部署）都自己做；規格、程式、測試、教學與報告由 AI 模型撰寫。
+- **流程。** 每個階段都照同樣的順序：規格、核准、先寫會失敗的測試、實作、模擬與故障測試、獨立審查、教學、驗收，最後在本機 commit 並打 tag。
+- **審查。** 三次獨立審查都找到真正的缺陷：S1～S4 的審查找到一個回復缺陷、一個變弱的模擬器檢查與一個邊界缺陷；S5 的審查發現一個驗收階段從沒跑完，文件卻寫成已完成；對作者的 AI 框架所做的修改，審查找到一支統計工具會把私人對話紀錄裡的任意字原樣輸出。S5 與框架修改的審查者，不是寫那部分的模型；S1～S4 的審查者也寫過 S1，所以 S1 沒有換模型審查。
+- **限制。** 寫的和評的常是同一個模型；實驗每個條件只跑一兩次。另外，有紀錄啟動目錄的 session 都從專案的上一層啟動，所以專案裡擋框架寫入與 push 的權限設定從沒載入；「框架唯讀」「不 push」只靠寫程式的模型自己遵守。
+
+細節與出處見 [docs/AI_COLLABORATION.md](docs/AI_COLLABORATION.md)；對 AI 框架本身的研究在 [framework-study/](framework-study/README.md)。
 
 ## 授權
 

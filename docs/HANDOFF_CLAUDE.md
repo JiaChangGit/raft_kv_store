@@ -1,6 +1,6 @@
 # 接手文件
 
-更新日期：2026-11-16（S8 後續完成之後）。這份文件取代 S5 審查者寫的版本（舊版在 Git 歷史中：`git show 54319e6:docs/HANDOFF_CLAUDE.md`）。
+更新日期：2026-11-17（S9 完成之後）。這份文件取代 S5 審查者寫的版本（舊版在 Git 歷史中：`git show 54319e6:docs/HANDOFF_CLAUDE.md`）。
 它描述寫下時的狀態；接手時請先用下面的命令核對，**以實際查到的為準，不以這份文字為準**。
 
 ## 一開始先做什麼
@@ -10,16 +10,15 @@
 ```bash
 . "$HOME/.cargo/env"                    # 非登入的 shell 裡 cargo 不在 PATH 上
 git status --short                      # 預期：沒有輸出
-git tag                                 # 預期：含 s6-review-fixes-verified、s7-zh-style-prototype、s8-framework-analysis、s8-framework-changes
-.venv/bin/python scripts/status.py      # 預期：P00～P08、P10～P15 都是「PASS [source changed / not run]」
+git tag                                 # 預期：含 s6-review-fixes-verified、s7-zh-style-prototype、s8-framework-analysis、s8-framework-changes、s9-public-verified
+.venv/bin/python scripts/status.py      # 預期：HEAD 就是 tag s9-public-verified 時，P00～P08、P10～P15 都是「PASS [current source]」；之後有新 commit 就是 source changed
 git -C ../ai-general-framework status --short | wc -l   # 預期：10（使用者自己還沒 commit 的修改，不要動）
 git -C ../ai-general-framework log --oneline -1          # 預期：2ffd748（S8 後續最後一個框架 commit；之後若有新的，以實際為準）
 uptime && ps -eo pid,pcpu,etime,comm --sort=-pcpu | head -5   # 預期：load 低，沒有吃滿 CPU 的行程（見「踩過的坑」）
 ```
 
-**`git tag` 有沒有 `s6-review-fixes-verified`，是 S6 是否驗收通過的第一個線索**：這個 tag 只在 P00～P15 都是 `PASS [current source]` 之後才建立。
-S7 加入了不屬於 Raft 的 `framework-study/`，所以現在 `status.py` 顯示 `source changed` 是預期中的事（路線圖「2026-11-15 的計畫修改」）：
-Raft 的驗收結果對應 tag `s6-review-fixes-verified` 那個 commit，S9 收尾時從 P00 重跑。
+**`git tag` 有沒有 `s9-public-verified`，是最後一次完整驗收是否通過的第一個線索**：這個 tag 只在 P00～P15 都是 `PASS [current source]` 之後才建立。
+S9 之後只要有新的 commit，`status.py` 就會顯示 `source changed`；那是預期中的事，驗收結果對應的是 tag 指向的 commit。
 然後依任務讀：[路線圖](ROADMAP.md)（計畫、每階段的固定流程、S7 與 S8 的依據）、[AGENTS.md](../AGENTS.md)（不可違反的工程條件）、
 [S6 的規格與補記](PERFORMANCE.md) §15、[S5 獨立審查](INDEPENDENT_REVIEW_S5.md)。
 `.venv`、`.agf`、`artifacts`、`target` 都被 `.gitignore` 排除；換機器或重新 clone 之後它們不存在，要先如實確認再往下做。
@@ -38,9 +37,9 @@ Raft 的驗收結果對應 tag `s6-review-fixes-verified` 那個 commit，S9 收
 | S7 中文 AI 味檢查 | 已完成（tag `s7-zh-style-prototype`，`claude-opus-5-5`）：`framework-study/zh-style/`，先讀 `report.md` |
 | S8 框架分析與對照實驗 | 已完成（tag `s8-framework-analysis`，`claude-opus-5-5`）：`framework-study/analysis/`，先讀 `report.md` |
 | S8 後續：依報告修改框架 | 已完成（tag `s8-framework-changes`，`claude-opus-5-5`）：`framework-study/changes/`，先讀 `RESULTS.md`。框架的修改經使用者同意後已快轉併進框架的 main；使用者未提交的 10 個修改原樣保留 |
-| **S9 公開整理（完整版）** | **下一個階段**，未開始。先寫規格給使用者同意；最後從 P00 完整重跑驗收 |
+| S9 公開整理（完整版） | 已完成（tag `s9-public-verified`，只在 P00～P15 都是 `PASS [current source]` 之後建立；`claude-opus-5-5`）：規格與補記 `docs/PUBLIC_RELEASE.md` |
 
-## 這個 session 做了什麼（2026-11-15）
+## 這個 session 做了什麼（2026-11-15～17）
 
 1. 讀交接與 S5 審查後先問使用者四個問題，得到四個決定（下表），改寫路線圖並提交（`f7d226b`）。
 2. S6：補 S5 審查的 F2～F5。F2：follower 的批次上限有了 core 單元測試（256 接受、257 丟棄）、真實 process 測試與兩個 mutation 案例。
@@ -54,6 +53,7 @@ Raft 的驗收結果對應 tag `s6-review-fixes-verified` 那個 commit，S9 收
 8. S8（2026-11-16 核准）：使用者登入桌面 app 內附的 CLI 後，以無頭 session 做三個實驗（33 次，CLI 估算 2.28 美元），加上元件盤點與分析報告。兩次隔離缺陷在執行中發現並修正、重跑（L54、L55）；使用者抽查 3 筆評分全部同意。
 9. S8 後續（使用者回「都處理」，再點名「框架一起改」；規格 2026-11-16 核准）：框架分支 `s8-follow-up` 有 6 個 commit（規則入口檢查、交接核對、權限範本、規則樣板、`evals/host/` 評測工具、審查修正、結果摘要），本專案的 `CLAUDE.md` 接上規則入口。探測發現專案的 deny 規則在這整個對話裡沒有生效（L59）；換模型審查找到 10 項問題並修正（L62）。18 次 session，CLI 估算 1.19 美元。
 10. 使用者回「全部依你建議」：deny 規則放進上一層目錄的 `../.claude/settings.json`（新 session 才生效，L64）；框架分支以暫存、快轉、放回的方式併進 main，沒有替使用者 commit（L65），本專案跑了 `agf project update`；skill 措辭重新量測：更明確的版本兩輪 5／8、改寫後的版本兩輪 4／8，照開跑前登記的規則採用前者（差距在雜訊內），已併進框架 main 並部署（L66）。
+11. S9（2026-11-16 核准）：中英 README、`docs/ARCHITECTURE.md`（四張對照程式畫的圖）、文件地圖、AI 協作說明、教學索引分組、6 份 V1 文件的標示、相對路徑、MIT 授權、`scripts/final_acceptance.sh`；push 前的檢查；兩個 Sonnet 子代理照做 README 與校閱中文，找到的問題都已處理（L67）。最後從頭跑完整驗收，通過才建立 tag `s9-public-verified`。
 
 ## 已決定的事與理由
 
@@ -73,20 +73,19 @@ S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`�
 ## 還沒做的事與未知
 
 - **S8 後續的三個決定已執行**（`framework-study/changes/RESULTS.md` 最後一節）。仍然擋不住的：`git -C <目錄> push` 這類寫法、`python3 -c` 這類程式自己寫檔；這個對話本身也沒有受新設定保護。
-- **S9 的規格**：路線圖的 S9 列（中英 README、架構圖、教學索引、移除本機絕對路徑、標明過時的 V1 文件、AI 協作說明）。AI 協作說明可摘要 S8 報告；
-  要決定 `framework-study/` 與 `artifacts/` 的哪些部分公開（實驗的原始事件流含本機路徑，不在版本控制內）。
+- **push**：由使用者自己做。push 前的檢查結果在 `docs/PUBLIC_RELEASE.md` §10.2（只做了樣式比對）；push 之後要在 GitHub 上確認 Mermaid 圖的顯示。
 - **實驗工具**：框架分支的 `evals/host/` 是 S8 工具的改良版（預檢、Bash 預設拿掉、用 PID 停止）；S8 的 `run_session.py` 保留原樣當紀錄。受試目錄要放在專案之外，並禁止讀取原專案。
 - S7 腳本的已知寫法錯誤：R5 的輕動詞規則會把「進行的」「做出的」也算進去；要再用，先修這一點。
 - **教學 01～19 都是草稿**：沒有第二個人照著第 3 節做過。
 - **審查 §8 那個無法解釋的失敗**（`an_oversize_state_is_not_serialized_again_until_the_log_doubles`）沒有追查。
 - 因為計畫縮減而沒有驗證的事：沒有長時間浸泡測試；真實 process 的線性一致性一次只看 24 個操作；模擬器只檢查安全性、沒有活性（教學 18）；
   管理者一次只送一個成員變更、每個種子 64 個操作；S1 沒有第三個模型審查。主機斷電、真實叢集跑到 64 MiB 等列在 `TEST_RECORD_20261114.md` §7。
-- `docs/WORKLOG.md` 與 `CLAUDE.md` 的部分條目還停在 V1 時期的說法，留給 S9 整理。
+- `docs/WORKLOG.md` 是 V1 時期的紀錄，S9 在開頭標示了「不再更新」。
 
 ## 下一步
 
 1. 執行「一開始先做什麼」，和預期結果比對。
-2. 起草 S9 的規格給使用者看，先不要實作。寫 README 與 AI 協作說明前，先讀 `.agf/managed/guides/writing.md`。
+2. 路線圖的階段到 S9 都完成了。之後可以做的事列在「還沒做的事與未知」（例如請人照教學做一遍、追查審查 §8 那個無法解釋的失敗、修 S7 的 R5）；要做哪一件，先問使用者。
 3. 每個階段完成時，在規格補記寫下**實作所用的模型**；規格要有「模型分工」一節（路線圖的每階段流程）。
 
 ## 操作範圍
@@ -94,7 +93,7 @@ S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`�
 - 修改只限本專案；`../ai-general-framework` 唯讀，除非使用者在當次對話點名。2026-11-16 點名的修改已併進框架的 main；使用者未提交的 10 個修改不要動。deny 規則在本專案與上一層目錄的 `.claude/settings.json` 各有一份，都是新開的 session 才生效（見「踩過的坑」第一條）。
 - 不 push、不建立 PR、不部署。本機 commit 與 tag 依使用者當次的指示。
 - 不為了通過驗收而削弱測試或改契約；改既有測試的期待時，寫進契約的 `modified_tests` 並告訴使用者。
-- 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L66）。
+- 與框架、skill、宿主、交接或驗收工具有關的經驗，當下追記到 `docs/FRAMEWORK_EXPERIENCE_LOG.md`（目前到 L67）。
 - 以自然的台灣繁體中文溝通；分清「已執行」「推論」「未驗證」。
 
 ## 踩過的坑（接手的人大概也會遇到）
@@ -137,5 +136,5 @@ S7 的決定（使用者 2026-11-16 照建議）：成果放 `framework-study/`�
 ## 可以直接交給下一個 session 的第一句話
 
 > 請先讀 `CLAUDE.md` 與 `docs/HANDOFF_CLAUDE.md`，執行「一開始先做什麼」的命令，逐條和預期結果比對後回報。
-> 接著依 `docs/ROADMAP.md` 的 S9 列起草 S9（公開整理）的規格給我看，先不要實作。
+> 接著告訴我交接文件「還沒做的事與未知」裡還剩哪些，先不要動手。
 > 相鄰的 ai-general-framework 保持唯讀，不要 push、建立 PR 或部署。

@@ -35,7 +35,7 @@
   S7（tag `s7-zh-style-prototype`）已完成，成果在 `framework-study/zh-style/`（先讀 `report.md`）；不屬於 Raft，不在驗收契約內。
   S8（tag `s8-framework-analysis`）已完成：元件盤點、三個對照實驗與分析報告在 `framework-study/analysis/`（先讀 `report.md`）。
   S8 後續（tag `s8-framework-changes`）已完成：框架的修改已併進框架的 main，規格、探測與結果在 `framework-study/changes/`（先讀 `RESULTS.md`）；
-  使用者對三件事的決定已執行（該檔最後一節）。下一個是 S9（公開整理），開始前先寫規格並取得使用者同意。
+  使用者對三件事的決定已執行（該檔最後一節）。S9（tag `s9-public-verified`）已完成：規格與補記在 `docs/PUBLIC_RELEASE.md`，README 有中英兩份；push 由使用者自己做。
 - S1～S4 的獨立審查已於 2026-11-14 補做並修正（紀錄 `docs/INDEPENDENT_REVIEW_S1_S4.md`，教學 11～13）；S1 的審查只做到不同 session。
   改模擬器的工作負載或設定前，先讀教學 11、12：固定的參數與「挑最合理的對象」都曾讓整條路徑測不到。
   寫任何「逐一植入錯誤再建置」的腳本前，先讀教學 06（共用建置目錄會互相污染）。

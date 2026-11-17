@@ -123,3 +123,41 @@
 - GitHub 上 Mermaid 圖的顯示，要 push 後才看得到。
 - 教學仍是草稿，沒有真人照做過。
 - README 的指令只在這台 WSL 與乾淨的 clone 驗證過，其他作業系統沒有試過。
+
+## 10. 實作補記（2026-11-17）
+
+實作：`claude-opus-5-5`。README 照做一遍與中文校閱：兩個 `claude-sonnet-5-5` 子代理（第 7 節的分工）。
+
+### 10.1 做了什麼
+
+| 規格 | 結果 |
+|---|---|
+| 4.1 README | `README.md`（英文）與 `README.zh-TW.md`：階段表、兩張圖、快速開始與預期輸出、驗證、沒有驗證的事、文件入口、AI 協作摘要、授權 |
+| 4.2 架構圖 | `docs/ARCHITECTURE.md`：元件、一次寫入、一次 ReadIndex 讀取、加入成員四張圖，每個步驟都寫了對照的檔案與函式（依 `trace-code` 讀程式）。`diagrams/` 的兩張 V1 圖沒有重畫（`.svg` 無法在本機重新渲染），改由 `diagrams/README.md` 說明哪裡已經過時 |
+| 4.3 教學索引 | 依 bug 的種類分成五組；給新手的三篇（01、08、18）；每組的背景文件；「出處」取自新增各篇的 commit。`scripts/check_lessons.py` 通過 |
+| 4.4 本機路徑 | 會繼續被人讀的文件都改成相對路徑。剩下的家目錄路徑只在 `.claude/settings.json`、經驗紀錄、`TEST_RECORD_20261114.md`、`WORKLOG.md`，以及 `framework-study/` 的 22 個檔（實驗紀錄、當時的腳本、結果與報告），都屬於「不改寫」 |
+| 4.5 文件地圖與標示 | `docs/README.md` 分成現行說明、規格與補記、紀錄、歷史、原始材料五類；6 份 V1 時期的文件開頭加了標示 |
+| 4.6 AI 協作說明 | `docs/AI_COLLABORATION.md` |
+| 4.7 授權 | `LICENSE`（MIT）。版權人照框架的寫法寫成「Rust Raft KV Store contributors」，沒有寫個人姓名；要改成本名，改這一行即可 |
+| 4.8 驗收腳本 | `scripts/final_acceptance.sh`：步驟和 S6 的完整驗收相同，路徑改成從腳本位置推得 |
+
+### 10.2 push 前的檢查（2026-11-17）
+
+- 常見的金鑰樣式（AWS、GitHub、Anthropic、OpenAI、Slack、Google 的金鑰與私鑰檔頭）：工作樹 0 筆，整個 Git 歷史 0 筆。看起來像密碼或 token 的指派：0 筆。
+- commit 的作者與提交者只有一個身分，信箱是 GitHub 的 noreply。受版本控制的檔案裡出現的信箱，只有探測腳本用的 `example.invalid`。使用者的私人信箱：檔案、歷史與 commit 資訊都是 0。
+- 歷史裡沒有超過 1 MB 的檔案；目前最大的是原始規格 `ALL_IN_ONE_SPEC.md`（88 KB）。共 374 個受追蹤的檔，`.git` 約 7.8 MB。
+- `.gitignore` 涵蓋 `artifacts/`、`data/`、`.agf/`、`.venv/`、`target/`。
+- 這台機器沒有秘密掃描工具，以上**只做了樣式比對**，不能保證沒有漏掉的秘密。
+
+### 10.3 兩個子代理找到什麼
+
+- **照 README 做一遍**（在 commit `e68b2bf` 的乾淨 clone 裡，報告 `artifacts/audit/s9/walkthrough-report.md`）：從建置到 PUT、GET、`status` 都成功，Get 拿到 A，約 38 秒。
+  找到的缺漏：沒寫非登入 shell 要先 `. "$HOME/.cargo/env"`；`status` 的說明不準、命令只寫了 `...`；沒提 `add 2` 之後的警告與各命令的預期輸出；沒說要等 leader 選出、節點的紀錄會一直輸出。兩份 README 都已補上。
+- **中文校閱**（報告 `artifacts/audit/s9/readability-report.md`）：最重要的兩項是事實錯誤：README 說三次審查都換了模型，和「S1 沒有換模型」互相矛盾；AI 協作說明把 F2～F5 對到教學 16～19（實際是 16＝F6、17＝F7、18＝F2、19＝F3）。兩項都已改正。
+  另外改了：「設定」一詞分成「成員設定」與「設定檔」；缺主詞或「它」指不清的句子；README 太長的句子改成清單；補上種子、不變量、failpoint、receipt 與 P09 的說明；文件地圖的類別數；入門的第二篇從教學 09（後果只由程式推論）換成 08；教學 09、11、18 的一句話。
+  沒有改的：教學一句話裡「子程序」這類零星用詞，以及提示腳本 R6 標出的「測試守著」「測試抓不到」（技術文件裡自然的說法，S7 也量過 R6 大多是誤報）。
+
+### 10.4 驗收
+
+這份補記與交接文件都在跑驗收之前寫好、commit，之後才執行 `bash scripts/final_acceptance.sh`，期間不改任何受指紋涵蓋的檔案。
+全部是 `PASS [current source]` 才建立 tag `s9-public-verified`；結果以那個 tag、`scripts/status.py` 與 `artifacts/` 裡的 receipt 為準。若有失敗，失敗與修正寫在之後的 commit，tag 只建在通過驗收的那個 commit 上。

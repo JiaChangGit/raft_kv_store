@@ -1,6 +1,8 @@
 # 文件地圖
 
-每份文件屬於下面四類之一。「紀錄」寫的是當時發生的事，保留原文，不隨程式更新；裡面的路徑是作者機器上的路徑。「歷史」是已被取代的版本，開頭都有標示，指向現在以哪份為準。
+文件分成五類：**現行說明**照現在的程式寫；**規格與補記**是每個階段的規格與實作後的結果；**紀錄**寫的是當時發生的事，保留原文、不隨程式更新，裡面的路徑是作者機器上的路徑；**歷史**是已被取代的版本，開頭都有標示，指向現在以哪份為準；**原始材料**是專案開始時拿到的規格，不修改。
+
+第一次讀，先看[架構說明](ARCHITECTURE.md)、[帶讀](LEARNING_GUIDE.md)與 [bug 教學](lessons/README.md)。
 
 ## 現行說明
 
@@ -10,9 +12,8 @@
 | [LEARNING_GUIDE.md](LEARNING_GUIDE.md) | 從一筆 PUT 看懂整個系統，附練習 |
 | [HANDS_ON.md](HANDS_ON.md) | 實際操作：三個 process 選出 leader、寫入、終止 leader、恢復 |
 | [lessons/](lessons/README.md) | 19 篇 bug 教學（草稿），每篇都有重現步驟與當時的輸出 |
-| [API_CONTRACT.md](API_CONTRACT.md) | core 與 executor 之間的契約 |
+| [API_CONTRACT.md](API_CONTRACT.md) | core 與 executor（也就是架構說明裡的 actor）之間的契約 |
 | [CLIENT_CONTRACT.md](CLIENT_CONTRACT.md) | client 的 ID、sequence、重試與去重 |
-| [STORAGE_FORMAT_V2.md](STORAGE_FORMAT_V2.md) | 目前的 WAL 格式與持久化契約（也是 S1 的規格） |
 | [COMMIT_RULE_REVIEW.md](COMMIT_RULE_REVIEW.md) | commit 規則與 Figure 8 的推導（V1 時期撰寫，開頭註明哪裡改了） |
 | [FAULT_SCHEDULE_FORMAT.md](FAULT_SCHEDULE_FORMAT.md) | 故障排程的格式與重現（V1 時期撰寫，仍適用） |
 | [ACCEPTANCE_FINAL.md](ACCEPTANCE_FINAL.md) | 目前有效的驗收契約怎麼讀、怎麼跑 |
@@ -26,7 +27,7 @@
 | 文件 | 階段 |
 |---|---|
 | [ROADMAP.md](ROADMAP.md) | 整體計畫、每階段的固定流程、計畫的修改 |
-| [STORAGE_FORMAT_V2.md](STORAGE_FORMAT_V2.md) | S1 儲存格式 |
+| [STORAGE_FORMAT_V2.md](STORAGE_FORMAT_V2.md) | S1 儲存格式；也是目前的 WAL 格式說明 |
 | [SNAPSHOT_COMPACTION.md](SNAPSHOT_COMPACTION.md) | S2 快照與 log 壓縮 |
 | [READ_INDEX.md](READ_INDEX.md) | S3 ReadIndex 讀取 |
 | [MEMBERSHIP.md](MEMBERSHIP.md) | S4 成員變更 |

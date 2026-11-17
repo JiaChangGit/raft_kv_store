@@ -52,9 +52,9 @@ sequenceDiagram
     participant K as KV
     C->>A: PUT frame
     A->>R: ProposeBatch
-    R-->>A: Persist 與 Send
+    R-->>A: 先 Persist 再 Send
     A->>W: save_delta
-    W-->>A: 已同步
+    W-->>A: 已落盤
     A->>R: persisted
     A->>F: AppendEntries
     Note over F: 先落盤才回覆
@@ -72,8 +72,8 @@ sequenceDiagram
 | 寫進 log、準備複製 | `Core::propose` 把每筆寫入加進 log，`replicate_all`／`replicate` 產生 AppendEntries；`Core::seal` 為這一步產生唯一的 `Effect::Persist`，排在所有訊息之前 |
 | 落盤 | `Actor::execute` 遇到 `Effect::Persist`，呼叫 `Wal::save_delta`；成功後 `Core::persisted` 更新 `durable_index` 與自己的 match，並試著推進 commit |
 | 送到 follower | `Effect::Send`：每個 RPC 一條執行緒，`write_frame` 送出、`read_frame` 等回覆，再以 `Input::Peer` 回到 actor |
-| follower 收到 | `peer_listener` → `Event::Message` → `Core::message` 的 AppendEntries 分支：核對 term、leader、`prev_log_index` 與每筆 entry，必要時截掉衝突的尾巴；回覆排在它自己的 `Persist` 之後，所以回覆時已經落盤 |
-| leader 決定 commit | AppendResponse 分支先核對 `rpc_id`、term、epoch，再更新 match；`Core::advance_commit` 只直接 commit 本任期的 entry，而且要目前設定的多數已經落盤 |
+| follower 收到 | `peer_listener` → `Event::Message` → `Core::message` 的 AppendEntries 分支：核對 term、leader、`prev_log_index` 與每筆 entry，必要時截掉衝突的尾巴；follower 的回覆排在 follower 自己的 `Persist` 之後，所以回覆時資料已經落盤 |
+| leader 決定 commit | AppendResponse 分支先核對 `rpc_id`、term、epoch，再更新 match；`Core::advance_commit` 只直接 commit 本任期的 entry，而且要目前成員設定的多數已經落盤 |
 | 套用與回覆 | `Core::apply_committed` 依序產生 `Effect::Apply`；`StateMachine::apply` 套用並回傳舊值；leader 用 `Actor::reply_request` 回覆等待中的 client |
 
 ## 一次讀取（ReadIndex）
@@ -109,12 +109,12 @@ sequenceDiagram
 | 收到 GET | `Actor::run`：GET 不進寫入的批次，記在 `reads`，送出 `Event::Read` |
 | 開始一輪確認 | `Core::read`（不是 leader 就回 `NOT_LEADER`）→ `Core::start_read_round`：本任期還沒有 commit 的 entry 時先等；否則 readIndex 設為目前的 commit index、輪次加一，`replicate_all` 送出帶新輪次的請求 |
 | 收集確認 | AppendResponse 分支：同一個 term 的回覆，不論成功與否，都記進 `acked_round` |
-| 回答 | `Core::finish_reads`：目前設定的多數確認了這一輪、而且 `last_applied` 已到 readIndex，才產生 `Effect::ReadReady`；`Actor::execute` 再檢查一次已套用的位置，用 `StateMachine::get` 回答 |
+| 回答 | `Core::finish_reads`：目前成員設定的多數確認了這一輪、而且 `last_applied` 已到 readIndex，才產生 `Effect::ReadReady`；`Actor::execute` 再檢查一次已套用的位置，用 `StateMachine::get` 回答 |
 | 沒有回答的情況 | 失去 leader 身分時 `Core::fail_reads` 回 `NOT_LEADER`；client 等太久時 actor 送 `Event::CancelRead` 把它忘掉 |
 
 ## 加入一個成員
 
-一次只改一台。新節點先追上 log，追上了才寫入新的設定。設定一寫進 log 就生效：之後的多數依新設定計算。
+一次只改一台。新節點先追上 log，追上了才寫入新的成員設定。成員設定一寫進 log 就生效：之後的多數依新的成員設定計算。
 
 ```mermaid
 ---
@@ -124,20 +124,20 @@ config:
 stateDiagram-v2
     [*] --> 等本任期commit: ChangeMembership
     等本任期commit --> 追趕: 加入節點
-    等本任期commit --> 已寫入設定: 移除節點
-    追趕 --> 已寫入設定: 第10輪夠短
+    等本任期commit --> 已寫入成員設定: 移除節點
+    追趕 --> 已寫入成員設定: 第10輪夠短
     追趕 --> [*]: CATCH_UP_FAILED
-    已寫入設定 --> [*]: commit 後回 OK
+    已寫入成員設定 --> [*]: commit 後回 OK
 ```
 
 | 步驟 | 程式 |
 |---|---|
 | 送出請求 | `tools/kv_admin.py add N` → `client_listener` 解析成 `Input::Membership`；`Actor::run` 先確認 N 在位址表裡，否則回 `INVALID_ARGUMENT` |
 | 受理 | `Core::change_membership`：不是 leader 回 `NOT_LEADER`；已有變更進行中回 `CHANGE_IN_PROGRESS` |
-| 等本任期 commit | `Core::proceed_change`：本任期有 commit 的 entry 之後（2015 年修正，教學 08），才確認最新的設定已經 commit |
+| 等本任期 commit | `Core::proceed_change`：leader 要先在本任期 commit 一筆 entry，才處理成員變更（raft-dev 郵件在 2015 年補上的規則，教學 08）；之後它確認最新的成員設定已經 commit |
 | 追趕 | `Phase::CatchingUp` 與 `Core::catch_up_progress`：最多 10 輪，最後一輪少於 4 次心跳才算追上；超過 100 次心跳就放棄，回 `CATCH_UP_FAILED` |
-| 寫入設定 | `Core::append_config` 把 `Command::Config` 加進 log，並調整要複製的對象 |
-| 完成 | `Core::after_commit`：設定 commit 後產生 `Effect::MembershipDone`，actor 回 OK；leader 自己不在新設定裡時，在這裡退位 |
+| 寫入成員設定 | `Core::append_config` 把 `Command::Config` 加進 log，並調整要複製的對象 |
+| 完成 | `Core::after_commit`：成員設定 commit 後產生 `Effect::MembershipDone`，actor 回 OK；leader 自己不在新的成員設定裡時，在這裡退位 |
 
 規格與證明的界線見 [成員變更規格](MEMBERSHIP.md)；儲存格式見 [WAL 格式 2](STORAGE_FORMAT_V2.md)；讀取的推導見 [ReadIndex 規格](READ_INDEX.md)；group commit 見 [效能規格](PERFORMANCE.md) §6。
-這台 WSL 的 `mmdc` 無法渲染，四張圖只確認過圖源；在 GitHub 上會直接顯示。
+作者的機器（WSL）上，Mermaid 的命令列渲染工具 `mmdc` 無法執行，所以四張圖只檢查過圖源；GitHub 支援直接顯示 Mermaid 區塊，實際的顯示要 push 後才能確認。
