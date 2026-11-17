@@ -42,8 +42,8 @@
   - §4.4：建議第一次建立叢集時，只讓一台節點以「只含自己」的設定作為 log 的第一筆，
     "it alone forms a majority of its configuration"；其他節點以空 log 啟動、經由成員變更加入。靜態設定檔 "potentially error-prone"。
     替換一台節點時應先加再減。
-- **raft-dev 郵件**（Diego Ongaro，2015-07-10，"bug in single-server membership changes"）與所附 gist。本 session 沒有直接讀網頁的工具，
-  由子代理讀取網頁並逐字引用；引文長度受限，反例的逐步狀態是子代理的轉述；網頁在 Jordan H. 的回覆之後被截斷，之後的回覆沒有讀到。
+- **raft-dev 郵件**（Diego Ongaro，2015-07-10，"bug in single-server membership changes"）與所附 gist。網頁經由讀取工具取得，
+  引文逐字但長度受限，反例的逐步狀態是轉述；網頁在 Jordan H. 的回覆之後被截斷，之後的回覆沒有讀到。
   - 原規則："A leader may only create a configuration entry in its log if the prior one is committed"，
     且 "the new one differs from the prior one by at most one server"。
   - 三個反例都從**四台**的叢集開始。發生條件："Starting from an even-sized cluster," "Multiple different changes are requested concurrently,"
@@ -316,7 +316,7 @@ leader 複製給：目前設定中的其他投票成員，加上追趕中的節�
 
 D1～D4 的方向由使用者在問答中選定；輪數、heartbeat 次數與 §9.2 的「知道被移除就不參選」是本規格的提案，隨規格一併核准。
 
-核准後 `AGENTS.md` 在同一個 commit 修改：「fixed IDs 1/2/3 and quorum 2」改為節點編號 1～7、設定取自 log 中最新的設定 entry、多數為該設定的多數（一次一台，見本文件）；
+核准後 [工程規則](ENGINEERING_RULES.md) 在同一個 commit 修改：「fixed IDs 1/2/3 and quorum 2」改為節點編號 1～7、設定取自 log 中最新的設定 entry、多數為該設定的多數（一次一台，見本文件）；
 解除「No ... membership changes」；路線圖表格的 S4 列標示已核准。
 
 ## 18. 實作補記（2026-11-13）

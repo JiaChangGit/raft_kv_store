@@ -17,7 +17,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 bash scripts/run_phase.sh 01
 ```
 
-每次只指定一個階段，依序到 `08`。`run_phase.sh` 只選擇專案 Python 並呼叫替代 checker，**不會啟動模型、不會生成程式、不會自動執行後續階段**。這與原始材料所描述、但未提供的同名 runner 不同。
+每次只指定一個階段，依序到 `08`。`run_phase.sh` 只選擇專案 Python 並呼叫替代 checker，**只執行檢查，不會產生程式、不會自動執行後續階段**。這與原始材料所描述、但未提供的同名 runner 不同。
 
 `preflight.sh` 查工具實際版本與 pytest 可執行性。若用虛擬環境，可先將 `.venv/bin` 加入 PATH；它不安裝、不登入，不把發現執行檔當功能成功。建置、測試與驗收會寫 `target/`、cache、測試資料及 `artifacts/`。
 
@@ -45,7 +45,7 @@ P01 起要求前一階段最近嘗試成功，且契約與 checker 的 SHA 都�
 
 本次checker補強了pytest前建置實際process bins，以及核對三份原始材料hash；均增加檢查，
 沒有移除或降低測試要求。完整新hash鏈從P00重跑。`revalidate_all.py`只針對已審查實作
-依序重跑驗收，首敗停止，不呼叫模型或跨階段自動產生程式。
+依序重跑驗收，首敗停止，不跨階段自動產生程式。
 
 ## 人工審查與非保證
 

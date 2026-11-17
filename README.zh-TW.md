@@ -12,7 +12,7 @@ Raft 是一種共識演算法：讓幾台機器對「資料依什麼順序更新
 - 同一輪的多筆寫入合併成一次落盤（group commit）。
 - 同一份 `raft-core` 同時用在可重現的模擬器，以及真正透過 TCP 溝通的節點。
 
-大部分的程式、測試與文件是 AI 模型在作者指揮下寫的；[怎麼做的](#怎麼和-ai-一起做)寫在最後，包括這個做法的限制。
+第一次看到 Raft、WAL、ReadIndex 這些名詞，可以先查 [名詞表](docs/GLOSSARY.md)。
 
 ## 各階段做了什麼
 
@@ -24,8 +24,10 @@ Raft 是一種共識演算法：讓幾台機器對「資料依什麼順序更新
 | S3 | ReadIndex：GET 不再寫進 log | [READ_INDEX](docs/READ_INDEX.md) |
 | S4 | 成員變更，一次一台；節點編號 1～7；成員設定存在 log 裡 | [MEMBERSHIP](docs/MEMBERSHIP.md) |
 | S5～S6 | group commit、批次複製、落盤只寫變動的部分；獨立審查後的修正 | [PERFORMANCE](docs/PERFORMANCE.md) |
-| S7～S8 | 研究用來開發本專案的 AI 框架（不屬於 KV store 本身） | [framework-study/](framework-study/README.md) |
-| S9 | 整理文件、架構圖與授權，並從頭重跑完整驗收 | [PUBLIC_RELEASE](docs/PUBLIC_RELEASE.md) |
+| S9 | 整理文件、架構圖與授權，並從頭重跑完整驗收 | — |
+| S10 | 最後一次複查：修正三個缺陷與一個健壯性問題，補上 14 個沒有測試守著的檢查，修好壞掉的示範與教學腳本 | [開發歷程](docs/DEVELOPMENT.md) |
+
+每個階段為什麼這樣排、刻意不做什麼、每次審查找到什麼，寫在 [開發歷程](docs/DEVELOPMENT.md)。
 
 ## 架構
 
@@ -80,7 +82,8 @@ sequenceDiagram
 
 ## 快速開始
 
-需要 Linux（開發環境是 WSL2 Ubuntu，資料放在 ext4）、用 rustup 安裝的 Rust（版本固定在 `rust-toolchain.toml`），以及 Python 3。所有命令都在專案根目錄執行。
+需要 Linux（開發環境是 WSL2 Ubuntu，資料放在 ext4）、用 rustup 安裝的 Rust（版本固定在 `rust-toolchain.toml`），以及 Python 3。
+從安裝工具開始的完整步驟、每一步預期看到什麼、常見錯誤怎麼處理，見 [從零開始](docs/SETUP.md)。所有命令都在專案根目錄執行；
 如果 `cargo` 不在 PATH 上（非登入的 shell 常見），先執行 `. "$HOME/.cargo/env"`。
 
 ```bash
@@ -116,7 +119,7 @@ cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/no
 每個 client 一次只送一個請求。收到 `TIMEOUT_UNKNOWN` 時，用相同的 client ID、sequence 與內容重試；新的請求用下一個 sequence。Put 與 Delete 會回傳先前的值。
 `.venv/bin/python tools/kv_admin.py --config config/cluster.toml status` 印出叢集的摘要：leader、term、成員、成員設定的位置與它是否已 commit。`remove N` 移除一台。
 換掉故障的節點時，先加入新的，再移除舊的。不要把清空資料目錄的節點編號重新加入，也不要讓第二台節點引導：這一版偵測不到這兩種操作錯誤，而它們都可能破壞安全性。
-[docs/HANDS_ON.md](docs/HANDS_ON.md) 帶你實際看一次選舉、寫入、終止 leader 再重新啟動。
+[docs/HANDS_ON.md](docs/HANDS_ON.md) 用一行命令跑完選舉、寫入、終止 leader 再重新啟動，並解釋每個數字是怎麼來的。
 
 ## 驗證到哪裡
 
@@ -127,20 +130,21 @@ cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/no
 | 模擬 | 1,000 個種子（決定隨機事件的數字，同一個種子能重跑出完全相同的過程），每個種子 10,000 個事件；每一步都檢查不變量，也就是任何時刻都必須成立的條件，例如同一個 term 最多一個 leader |
 | 當機 | failpoint（讓 process 在指定位置自行終止的測試開關）設在寫入、同步、回覆 ACK、commit、套用、回覆 client 之間；真實 process 用 SIGKILL 終止，再以原資料目錄重啟 |
 | 網路故障 | proxy 以完整的 frame 為單位丟棄、延遲、重複、調換順序；歷史紀錄做線性一致性檢查 |
-| mutation 測試 | 63 個刻意植入的錯誤，各自在隔離的副本裡跑，每一個都必須讓某個測試失敗 |
-| 驗收契約 | `acceptance/final.json` 的 15 個階段，由 `scripts/verify_gate.py` 執行。P00～P08 是最初規格的九個階段，S1～S6 依序各加了 P10～P15；P09 沒有使用 |
+| mutation 測試 | 76 個刻意植入的錯誤，各自在隔離的副本裡跑，每一個都必須讓某個測試失敗 |
+| 教學的重現 | 21 篇 bug 教學的重現腳本都能執行，結論和保存的輸出相同（`bash scripts/run_lesson_repros.sh`） |
+| 驗收契約 | `acceptance/final.json` 的 16 個階段，由 `scripts/verify_gate.py` 執行。P00～P08 是最初規格的九個階段，S1～S6 與 S10 依序各加了 P10～P16；P09 沒有使用 |
 
 每個階段驗收通過後，會在 `artifacts/` 留下 receipt（記錄命令、結果與來源指紋的檔案）；`artifacts/` 不在版本控制內。
 `.venv/bin/python scripts/status.py` 列出每個階段最近一次的結果，以及它是否對應目前的來源。
-`bash scripts/final_acceptance.sh` 從 mutation 測試一路重跑到 P15，中斷後可以續跑，來源檔一變就停；在作者的機器上約 45 分鐘。
-tag `s9-public-verified` 只在每個階段都對那個 commit 的來源通過後才建立。
+`bash scripts/final_acceptance.sh` 從 mutation 測試一路重跑到 P16，中斷後可以續跑，來源檔一變就停；在作者的機器上約 45 分鐘。
+tag `s10-final-review-verified` 只在每個階段都對那個 commit 的來源通過後才建立。
 
 ## 沒有驗證的事
 
 - 沒有形式化證明，不論是 Raft 本身還是這份程式。
 - 沒有長時間的浸泡測試。真實 process 的線性一致性檢查，一次最多只看 24 個操作。
 - 模擬器的管理者一次只送一個成員變更，每個種子只有 64 個用戶端操作。
-- S1 只由同一個模型的另一個 session 審查過，沒有經過不同的模型。
+- S1 的審查者也參與過 S1 的撰寫，S1 沒有經過完全獨立的審查。
 - bug 教學都是草稿：還沒有第二個人照著做過。
 - SIGKILL 不等於斷電；`sync_all` 成功就假設資料已經寫到磁碟上。
 - 成員變更的操作錯誤（重新加入清空的節點、引導第二台）偵測不到。
@@ -149,18 +153,14 @@ tag `s9-public-verified` 只在每個階段都對那個 commit 的來源通過�
 
 ## 文件
 
-先讀這三份：[架構說明](docs/ARCHITECTURE.md)、[跟著一筆 PUT 看完整個系統](docs/LEARNING_GUIDE.md)、[bug 教學](docs/lessons/README.md)。
-[docs/README.md](docs/README.md) 把每份文件分成現行說明、規格、紀錄、歷史與原始材料五類。
-紀錄類文件保留撰寫當時作者機器上的路徑；`CLAUDE.md`、`AGENTS.md` 與 `.claude/` 是作者在本機給 AI 工具的設定。
+第一次讀，照這個順序：[從零開始](docs/SETUP.md)、[架構說明](docs/ARCHITECTURE.md)、[帶讀：跟著一筆 PUT 走完整個系統](docs/LEARNING_GUIDE.md)、[bug 教學](docs/lessons/README.md)。
+讀完用 [自問自答](docs/FAQ.md) 檢查自己懂了沒有。[docs/README.md](docs/README.md) 把每份文件分成現行說明、規格、紀錄、歷史與原始材料五類。
+紀錄類文件保留撰寫當時作者機器上的路徑。
 
-## 怎麼和 AI 一起做
+## 關於 AI 工具
 
-- **分工。** 作者訂目標、每個階段開始前核准規格、抽查結果，所有對外的操作（push、PR、部署）都自己做；規格、程式、測試、教學與報告由 AI 模型撰寫。
-- **流程。** 每個階段都照同樣的順序：規格、核准、先寫會失敗的測試、實作、模擬與故障測試、獨立審查、教學、驗收，最後在本機 commit 並打 tag。
-- **審查。** 三次獨立審查都找到真正的缺陷：S1～S4 的審查找到一個回復缺陷、一個變弱的模擬器檢查與一個邊界缺陷；S5 的審查發現一個驗收階段從沒跑完，文件卻寫成已完成；對作者的 AI 框架所做的修改，審查找到一支統計工具會把私人對話紀錄裡的任意字原樣輸出。S5 與框架修改的審查者，不是寫那部分的模型；S1～S4 的審查者也寫過 S1，所以 S1 沒有換模型審查。
-- **限制。** 寫的和評的常是同一個模型；實驗每個條件只跑一兩次。另外，有紀錄啟動目錄的 session 都從專案的上一層啟動，所以專案裡擋框架寫入與 push 的權限設定從沒載入；「框架唯讀」「不 push」只靠寫程式的模型自己遵守。
-
-細節與出處見 [docs/AI_COLLABORATION.md](docs/AI_COLLABORATION.md)；對 AI 框架本身的研究在 [framework-study/](framework-study/README.md)。
+程式、測試與文件大多由 AI 程式助理在作者的規劃下撰寫。作者決定範圍、核准每個階段的規格、抽查結果，並自己做所有對外的操作（push、發布）。
+正確與否不靠撰寫者自己說：每項功能都要通過上面列的測試與驗收；三次獨立審查的審查者都沒有參與被審查部分的實作，只有 S1 例外（見下方「沒有驗證的事」）。
 
 ## 授權
 

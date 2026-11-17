@@ -125,7 +125,7 @@ sessions: client_id -> { sequence, operation, response }
 
 最後一列只有在 client 違反「一次只有一筆未完成請求」的契約、或同一請求的延遲副本在更新的請求之後才被 commit 時才會出現。
 兩種情況都不會重複執行，差別只在回覆內容；而後者發生時，client 早已收到原結果並送出了新請求，沒有人在等這個回覆。
-需同步修改：`AGENTS.md` 的去重條文、`docs/CLIENT_CONTRACT.md`、`tools/linearizability.py` 的模型與其測試。
+需同步修改：[工程規則](ENGINEERING_RULES.md) 的去重條文、`docs/CLIENT_CONTRACT.md`、`tools/linearizability.py` 的模型與其測試。
 （實作時補記：v1 契約的 `test_retry_after_leader_crash` 原本以「舊 sequence＋不同指令」驗證 `REQUEST_ID_REUSE`，
 本規格漏列。已改為分別驗證「最新 sequence＋不同指令 → `REQUEST_ID_REUSE`」與「舊 sequence → `INVALID_ARGUMENT`」，
 兩者都另外確認 KV 未改變；對照記於契約的 `v1_mapping`。）
@@ -319,7 +319,7 @@ InstallSnapshotResponse { term, success, last_included_index, next_offset }
 | D3 | 何時做快照 | 博士論文 §5.1.2 的倍數規則（倍數 4、下限 1 MiB），另提供 `--snapshot-every N` 供測試 |
 | D4 | core 每個事件複製整份狀態 | 延到 S5，以 benchmark 決定；S2 靠壓縮限制 log 長度 |
 
-核准本規格後，`AGENTS.md` 要在同一個 commit 修改三處：解除「不做 snapshot」；
+核准本規格後，[工程規則](ENGINEERING_RULES.md) 要在同一個 commit 修改三處：解除「不做 snapshot」；
 重啟規則加上「可還原已落盤的快照（只含已 commit 的 entry）」；去重規則改為「每個 client 保存最新一筆的 sequence、canonical command 與原結果」。
 
 ## 14. 實作補記（2026-11-13）
@@ -327,7 +327,7 @@ InstallSnapshotResponse { term, success, last_included_index, next_offset }
 | 項目 | 規格原文 | 實際情況 |
 |---|---|---|
 | §12 步驟 4、5 | 分成兩步，每步結束全部測試通過 | 做不到：只有本機壓縮時，第一個落後的 follower 就讓 leader 走到 `unreachable!`。兩步合併為一個 commit（`a5023d7`）。見 [教學 03](lessons/03-compaction-without-install-snapshot/README.md) |
-| §6.1 需同步修改的地方 | 列了 AGENTS.md、用戶端契約、檢查器 | 漏了 v1 契約的 `test_retry_after_leader_crash`，已改寫並記錄於契約的 `v1_mapping` |
+| §6.1 需同步修改的地方 | 列了工程規則、用戶端契約、檢查器 | 漏了 v1 契約的 `test_retry_after_leader_crash`，已改寫並記錄於契約的 `v1_mapping` |
 | §9.1 回覆欄位 | `term, success, last_included_index, next_offset` | 另加 `done`：follower 已持久保存到 `last_included_index`。leader 據此更新進度，模擬器據此檢查「先落盤才回覆」 |
 | §11 S1 被取代的測試 | `reserved_header_fields_must_be_pristine` 改為新測試 | 新測試是 `file_header_start_fields_validated`，記錄在契約的 `replaced_tests` |
 | 測試程式的偶發失敗 | 未預期 | 安裝快照的真實 process 測試與其他測試平行時偶發失敗，原因是 `flock` 被別的測試 fork 出的子程序暫時繼承。見 [教學 02](lessons/02-flaky-lock-inherited-by-child/README.md) |

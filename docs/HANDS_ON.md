@@ -1,125 +1,118 @@
-# 實際操作：從 PUT 到 Leader 恢復
+# 實際操作：寫入、終止 leader、再恢復
 
-這個練習要讓你看到三個獨立的 Linux process 如何選出 Leader，並在 Leader 終止後
-以新的 Leader 繼續讀取。所有操作使用本機隔離資料；結果顯示的是**這次執行**，
-不是對所有故障或硬體斷電的保證。
+這個練習讓你親眼看到三件事：三個獨立的 process 組成叢集並選出 leader；寫入的資料在 leader 被終止後仍然讀得到；
+被終止的節點用原本的資料目錄重新啟動後，會追上其他節點。
 
-## 一次可重現的完整示範
+先照 [從零開始](SETUP.md) 建好專案。下面的結果是 2026-11-17 的一次實際執行；PID 每次都不同，term 與 index 通常相同，但不保證。
 
-在 WSL 的專案根目錄執行：
+## 一行命令跑完整個示範
 
 ```bash
-. "$HOME/.cargo/env"
-cargo build --workspace --locked
 .venv/bin/python -m tools.learning_demo --output-dir artifacts/runs/my-first-demo
 ```
 
-最後的目錄必須**尚不存在**；重跑時換一個名稱。程式使用新資料目錄，建立三個
-`raft-node` process 與六條本機方向性 proxy，再透過真正的 `tools.kv_client` CLI 操作。
-示範會 SIGKILL 它自己啟動的 Leader，以相同資料目錄重啟，最後關閉測試程序。
-`result.json`、每個節點的 JSONL／stderr、WAL、proxy 記錄和 config 都保留在輸出目錄。
+最後的目錄必須還不存在，重跑時換一個名稱。這支腳本做的事：
 
-如果遇到 `Connection refused` 或逾時，先查該次目錄的 `node-*.stderr`、`node-*.jsonl`
-與 `result.json`；不要把預期結果當成已經發生。測試使用臨時埠，不能照搬其他次的埠號。
+1. 在新的目錄啟動三個 `raft-node` process，節點之間的訊息都經過本機的 proxy（和故障測試用的是同一套）。節點 1 引導，再加入節點 2、3。
+2. 用真正的用戶端命令 `tools.kv_client` 寫入 `lesson-x=A`，再讀出來。
+3. 在 leader 的紀錄裡找出這筆寫入的三個時間點：提出、落盤、套用，確認順序正確。
+4. 用 SIGKILL 終止 leader，等另外兩台選出新的 leader，再讀一次。
+5. 用原本的資料目錄重新啟動被終止的節點，等三台都套用到同一個位置。
 
-另外也以 README 的固定埠與直連設定實際驗過相同流程，結果和實際 client 命令保存在
-[直連實測紀錄](../artifacts/runs/manual-direct-check/result.json)。直連示範沒有使用 proxy；
-上方一鍵示範則使用 proxy，兩者的網路路徑不同。
+結束時印出 `結果：.../result.json`，`"status": "PASS"` 就是每一步都符合預期。輸出目錄裡還有每個節點的紀錄（`cluster/node-*.jsonl`）、WAL 與設定檔。
+失敗時 `result.json` 的 `error` 寫著停在哪一步；再看對應節點的 `node-*.stderr` 與 `node-*.jsonl`。
 
-## 本次實測結果
+## 這次看到的結果
 
-以下是 2026-11-10 的一次實際執行，完整命令、動態埠、程序狀態與來源 hash 見
-[result.json](../artifacts/runs/hands-on-20261110-02/result.json)。PID、term 與 index
-每次可能不同，不能拿本表的數值當作重跑時的固定答案。
-本機 `artifacts/` 不納入 Git；換機或分享時需自行保存所需證據及核對 hash。
-
-| 操作 | 這次實際觀察 |
+| 步驟 | 看到的 |
 |---|---|
-| 啟動 | 三個 PID 為 62095、62096、62097；節點 2 為 term 1 Leader |
-| client 701、sequence 0：PUT `lesson-x=A` | `OK`，先前值 `null`，committed index 2 |
-| sequence 1：GET | `OK`，結果 `A`，committed index 3 |
-| SIGKILL Leader | 節點 2 的 PID 62096 結束，回傳碼 -9 |
-| 其餘節點重新選舉 | 節點 3 成為 term 2 Leader |
-| sequence 2：新 GET | `OK`，結果 `A`，committed index 5 |
-| 原節點重啟 | 節點 2 使用原資料目錄，以新 PID 62364 啟動；三個節點的 debug status 均顯示 `last_applied=5`、`lesson-x=A` |
+| 啟動 | 三個 PID 是 469613、469614、469615；節點 1 是 term 2 的 leader，成員 `[1, 2, 3]`，commit index 4 |
+| PUT `lesson-x=A`（client 701、sequence 0） | `OK`，舊值 `null`，committed index 5 |
+| GET（sequence 1） | `OK`，結果 `A`，committed index 5 |
+| SIGKILL leader | 節點 1（PID 469613）結束，回傳碼 -9 |
+| 重新選舉 | 節點 2 成為 term 3 的 leader |
+| 新的 GET（sequence 2） | `OK`，結果 `A`，committed index 6 |
+| 節點 1 重新啟動 | 新的 PID 469794；三台的 `last_applied` 都是 6，`lesson-x` 都是 `A` |
 
-這是 V1 時期的實測。S3 起 GET 走 ReadIndex，不再寫進 log，所以 GET 不會讓 committed index 增加；
-重跑時 GET 回覆的 committed index 是讀取當下狀態機已套用到的位置。
+### 這些數字是怎麼來的
 
-上表的 PUT 回傳 `null` 是「原本沒有值」；它不是 PUT 沒有寫入。三個節點的
-debug KV 供觀察恢復使用；新的客戶端讀取仍以通過共識的 GET 回覆為準。
+**為什麼 leader 是 term 2，不是 term 1？** 引導時，節點 1 的資料目錄寫進了 term 1 與一筆「成員只有自己」的設定（index 1）。
+它啟動後要經過一次選舉才成為 leader，選舉把 term 加一，所以是 term 2。
 
-## 從一筆 PUT 回看程式
+**為什麼一開始 commit index 就是 4？** 寫入之前，log 裡已經有四筆 entry：
 
-本次 [節點 2 trace](../artifacts/runs/hands-on-20261110-02/cluster/node-2.jsonl) 中，
-第 18、19、23 行依序是 client 701／sequence 0 的 propose、WAL save 完成、index 2 的 apply。
-Client 的實際成功回覆也標明 committed index 2。
+| index | 內容 | 誰寫的 |
+|---|---|---|
+| 1 | 成員設定 `[1]` | 引導 |
+| 2 | NoOp | 節點 1 當選後立刻寫入（新 leader 都會先寫一筆，見 [自問自答](FAQ.md) Q7） |
+| 3 | 成員設定 `[1, 2]` | `add 2` |
+| 4 | 成員設定 `[1, 2, 3]` | `add 3` |
 
-第 19 行的 `durable_sequence=3` 是 WAL 交易序號，不是 log index。該行
-`durable_index` 仍是 1，因為 runtime 在記錄 persist 後才呼叫 `Core::persisted`；
-下一個本地 send 紀錄顯示 durable index 已是 2。可對照
-[Actor::execute](../crates/raft-node/src/main.rs)、
-[Core::persisted／advance_commit](../crates/raft-core/src/lib.rs) 和
-[Wal::save](../crates/raft-storage/src/lib.rs)。
+所以第一筆 PUT 是 index 5。
 
-**實測範圍：**這些行支持同一個節點檔案中的事件順序、index 與回覆。現有 trace 的
-RPC 行不包含 RPC 類型與 entry 內容，也沒有跨程序共用時間戳；不能只因幾行相鄰，
-就把特定收到的訊息認定為確認這筆 PUT 的 ACK。多數確認與 barrier 的條件要另外
-對照程式、proxy 記錄及測試；程式推論與本次直接觀察應分開。
+**為什麼 GET 的 committed index 和 PUT 一樣是 5？** GET 不寫進 log（ReadIndex），回覆裡的 committed index 是 leader 回答時狀態機已經套用到的位置。
+讀取沒有讓 log 變長。
 
-## 自己逐步操作
+**為什麼換 leader 之後變成 6？** 節點 2 當選 term 3 的 leader 後，也先寫一筆 NoOp，那是 index 6。等它 commit 之後才能回答讀取（[ReadIndex 規格](READ_INDEX.md) §6 的第一步），
+所以新的 GET 回 6，而值仍然是 `A`：已經 commit 的寫入不會因為換 leader 而消失。
 
-一鍵示範適合先看完整流程；手動操作則需要三個 terminal。先確認
-`config/cluster.toml` 的 7101～7103、7201～7203 沒有被其他服務使用。若有佔用，
-建立自己的 config 副本並修改端點。從專案根目錄建立新目錄並記下顯示的路徑：
+**重新啟動的節點怎麼追上？** 它從磁碟讀回 term、投票與 log（到 index 5），但不知道哪些已經 commit，所以先當 follower。
+新的 leader 送來 AppendEntries，它補上 index 6，得知 commit index，再依序套用。
 
-```bash
-mkdir -p artifacts/runs
-mktemp -d "$PWD/artifacts/runs/manual-XXXXXX"
-```
+## 從紀錄看一筆寫入
 
-下列 `<實驗目錄>` 請替換為剛顯示的同一個絕對路徑；三個 terminal 各自從專案根目錄執行一行。
-只有節點 1 帶 `--bootstrap`（S4 起叢集由一台引導、其他逐一加入，見 [成員變更規格](MEMBERSHIP.md) §6）：
+示範在 leader 的紀錄（這次是 `cluster/node-1.jsonl`）裡找到這筆 PUT 的三行：
 
-```bash
-target/debug/raft-node --id 1 --config config/cluster.toml --data-dir <實驗目錄>/node-1 --bootstrap
-target/debug/raft-node --id 2 --config config/cluster.toml --data-dir <實驗目錄>/node-2
-target/debug/raft-node --id 3 --config config/cluster.toml --data-dir <實驗目錄>/node-3
-```
+| 行 | 事件 | `durable_index` | `last_log_index` | `commit_index` |
+|---|---|---|---|---|
+| 37 | `propose_batch`，`writes: 1` | 4 | 4 | 4 |
+| 38 | `persist`（`fsync_us` 約 1760） | 4 | 5 | 4 |
+| 42 | `apply`，`index: 5` | 5 | 5 | 5 |
 
-再從第四個 terminal 把節點 2、3 加進設定（每行都應印出 `"status": "OK"`）：
+- 第 37 行：actor 把這一輪收到的寫入（只有一筆）交給 core。
+- 第 38 行：WAL 寫入並同步完成，一次 `fsync` 約 1.8 毫秒。`last_log_index` 已經是 5，`durable_index` 卻還是 4：
+  這行紀錄寫在 actor 通知 core「已落盤」之前，通知之後 core 才把 `durable_index` 改成 5。
+- 第 39、40 行：送給節點 2、3 的訊息（`rpc_send`）。第 41 行：節點 3 的回覆到了（`message`，`rpc_id` 12 對應第 40 行）。
+- 第 42 行：節點 1 自己加上節點 3 已經是多數，index 5 commit 並套用到狀態機。不必等節點 2 的回覆。
 
-```bash
-.venv/bin/python tools/kv_admin.py --config config/cluster.toml add 2
-.venv/bin/python tools/kv_admin.py --config config/cluster.toml add 3
-```
+這些行只能證明**同一個節點內**事件的先後。不同節點的紀錄沒有共用的時鐘，不能只靠時間戳說哪個回覆確認了哪一筆寫入；
+那要對照程式（[架構說明](ARCHITECTURE.md)「一次寫入」）與測試。
 
-在第四個 terminal 分別檢查 7201、7202、7203 的狀態（將下面埠號替換三次）：
+## 自己一步一步做
 
-```bash
-.venv/bin/python -c 'import json; from tools.kv_client import call; print(json.dumps(call("127.0.0.1:7201", {"status": True}), ensure_ascii=False, indent=2))'
-```
+一鍵示範看完整流程；想自己動手，照 [從零開始](SETUP.md) 第 5 節啟動三台節點、加入成員、寫入與讀取，再接著做：
 
-確認三個 `pid` 不同，記下 `role` 為 `Leader` 的節點、PID 與 term；狀態端點是
-debug 工具。使用 README 的 client 命令送 PUT／GET，記下 `committed_index`。
-這個新目錄可使用 client ID 7；若重用舊目錄，請改用新的 client ID，或正確延續 sequence。
+1. 查每台的狀態，找出 leader：
 
-確認目標 PID 的 `ps -p <PID> -o pid,args` 確實是**這次自己啟動的 Leader**，再使用
-`kill -KILL <PID>`。觀察另外兩個節點的狀態，確認新的 Leader；以新的 sequence 再做
-GET。最後使用相同 node ID 與原 `<實驗目錄>/node-N` 重啟舊節點（不需要、也不要加 `--bootstrap`），輪詢三個狀態的
-`last_applied` 是否到達新 GET 的 index。完成後只停止這次實驗所啟動的程序。
+   ```bash
+   .venv/bin/python tools/kv_admin.py --config config/cluster.toml status
+   ```
+
+   記下 leader 的編號與 term。只想看某一台的完整狀態時：
+
+   ```bash
+   .venv/bin/python -c 'import json; from tools.kv_client import call; print(json.dumps(call("127.0.0.1:7201", {"status": True}), ensure_ascii=False, indent=2))'
+   ```
+
+   把 7201 換成 7202、7203 就是另外兩台。這是除錯用的狀態，不是正式的讀取。
+
+2. 在 leader 的 terminal 按 Ctrl-C 停掉它（或用 `kill -KILL <PID>` 模擬當機；先用 `ps -p <PID> -o pid,args` 確認那是你自己啟動的節點）。
+3. 等一兩秒，再查一次狀態：另外兩台之一成為新的 leader，term 加一。
+4. 用新的 sequence 讀 x，值仍然是 `A`。
+5. 用原本那一行命令重新啟動舊的 leader，再查狀態，看它的 `last_applied` 追上其他兩台。
+
+用 client ID 7 時，sequence 要接著用下去（2、3、4……）。換一個新的資料目錄重來時，也可以從 0 開始。
 
 ## 試著預測
 
-1. 如果 PUT 已 commit、回覆卻在途中遺失，client 換新 sequence 重送會怎樣？
-   先讀 [client 契約](CLIENT_CONTRACT.md)；原請求應以相同 ID／sequence／內容重試，
-   新 sequence 表示另一個 logical request。
-2. 舊 Leader 若是被隔離而非殺掉，是否可能仍顯示 `Leader`？可能。應再看 term、
-   是否有 quorum，以及新的 PUT／GET 能否合法完成；角色字串本身不是多數證據。
-3. 為何本次 PUT 的 index 是 2，換 Leader 後的 GET 是 5，而不是依序 2、3、4？
-   先看記錄，再追 `become_leader` 與 NoOp；本次一般 trace 不記錄 entry 內容，
-   不能只憑 index 差距宣稱已直接觀察到第 4 筆的內容。
+先寫下你的答案，再做一次看看。
 
-解答可與 [既有帶讀](LEARNING_GUIDE.md) 和
-[Raft 論文](https://raft.github.io/raft.pdf) Figure 2、§5.4.2 對照。這份練習已由代理實跑，
-是否能獨立預測與操作，仍要等你實際練習才知道。
+1. PUT 已經 commit，回覆卻在路上遺失了。client 用**新的** sequence 重送同一筆 PUT，會發生什麼？用**同一個** sequence 呢？
+2. 舊的 leader 不是被終止，而是網路斷了。它的狀態會不會仍然顯示 `Leader`？它還能回答讀取嗎？
+3. 三台中停掉兩台，剩下的那一台能寫入嗎？能讀取嗎？
+
+解答：
+
+1. 新的 sequence 是另一個請求，會再執行一次：值仍是 `A`，但回覆的舊值是 `A`，不是 `null`。同一個 sequence 會拿到第一次的結果，不會再執行（[client 契約](CLIENT_CONTRACT.md)）。
+2. 可能仍然顯示 `Leader`，因為它還沒收到更大的 term。但它回答讀取前要先得到多數確認，被隔離時拿不到，讀取會逾時，不會讀到舊值（[ReadIndex 規格](READ_INDEX.md)；測試 `test_a_leader_left_with_a_minority_does_not_answer_reads`）。
+3. 都不能。成員設定還是三台，多數是兩台，剩下一台湊不到多數：寫入無法 commit，讀取也無法確認。要等另一台回來。

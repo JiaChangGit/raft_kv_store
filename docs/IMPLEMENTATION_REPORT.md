@@ -54,4 +54,3 @@ sync_us量的是整個Wal.save(encoding/write/sync)，不冒稱純fsync syscall�
 同步簡單barrier優先於背景I/Opipeline；JSON便於debug；沒有snapshot/sessionGC所以資源
 持續增長。複製corestate與線性掃描是有限規模V1的實作取捨，不作高效能productionclaim。
 無membership/TLS/sharding/multiRaft/readlease/readindex。
-Framework配置、實際讀取skills與效果觀察見FRAMEWORK_FEEDBACK，不能等同自動觸發率。

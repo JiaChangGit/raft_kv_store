@@ -1,0 +1,14 @@
+
+== s9-public-verified (before the fix)
+   first refusal: File exists (os error 17)
+   opens refused: 140 of 160
+
+== current source
+   opens refused: 0 of 160
+
+== the same race in a fresh copy of s9-public-verified: raft-node tests
+   3 called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+   1 test result: FAILED. 3 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+== RESULT
+Before the fix some opens lose the race and are refused; after it none are.

@@ -1,6 +1,6 @@
 # 架構說明
 
-這份文件用四張圖說明系統怎麼運作：元件、一次寫入、一次讀取、加入一個成員。圖和表都是**讀程式得到的靜態追蹤**（2026-11-16，S9），不是某一次執行的紀錄；
+這份文件用四張圖說明系統怎麼運作：元件、一次寫入、一次讀取、加入一個成員。圖和表都是**讀程式得到的靜態追蹤**（2026-11-16，S9；讀取的部分在 2026-11-17 依 S10 的修正更新），不是某一次執行的紀錄；
 表中寫的是檔案與函式名稱，沒有寫行號，因為行號會隨版本移動。圖沒有畫的部分：選舉、快照傳送（InstallSnapshot）、逾時與重試、各種失敗回覆。
 
 ## 元件
@@ -107,7 +107,7 @@ sequenceDiagram
 | 步驟 | 程式 |
 |---|---|
 | 收到 GET | `Actor::run`：GET 不進寫入的批次，記在 `reads`，送出 `Event::Read` |
-| 開始一輪確認 | `Core::read`（不是 leader 就回 `NOT_LEADER`）→ `Core::start_read_round`：本任期還沒有 commit 的 entry 時先等；否則 readIndex 設為目前的 commit index、輪次加一，`replicate_all` 送出帶新輪次的請求 |
+| 開始一輪確認 | `Core::read`（不是 leader 就回 `NOT_LEADER`）→ `Core::start_read_round`：本任期還沒有 commit 的 entry 時先等；否則 readIndex 設為目前的 commit index、輪次加一，`replicate_all` 送出帶新輪次的請求。最後 `Core::read` 再呼叫一次 `finish_reads`：只有一台 voter 時不必等任何回覆，當下就回答（教學 20） |
 | 收集確認 | AppendResponse 分支：同一個 term 的回覆，不論成功與否，都記進 `acked_round` |
 | 回答 | `Core::finish_reads`：目前成員設定的多數確認了這一輪、而且 `last_applied` 已到 readIndex，才產生 `Effect::ReadReady`；`Actor::execute` 再檢查一次已套用的位置，用 `StateMachine::get` 回答 |
 | 沒有回答的情況 | 失去 leader 身分時 `Core::fail_reads` 回 `NOT_LEADER`；client 等太久時 actor 送 `Event::CancelRead` 把它忘掉 |

@@ -1,0 +1,15 @@
+
+== s9-public-verified (before the fix): one voter
+   voters [1], node 1 is Leader of term 2
+   Put x A -> OK
+   Get x   -> TIMEOUT_UNKNOWN, result None, after 3.0 s
+   node 1 status: reads_served 0, reads_waiting 0
+
+== current source: one voter
+   voters [1], node 1 is Leader of term 2
+   Put x A -> OK
+   Get x   -> OK, result 'A', after 0.0 s
+   node 1 status: reads_served 1, reads_waiting 0
+
+== RESULT
+With one voter the old leader never finishes a read; the fixed one answers at once.

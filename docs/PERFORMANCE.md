@@ -1,7 +1,7 @@
 # S5 規格：效能（group commit、批次複製、不再複製整份 log）
 
 狀態：**已核准（2026-11-14，使用者：「核准，開始實作」）並實作；驗收結果見 §14 與階段 14 的 receipt。**
-日期：2026-11-14。規格撰寫模型：`claude-fable-5-2`（實作所用的模型在完成時補記於 §14，供之後的獨立審查判斷）。已確認的決定見 §13。
+日期：2026-11-14。已確認的決定見 §13。
 
 用語：
 - **fsync**：要求作業系統把檔案內容真的寫到磁碟，寫完才返回。本專案每次落盤都以它結束（`sync_all`）。
@@ -64,7 +64,7 @@ leader 每筆寫入落盤一次。32 個用戶端比 8 個還慢：actor 依到�
     "This approach is appealing because it dynamically adjusts to load"。本專案從 V1 起就是這個做法。
   - §10.2.1（leader 平行寫入磁碟）與 pipelining：本階段不採用（§13 D1、D2）。
 - **論文 Figure 2**：回覆 RPC 之前先更新持久化狀態。本階段不改變這一點。
-- 本專案的規則（`AGENTS.md`）："Persist term/vote/log before dependent messages"。本階段不修改任何規則，`AGENTS.md` 的路線圖表格沒有 S5 的列。
+- 本專案的規則（[工程規則](ENGINEERING_RULES.md)）："Persist term/vote/log before dependent messages"。本階段不修改任何規則，[工程規則](ENGINEERING_RULES.md) 的路線圖表格沒有 S5 的列。
 
 ## 4. 範圍
 
@@ -218,7 +218,7 @@ leader 處理一筆寫入要經過好幾個事件，每個事件都付一次。
 
 | 編號 | 問題 | 決定 |
 |---|---|---|
-| D1 | leader 是否邊寫磁碟邊複製（§10.2.1） | 不做，維持「先落盤再送出相依的訊息」；`AGENTS.md` 的規則不改 |
+| D1 | leader 是否邊寫磁碟邊複製（§10.2.1） | 不做，維持「先落盤再送出相依的訊息」；[工程規則](ENGINEERING_RULES.md) 的規則不改 |
 | D2 | 是否做 pipelining | 不做，維持每個 follower 一次一個 RPC；只放寬每批的上限 |
 | D3 | 驗收門檻 | 確定性的計數當門檻；延遲與吞吐量只記錄前後對照 |
 
@@ -226,16 +226,16 @@ leader 處理一筆寫入要經過好幾個事件，每個事件都付一次。
 
 ## 14. 實作補記（2026-11-15）
 
-### 14.1 實作所用的模型
+### 14.1 各步驟的 commit
 
-| 步驟 | commit | 模型 |
-|---|---|---|
-| 規格 | `46ad72c` | `claude-fable-5-2` |
-| 量測工具、變動紀錄（§8 步驟 1～2） | `e0796bd` | `claude-fable-5-2` |
-| group commit、批次上限、計數器、狀態查詢（步驟 3～4） | `dd1565f` | `claude-fable-5-2` 起頭，`claude-opus-5-5` 完成 |
-| 模擬器、測試、mutation、契約、教學、文件（步驟 5） | 本階段最後一個 commit | `claude-opus-5-5` |
+| 步驟 | commit |
+|---|---|
+| 規格 | `46ad72c` |
+| 量測工具、變動紀錄（§8 步驟 1～2） | `e0796bd` |
+| group commit、批次上限、計數器、狀態查詢（步驟 3～4） | `dd1565f` |
+| 模擬器、測試、mutation、契約、教學、文件（步驟 5） | 本階段最後一個 commit |
 
-兩個模型都寫過 S5，獨立審查需要第三個模型（例如 `claude-sonnet-5-5`）。
+獨立審查交給沒有參與 S5 的審查者（[S5 審查](INDEPENDENT_REVIEW_S5.md)）。
 
 ### 14.2 與規格的差異
 
@@ -286,7 +286,7 @@ leader 處理一筆寫入要經過好幾個事件，每個事件都付一次。
 
 ### 14.6 獨立審查後的更正（2026-11-15）
 
-[獨立審查](INDEPENDENT_REVIEW_S5.md)（`claude-sonnet-5-5`）對本補記的更正：
+[獨立審查](INDEPENDENT_REVIEW_S5.md)對本補記的更正：
 
 - **§14.4 漏看了一個測試的強度（審查 F6）。** `saturated_outbound_pool_does_not_starve_status` 在 S5 只因 WAL 起始狀態而被改過；但 drain 迴圈把同一輪裡的狀態回覆排在寫入提出之前，
   使它在對應的 mutant `saturated_pool_spin` 下不再失敗，而是卡在等節點停止——S4 的程式碼 2.1 秒就失敗。作者那次驗收正好停在這個 mutant，所以沒看到。
@@ -295,12 +295,12 @@ leader 處理一筆寫入要經過好幾個事件，每個事件都付一次。
 - **§14.5 的 log 成長列**與 `write-benchmark.json` 不符（審查 F4）：檔案中修正前是 6.2 → 14.8 ms（254 → 1,900 筆）、修正後 5.1 → 5.5 ms。結論不變，數字待下一個 session 改正。
 - **階段 14 的契約本身過不了（審查 F7）。** 契約要求 `write-benchmark.json` 的 `runs` 不得為空，但 `scripts/verify_gate.py` 對 `required_nonempty` 只認字串與物件，
   清單一律判錯，所以這條要求永遠無法滿足；階段 14 從沒跑完過，因此沒人發現。已讓檢查器認得清單（保留「不得為空」），並補兩個測試。
-- 審查的 F2、F3、F5（測試缺口）尚未處理，列在 [交接文件](HANDOFF_CLAUDE.md)。
+- 審查的 F2、F3、F5（測試缺口）當時尚未處理；S6 補上，見 §15。
 
 ## 15. S6 收尾：S5 審查留下的事（2026-11-15）
 
-路線圖「2026-11-15 的計畫修改」把 S6 縮減成這一節：補 S5 獨立審查的 F2～F5，驗收一次就結束。
-節點的正常行為不變，只多一個測試用的 failpoint。實作所用的模型：`claude-opus-5-5`。
+2026-11-15 的計畫縮減（[開發歷程](DEVELOPMENT.md)）把 S6 縮減成這一節：補 S5 獨立審查的 F2～F5，驗收一次就結束。
+節點的正常行為不變，只多一個測試用的 failpoint。
 
 ### 15.1 要做的事
 
@@ -326,7 +326,7 @@ leader 處理一筆寫入要經過好幾個事件，每個事件都付一次。
 
 ### 15.3 實作補記（2026-11-15）
 
-S6 全部由 `claude-opus-5-5` 在同一個 session 完成（接手 `claude-sonnet-5-5` 的審查交接）。
+S6 依 S5 審查報告的建議完成。
 
 **與 §15.1 的差異**
 

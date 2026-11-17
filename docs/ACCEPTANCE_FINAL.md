@@ -8,7 +8,7 @@
 
 - 建立時（2026-11-12）階段 00～08 的內容與 v1 完全相同，另外加上一條共同命令：
   `python3 -B scripts/check_lessons.py`（檢查 bug 教學的結構）。
-- 之後每個路線圖階段在規格獲准後，各自追加一個階段（10～15；2026-11-15 計畫縮減後，S6 是最後一個加階段的 Raft 階段）。
+- 之後每個開發階段在規格獲准後，各自追加一個階段（S1～S6 是 10～15，最後一次複查 S10 是 16；見[開發歷程](DEVELOPMENT.md)）。
 - 後面的階段可以**取代**前面階段的測試（例如 S1 會以新儲存格式的測試取代 v1 的儲存測試），
   條件是更新契約裡的 `v1_mapping`：v1 的每一項測試都必須指向至少一個仍在契約中的測試。
   `scripts/test_verify_gate.py` 會檢查這張對照表完整且指向存在的測試。
@@ -16,9 +16,10 @@
 
 ## 來源指紋
 
-checker 對專案內所有檔案計算雜湊，排除 `.git`、`.agf`、`.venv`、`target`、`artifacts`、快取目錄，
-以及 **`.claude`、`.agents`**（2026-11-12 使用者決定）。後兩者是 AI 框架管理的宿主設定副本，
-不影響程式行為，是否被改動由 `agf project status` 另行檢查。`docs/`、`scripts/`、`acceptance/`、
+checker 對「Git 會追蹤的檔案」計算雜湊：已追蹤的檔案，加上 Git 沒有忽略的新檔案（2026-11-17 起，S10）。
+`.gitignore` 或 `.git/info/exclude` 忽略的檔案（建置結果、虛擬環境、`artifacts/`，以及開發者只留在本機的檔案）不影響指紋。
+不在 Git 工作目錄裡時（例如 `scripts/clean_rebuild.py` 複製出的副本），改為走訪所有檔案，略過 `.git`、`.venv`、`target`、`artifacts` 與快取目錄；
+兩種算法對同樣的檔案得到同樣的指紋，`scripts/test_verify_gate.py` 有測試。`docs/`、`scripts/`、`acceptance/`、
 `crates/`、`tests/`、`tools/` 都在指紋內：改任何一個，既有 receipt 就不再適用於目前來源。
 
 checker 或契約檔本身改變時，必須從第一個階段重新依序驗收。

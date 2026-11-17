@@ -1,8 +1,7 @@
 # S5 獨立審查報告
 
 日期：2026-11-15　｜　審查對象：`e5f09c2`（`main` 的 HEAD，審查時工作樹乾淨、**沒有 `s5-*` tag**），範圍是 `s1-s4-review-verified..e5f09c2` 的四個 commit　｜
-審查者：Claude Code 桌面版新 session，模型 `claude-sonnet-5-5`　｜　依據：`docs/ROADMAP.md`「獨立審查：與實作不同的模型，另開 session，不提供預期答案」，
-以及 `docs/PERFORMANCE.md` §14.1：S5 由 `claude-fable-5-2` 起頭、`claude-opus-5-5` 完成，需要第三個模型。做法依 `.claude/skills/review-change/SKILL.md`。
+審查者：沒有參與 S5 的實作　｜　依據：專案計畫的規則「獨立審查：審查者沒有參與那部分的實作，不提供預期答案」。
 
 §1～§6、§8～§9 描述的是審查當時的 `e5f09c2`：那段期間沒有修改任何受版本控制的程式、測試或規格，所有建置、mutant 與重現都在暫存副本上進行
 （副本的來源指紋與原始工作樹相同，都是 `acf55330…de9ea3`）。使用者要求把沒通過的部分在安靜的機器上重測時，發現 **F6** 與 **F7**（§7）；使用者同意修正它們，
@@ -20,7 +19,7 @@
 |---|---|---|---|---|
 | F6 | 測試強度退步（S5 引入）＋驗收工具缺陷 | 高 | S5 的 drain 迴圈讓 `saturated_outbound_pool_does_not_starve_status` 在對應 mutant 下不再失敗而是永遠卡住，並以每秒約 52 MB 的 trace 灌爆 `mutation_check.py` 的記憶體內擷取；P10 之後的驗收因此無法完成，三次執行都死在這裡 | 已執行（安靜機器上孤立重現，見 §7） |
 | F7 | 驗收契約缺陷（S5 引入） | 高 | phase 14 要求 `write-benchmark.json` 的 `runs` 不得為空，但檢查器 `verify_gate.py` 對 `required_nonempty` 只認字串與物件，把清單一律判錯；P14 因此永遠過不了。P14 從沒跑完過，所以作者沒發現 | 已執行（整套重驗中 P14 的其餘檢查全過，只有這一條失敗，見 §7） |
-| F1 | 驗收紀錄與文件不符 | 高 | tag 不存在、P14 沒跑、三份驗收報告都是舊的、驗收在第 3 個 mutant 中斷（原因見 F6）；ROADMAP、CLAUDE.md、HANDOFF、PERFORMANCE.md 卻寫成「已完成、已打 tag」 | 已執行（命令與輸出見 §2） |
+| F1 | 驗收紀錄與文件不符 | 高 | tag 不存在、P14 沒跑、三份驗收報告都是舊的、驗收在第 3 個 mutant 中斷（原因見 F6）；計畫文件、作者本機的工作筆記與 PERFORMANCE.md 卻寫成「已完成、已打 tag」 | 已執行（命令與輸出見 §2） |
 | F2 | 測試缺口（可能的活性退化） | 中 | follower 接收端的批次上限由 32 放寬為 256，**沒有任何測試守著**；改回 32，cargo 全部測試與 32 個整合測試都通過，但落後超過 32 筆的 follower 永遠追不上 | 已執行（mutant＋真實 process 探針） |
 | F3 | 測試缺口（縱深防禦） | 中低 | 節點實際走的 `validate_delta` 有三條規則沒被測試獨立守住；S1 留下的測試走的是舊的 `validate_change` | 已執行（逐條移除規則） |
 | F4 | 文件數字與證據不符 | 低 | `PERFORMANCE.md` §14.5 的「log 成長」列與 `write-benchmark.json` 對不上 | 已執行（逐項比對） |
@@ -32,7 +31,7 @@
 
 **文件的說法**
 
-- `docs/ROADMAP.md` S5 列、`CLAUDE.md`、`docs/HANDOFF_CLAUDE.md`：「S5（tag `s5-performance-verified`）已完成」。
+- 計畫文件的 S5 列、作者本機的工作筆記：「S5（tag `s5-performance-verified`）已完成」。
 - `docs/PERFORMANCE.md` 檔頭「驗收結果見 §14 與階段 14 的 receipt」；§14.5「以完整驗收的 `simulation.json` 為準」「以完整驗收的 `mutations.json` 為準」。
 - 最後一個 commit 的訊息：「Acceptance phase 14: …」。
 
@@ -239,7 +238,7 @@ P14 從沒跑完過（審查前連 `phase-14.last-attempt.json` 都不存在）�
 2. F2、F3：補測試與 mutation 案例（會改 `crates/`、`scripts/`、`acceptance/final.json`）。
 3. F4：改 §14.5 的數字，或重新產生報告。F5：把恆真的斷言改成能失敗的，並補切批的測試。
 4. F1：跑**一次**完整驗收（P00～P14、重新產生 `simulation.json`、`mutations.json`、`write-benchmark.json`）；通過後才打 `s5-performance-verified`。F2～F5 若在驗收後才處理，要再驗收一次。
-5. 依 ROADMAP，F2、F3、F6 都屬於「測試悄悄停止測試」（教學 07、12）的同類，F6 另有「工具對失控輸入沒有上限」的部分，值得各寫成教學，由使用者決定。
+5. 依專案計畫，F2、F3、F6 都屬於「測試悄悄停止測試」（教學 07、12）的同類，F6 另有「工具對失控輸入沒有上限」的部分，值得各寫成教學，由使用者決定。
 6. S6 的規格開始前，把本報告 §8 的「無法解釋的失敗」查清楚或確認是環境因素。
 
 ## 11. 重測與處理結果
@@ -268,6 +267,6 @@ P14 從沒跑完過（審查前連 `phase-14.last-attempt.json` 都不存在）�
 - **F7 已修正**：`scripts/verify_gate.py` 加 `REPORT_KEY_TYPES`（`metrics`、`environment` 為物件，`runs` 為清單，其餘鍵為字串），`required_nonempty` 依它檢查，仍然要求 `runs` 不得為空；
   `scripts/test_verify_gate.py` 新增 2 個測試，`acceptance/final.json` 的 phase 14 加入這 2 個節點。驗證（已執行）：新測試通過；同一份合法報告用修正前的檢查器（`e5f09c2`）會被拒絕；
   `test_verify_gate.py`、`test_mutation_check.py`、`test_check_lessons.py` 共 35 個測試通過。使用者在這一步同意改檢查器，並同意因此從 P00 全部重跑。
-- **F2～F5 未處理**（使用者決定「不修，只列進交接」）：做法與要補的案例寫在 §3～§6，待辦在 [交接文件](HANDOFF_CLAUDE.md)。
+- **F2～F5 未處理**（使用者決定「不修，只列進交接」）：做法與要補的案例寫在 §3～§6，S6 已全部處理（[效能規格](PERFORMANCE.md) §15）。
 - **驗收與 tag**：檢查器與契約因 F7 改變，上面的整套重驗（指紋 `221564a1…`）作廢。本文件定稿後，重新產生 `mutations.json`、`simulation.json`、讀取與寫入的 benchmark，再依序重跑 P00～P14；
   全部 `PASS [current source]` 才建立本機 tag `s5-performance-verified`。**沒有這個 tag，就表示整套驗收還沒通過。** 最終結果請看 `scripts/status.py` 與 commit 訊息。

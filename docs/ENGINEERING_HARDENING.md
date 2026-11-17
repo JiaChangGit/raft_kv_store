@@ -3,7 +3,7 @@
 > **V1 時期的紀錄。** 「WAL v1 仍有的格式限制」一節，在 S1 改用 [WAL 格式 2](STORAGE_FORMAT_V2.md) 時已經解決。「從乾淨副本重建」描述的 `scripts/clean_rebuild.py` 仍在，但 S9 沒有重跑它。
 
 本階段依使用者指示接續教學驗收，範圍是獨立審查、負向測試與乾淨副本重建。
-沒有加入 V2 功能，也沒有修改相鄰的 ai-general-framework。變更前的程式及新增紅測試
+沒有加入 V2 功能。變更前的程式及新增紅測試
 保存在 `artifacts/audit/engineering-baseline.zip`；實際結果以本機原始輸出及最新 receipt 為準。
 
 ## 已查證的問題與修正

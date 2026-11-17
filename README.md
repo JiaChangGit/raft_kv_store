@@ -12,8 +12,7 @@ What this implementation does:
 - Group commit: the writes that arrive together share one sync to disk.
 - The same `raft-core` runs inside a deterministic simulator and inside the real TCP nodes.
 
-Most of the code, tests and documents were written by AI models under the author's direction; [how that worked](#how-this-was-built-with-ai) is described below, including its limits.
-Most documents under `docs/` are in Traditional Chinese.
+Most documents under `docs/` are in Traditional Chinese; [docs/GLOSSARY.md](docs/GLOSSARY.md) explains every term they use.
 
 ## What it does, stage by stage
 
@@ -25,8 +24,10 @@ Most documents under `docs/` are in Traditional Chinese.
 | S3 | ReadIndex: a GET no longer enters the log | [READ_INDEX](docs/READ_INDEX.md) |
 | S4 | Membership changes one server at a time; node IDs 1–7; the membership configuration lives in the log | [MEMBERSHIP](docs/MEMBERSHIP.md) |
 | S5–S6 | Group commit, batched replication, writing only what changed; fixes from an independent review | [PERFORMANCE](docs/PERFORMANCE.md) |
-| S7–S8 | Studies of the AI framework used to build this (not part of the store) | [framework-study/](framework-study/README.md) |
-| S9 | Documents, diagrams and a licence for publication, and a full acceptance rerun from scratch | [PUBLIC_RELEASE](docs/PUBLIC_RELEASE.md) |
+| S9 | Documents, diagrams and a licence for publication, and a full acceptance rerun from scratch | — |
+| S10 | A final review: three defects and one robustness problem fixed, 14 unguarded checks covered by tests, a broken demo and two broken lesson scripts repaired | [DEVELOPMENT](docs/DEVELOPMENT.md) |
+
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) explains the order of the stages, what was deliberately left out and what each review found.
 
 ## Architecture
 
@@ -82,8 +83,9 @@ sequenceDiagram
 
 ## Quick start
 
-You need Linux (developed on WSL2 Ubuntu, with data on ext4), Rust through rustup (the version is pinned in `rust-toolchain.toml`) and Python 3. Run everything from the repository root.
-If `cargo` is not on your PATH (common in non-login shells), run `. "$HOME/.cargo/env"` first.
+You need Linux (developed on WSL2 Ubuntu, with data on ext4), Rust through rustup (the version is pinned in `rust-toolchain.toml`) and Python 3.
+[docs/SETUP.md](docs/SETUP.md) goes from installing the tools to a running cluster, with what to expect at each step and common errors (in Chinese).
+Run everything from the repository root. If `cargo` is not on your PATH (common in non-login shells), run `. "$HOME/.cargo/env"` first.
 
 ```bash
 python3 -m venv .venv
@@ -118,7 +120,7 @@ What to expect:
 A client sends one request at a time. After `TIMEOUT_UNKNOWN`, retry with the same client ID, sequence and content; a new request uses the next sequence. Put and Delete return the previous value.
 `.venv/bin/python tools/kv_admin.py --config config/cluster.toml status` prints a summary of the cluster: the leader, the term, the members, where the membership configuration sits in the log and whether it is committed. `remove N` takes a node out.
 To replace a failed node, add the new one first, then remove the old one. Do not re-add a node ID with a wiped data directory and do not bootstrap a second node: this version does not detect either mistake, and both can break safety.
-[docs/HANDS_ON.md](docs/HANDS_ON.md) walks through an election, a write, killing the leader and restarting it (in Chinese).
+[docs/HANDS_ON.md](docs/HANDS_ON.md) runs an election, a write, killing the leader and restarting it with one command, and explains where each number comes from (in Chinese).
 
 ## Verification
 
@@ -129,20 +131,21 @@ To replace a failed node, add the new one first, then remove the old one. Do not
 | Simulation | 1,000 seeds (a seed fixes every random choice, so a run can be repeated exactly) × 10,000 events, checking invariants, conditions that must hold at every step, such as at most one leader per term |
 | Crashes | failpoints (test switches that make a process stop itself at a chosen point) between writing, syncing, acknowledging, committing, applying and replying; real processes killed with SIGKILL and restarted on the same data |
 | Network faults | proxies that drop, delay, duplicate and reorder whole frames; histories checked for linearizability |
-| Mutation testing | 63 planted bugs, each run in an isolated copy; every one must make a test fail |
-| Acceptance contract | 15 phases in `acceptance/final.json`, run by `scripts/verify_gate.py`. P00–P08 are the nine phases of the original specification; S1–S6 added P10–P15, one each. P09 is not used |
+| Mutation testing | 76 planted bugs, each run in an isolated copy; every one must make a test fail |
+| Lesson reproductions | the reproduction script of each of the 21 bug lessons still runs and reaches the saved conclusion (`bash scripts/run_lesson_repros.sh`) |
+| Acceptance contract | 16 phases in `acceptance/final.json`, run by `scripts/verify_gate.py`. P00–P08 are the nine phases of the original specification; S1–S6 and S10 added P10–P16, one each. P09 is not used |
 
 Each phase that passes leaves a receipt (a file recording the commands, the results and the source fingerprint) under `artifacts/`, which is not under version control.
 `.venv/bin/python scripts/status.py` shows the latest result of each phase and whether it matches the current source.
-`bash scripts/final_acceptance.sh` reruns everything from the mutation tests to P15; it can resume after an interruption and stops if a source file changes. It took about 45 minutes on the author's machine.
-The tag `s9-public-verified` is created only after every phase passed on the exact source of that commit.
+`bash scripts/final_acceptance.sh` reruns everything from the mutation tests to P16; it can resume after an interruption and stops if a source file changes. It took about 45 minutes on the author's machine.
+The tag `s10-final-review-verified` is created only after every phase passed on the exact source of that commit.
 
 ## What is not verified
 
 - There is no formal proof, of Raft or of this code.
 - There is no long soak test. Real-process linearizability checks look at no more than 24 operations at a time.
 - The simulator's administrator sends one membership change at a time, and each seed has 64 client operations.
-- S1 was reviewed only by another session of the same model, not by a different model.
+- The reviewer of S1 had also worked on S1, so S1 never had a fully independent review.
 - The bug lessons are drafts: nobody else has followed them yet.
 - SIGKILL is not a power failure; a successful `sync_all` is trusted to mean the data is on disk.
 - Membership operator mistakes (re-adding a wiped node, bootstrapping twice) are not detected.
@@ -151,18 +154,14 @@ The tag `s9-public-verified` is created only after every phase passed on the exa
 
 ## Documents
 
-Start with these three: the [architecture](docs/ARCHITECTURE.md), [one PUT through the whole system](docs/LEARNING_GUIDE.md) and the [bug lessons](docs/lessons/README.md).
-[docs/README.md](docs/README.md) sorts every document into five groups: current guides, specifications, records, historical versions and original materials.
-Records keep the paths of the author's machine as they were written; `CLAUDE.md`, `AGENTS.md` and `.claude/` are the author's local setup for AI tools.
+In this order: [setup](docs/SETUP.md), [architecture](docs/ARCHITECTURE.md), [one PUT through the whole system](docs/LEARNING_GUIDE.md) and the [bug lessons](docs/lessons/README.md).
+[docs/FAQ.md](docs/FAQ.md) has questions to check your understanding. [docs/README.md](docs/README.md) sorts every document into five groups: current guides, specifications, records, historical versions and original materials.
+Records keep the paths of the author's machine as they were written.
 
-## How this was built with AI
+## About AI tools
 
-- **Roles.** The author set the goals, approved a specification before every stage, spot-checked results and did every outward action (push, pull requests, deployment) themselves. AI models wrote the specifications, code, tests, lessons and reports.
-- **Process.** Every stage followed the same order: specification, approval, failing tests, implementation, simulation and fault tests, independent review, lessons, acceptance, then a local commit and tag.
-- **Reviews.** Three independent reviews found real defects. The S1–S4 review found a recovery bug, a weakened simulator check and a boundary bug. The S5 review found an acceptance phase that had never finished although the documents called it done. The review of the changes to the author's AI framework found a usage counter that could print arbitrary words from private transcripts. The S5 and framework reviewers were not the models that wrote that work; the S1–S4 reviewer had also written S1, so S1 was never reviewed by a second model.
-- **Limits.** The same model often wrote and graded, and experiments ran each condition only once or twice. Also, the sessions whose start directory was recorded all started one level above the project, so the project's permission settings, which block writes to the framework and pushes, were never loaded; "read-only" and "no push" depended only on the restraint of the model doing the work.
-
-[docs/AI_COLLABORATION.md](docs/AI_COLLABORATION.md) has the details and sources (in Chinese), and [framework-study/](framework-study/README.md) has the study of the AI framework itself.
+Most of the code, tests and documents were written by AI coding assistants under the author's direction. The author set the scope, approved the specification of every stage, spot-checked results and did every outward action (push, release) themselves.
+Correctness does not rest on the writer's word: every feature has to pass the tests and acceptance listed above, and each of the three independent reviews was done by a reviewer who had not worked on the part under review, except for S1 (see below).
 
 ## Licence
 

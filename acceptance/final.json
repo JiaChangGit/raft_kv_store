@@ -431,6 +431,46 @@
         "docs/lessons/19-a-case-stopped-by-another-rule/expected-output.txt"
       ],
       "notes": "The S5 independent review (docs/INDEPENDENT_REVIEW_S5.md) found S5 code that no test guarded; docs/PERFORMANCE.md section 15 is the plan. The node gains one test-only failpoint, after_sync_of_a_batch_before_ack, which fires only once a batch of two or more client writes is durable. queued_writes_share_one_barrier_and_status_survives_a_large_map (phase 14) now builds its actor through a helper it shares with the split test; its assertions are unchanged. Tests of phase 14 whose assertions changed are listed in modified_tests."
+    },
+    "16": {
+      "title": "S10: final review: single-voter reads, concurrent directory creation, index bounds, checks the storage review found unguarded",
+      "rust_tests": [
+        "a_single_voter_leader_answers_a_read_without_waiting",
+        "opens_racing_to_create_the_same_parent_all_succeed",
+        "indexes_beyond_the_limit_are_refused",
+        "append_entries_terms_must_not_decrease",
+        "a_snapshot_beyond_the_index_limit_is_refused",
+        "vote_only_and_term_only_deltas_reach_the_disk",
+        "a_record_with_valid_checksums_but_invalid_content_is_refused",
+        "a_resealed_snapshot_header_with_bad_fields_is_refused",
+        "a_delta_at_or_below_the_snapshot_base_is_refused",
+        "a_transaction_over_the_size_limit_is_refused_before_writing",
+        "an_oversize_snapshot_is_refused_even_when_it_parses",
+        "a_session_with_an_invalid_operation_is_refused"
+      ],
+      "pytest_nodes": [
+        "tests/integration/test_read_index.py::test_a_single_node_cluster_answers_reads_at_once",
+        "tests/integration/test_learning_demo.py::test_the_hands_on_demo_runs_to_the_end",
+        "scripts/test_verify_gate.py::ContractContinuityTests::test_fingerprint_covers_what_git_would_track_and_matches_a_plain_copy"
+      ],
+      "required_files": [
+        "docs/DEVELOPMENT.md",
+        "docs/SETUP.md",
+        "docs/GLOSSARY.md",
+        "docs/FAQ.md",
+        "docs/ENGINEERING_RULES.md",
+        "scripts/run_lesson_repros.sh",
+        "artifacts/reports/mutations.json",
+        "docs/lessons/20-a-leader-alone-never-answers-reads/README.md",
+        "docs/lessons/20-a-leader-alone-never-answers-reads/repro.sh",
+        "docs/lessons/20-a-leader-alone-never-answers-reads/expected-output.txt",
+        "docs/lessons/20-a-leader-alone-never-answers-reads/answers.md",
+        "docs/lessons/21-a-fresh-clone-fails-its-first-test-run/README.md",
+        "docs/lessons/21-a-fresh-clone-fails-its-first-test-run/repro.sh",
+        "docs/lessons/21-a-fresh-clone-fails-its-first-test-run/expected-output.txt",
+        "docs/lessons/21-a-fresh-clone-fails-its-first-test-run/answers.md"
+      ],
+      "notes": "No new feature. Three defects fixed: a single-voter leader never answered a read (lesson 20); WALs opened at once under a parent directory that did not exist yet raced to create it (lesson 21); log indexes near u64::MAX passed every validator and then overflowed (MAX_LOG_INDEX). The storage review planted 30 changes and 14 went unnoticed; the tests above guard the ones worth guarding, and the s10_* mutation cases plant each removal. The hands-on demo had been failing since S5 and is now run by a test. The source fingerprint now covers what Git would track (scripts/test_verify_gate.py); this changes the checker, so every phase is rerun. No earlier test's assertions changed; the replaced checker unit test test_host_configuration_is_outside_fingerprint_but_sources_are_not was never named in this contract."
     }
   },
   "reports": {
@@ -862,6 +902,39 @@
           "s5_delta_command_unchecked",
           "s5_delta_first_term_zero",
           "s5_node_never_splits_proposals"
+        ]
+      }
+    ],
+    "16": [
+      {
+        "path": "artifacts/reports/mutations.json",
+        "required_nonempty": [
+          "command",
+          "isolation"
+        ],
+        "required_positive_integer": [
+          "case_count",
+          "detected_count",
+          "control_count"
+        ],
+        "required_empty_array": [
+          "undetected"
+        ],
+        "source_fingerprint_must_match": true,
+        "required_detected_cases": [
+          "s10_single_voter_read_waits",
+          "s10_directory_race_is_an_error",
+          "s10_snapshot_index_unbounded",
+          "s10_envelope_term_order_unchecked",
+          "s10_envelope_prev_term_unchecked",
+          "s10_noop_ignores_term",
+          "s10_noop_ignores_vote",
+          "s10_recovery_skips_validation",
+          "s10_snapshot_cluster_unchecked",
+          "s10_delta_base_check_only_zero",
+          "s10_no_record_size_bound",
+          "s10_kv_restore_size_unchecked",
+          "s10_kv_session_operation_unchecked"
         ]
       }
     ]

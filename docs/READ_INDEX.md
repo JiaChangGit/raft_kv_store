@@ -27,7 +27,7 @@
   （"each leader commit a blank no-op entry into the log at the start of its term"）；回覆前與多數交換 heartbeat，確認自己沒有被取代。
 - 博士論文 §6.4 的五步：(1) 尚未 commit 本任期的 entry 就等待；(2) 把當下的 commit index 記為 readIndex；(3) 送出新一輪 heartbeat，等待多數回覆；
   (4) 等狀態機至少套用到 readIndex；(5) 執行查詢並回覆。並指出一輪 heartbeat 可以服務累積的任意多筆讀取。
-- 博士論文 §6.4 的 follower 讀取與 §6.4.1 的 lease：本階段不做（§12 D2；`AGENTS.md` 永久禁止 lease）。
+- 博士論文 §6.4 的 follower 讀取與 §6.4.1 的 lease：本階段不做（§12 D2；[工程規則](ENGINEERING_RULES.md) 永久禁止 lease）。
 
 ## 3. 範圍
 
@@ -192,7 +192,7 @@
 | D3 | GET 重送 | 重新讀取；GET 不再寫進 session，`effect_count` 不計 GET |
 | D4 | 效能實測 | 要，只記錄不設門檻；另以測試保證讀取不讓 WAL 成長 |
 
-核准本規格後，`AGENTS.md` 在同一個 commit 修改：解除「不做 ReadIndex」；把「新的 GET 一律複製」改為本規格的讀取規則；
+核准本規格後，[工程規則](ENGINEERING_RULES.md) 在同一個 commit 修改：解除「不做 ReadIndex」；把「新的 GET 一律複製」改為本規格的讀取規則；
 去重規則註明只適用於寫入。lease 的禁止維持不變。
 
 ## 13. 實作補記（2026-11-13）

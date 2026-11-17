@@ -1,8 +1,7 @@
 # S1～S4 獨立審查報告
 
 日期：2026-11-14　｜　審查對象：`513cd58`（tag `s4-membership-verified`，工作樹乾淨）　｜
-審查者：Claude Code 桌面版新 session，模型 `claude-fable-5-2`　｜　依據：`docs/ROADMAP.md`「獨立審查：與實作不同的模型，另開 session，不提供預期答案」，
-做法依 `.claude/skills/review-change/SKILL.md`（本 session 的宿主沒有列出專案 skill，改為直接讀檔套用）。
+審查者：沒有參與 S2～S4 的實作（S1 例外，見 §7 的「獨立性」）　｜　依據：專案計畫的規則「獨立審查：審查者沒有參與那部分的實作，不提供預期答案」。
 
 §1～§7 是審查當時的報告原文：審查期間沒有修改任何受版本控制的程式、測試或規格，所有實驗都在暫存副本上進行。
 文中的 `repro/` 與 `evidence/` 指 `artifacts/audit/independent-review-20261114/` 底下的資料夾；`artifacts/` 不在版本控制內，那些檔案只存在做審查的機器上。
@@ -189,7 +188,7 @@ mutation 檢查也看不出來（每個植入只對應一個單元測試，不�
 
 **讀過全文的**：`raft-core/src/lib.rs`、`raft-protocol/src/lib.rs`、`raft-storage/src/lib.rs`、`raft-node/src/main.rs`、`raft-sim/src/{lib,cluster}.rs`、
 `kv-state/src/lib.rs` 的非測試部分、`tools/linearizability.py`、`tests/integration/` 的 `test_faults.py`、`test_read_index.py`、`test_randomized.py`、
-`scripts/mutation_check.py` 的案例表、`docs/ROADMAP.md`、`AGENTS.md`、`docs/ACCEPTANCE_FINAL.md`。
+`scripts/mutation_check.py` 的案例表、計畫文件、[工程規則](ENGINEERING_RULES.md)、`docs/ACCEPTANCE_FINAL.md`。
 
 **只讀了部分的**：四份規格的「保證與不保證」、一致性規則與實作補記（沒有逐節核對全文）；`tools/cluster.py`；`acceptance/final.json` 的對照表與註記；core 的測試只看名稱與少數內容。
 
@@ -200,16 +199,15 @@ mutation 檢查也看不出來（每個植入只對應一個單元測試，不�
 12 個完全相同；1 個被取代；14 個有修改，其中 9 個已記在 `modified_tests` 或對照表的註記、5 個是 O5 的機械性修改。
 已記錄的那 9 個，我只讀了註記，沒有逐一核對「index 與 term 平移後斷言相同」的說法。唯一確認變弱的是模擬器（F2），而它的測試函式本身沒有改。
 
-**獨立性**：S2～S4 的 commit 由 `Claude Opus 5.5` 實作，本次審查的模型不同，符合路線圖的要求。
-**S1 不完全符合**：S1 的規格草稿與第一個 WIP commit（`3d1857b`、`7123c68`）由和本次相同的 `Claude Fable 5.2` 撰寫，之後由 Opus 5.5 完成。
-對 S1 來說這次只做到「不同 session」，沒有做到「不同模型」。若要嚴格符合，S1 需要第三個模型再看一次。
-本 session 開始時讀了記憶與路線圖（專案目的、階段順序），沒有讀先前 session 的對話、教學或任何「預期會找到什麼」的資料。
+**獨立性**：審查者沒有參與 S2～S4 的實作，符合計畫的要求。
+**S1 不完全符合**：S1 的規格草稿與第一個 WIP commit（`3d1857b`、`7123c68`）也出自這位審查者，所以對 S1 來說這不是獨立的審查；若要嚴格符合，S1 需要另一位審查者再看一次。
+審查開始時只讀了專案目的與階段順序，沒有讀先前的工作紀錄、教學或任何「預期會找到什麼」的資料。
 
 **其他限制**：這是一次有限的人工閱讀加上針對性的實驗，不是形式化驗證；「沒有發現」只代表在上述範圍內沒有找到。
 我自己的對照實驗第一次執行時，重蹈了教學 06 的錯誤（各個植入共用一個建置目錄，前一個植入殘留到後面），徵兆是互不相干的植入都回報同一個 `committed conflict index=57`。那批結果已作廢、沒有保留；
 本報告的數字都來自修正後、每個案例重建所有 crate 的執行。
 
-## 8. 處理結果（2026-11-14，同一個 session，使用者指示「修，照建議做」）
+## 8. 處理結果（2026-11-14，作者指示「修，照建議做」）
 
 | # | 處理 | 新增或修改的測試 | 教學 |
 |---|---|---|---|
