@@ -17,6 +17,10 @@ pub const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
 /// Largest snapshot chunk per InstallSnapshot. Hex doubles it to 512 KiB,
 /// which fits the 1 MiB frame limit with room for the envelope.
 pub const MAX_CHUNK: usize = 256 * 1024;
+/// Largest log index a node accepts from a peer, a snapshot or its own disk.
+/// No real log comes near it; the bound only keeps `index + 1` and
+/// `index + batch` from overflowing a u64 when an index arrives corrupted.
+pub const MAX_LOG_INDEX: LogIndex = 1 << 62;
 
 /// Lower-case hexadecimal. JSON arrays of numbers would grow bytes about 3.5x.
 pub fn to_hex(bytes: &[u8]) -> String {
@@ -367,6 +371,8 @@ impl DurableState {
     }
     pub fn valid(&self) -> bool {
         self.voted_for.is_none_or(valid_node)
+            && self.base.index <= MAX_LOG_INDEX
+            && self.last_index() <= MAX_LOG_INDEX
             && (self.base.index == 0) == (self.base.term == 0)
             && self.base.term <= self.term
             && self.entries.iter().enumerate().all(|(i, e)| {
@@ -440,6 +446,7 @@ impl Snapshot {
     }
     pub fn valid(&self) -> bool {
         self.base.index > 0
+            && self.base.index <= MAX_LOG_INDEX
             && self.base.term > 0
             && Voters::from_bits(self.voters).is_some()
             && !self.data.is_empty()
@@ -557,7 +564,9 @@ impl Envelope {
                 } => {
                     *leader_id == self.from
                         && entries.len() <= MAX_BATCH_ENTRIES
-                        && prev_log_index.checked_add(entries.len() as u64).is_some()
+                        && prev_log_index
+                            .checked_add(entries.len() as u64)
+                            .is_some_and(|last| last <= MAX_LOG_INDEX)
                         && entries.windows(2).all(|p| p[0].term <= p[1].term)
                         && entries.iter().enumerate().all(|(i, e)| {
                             e.index == prev_log_index + i as u64 + 1
@@ -580,7 +589,7 @@ impl Envelope {
                 } => {
                     let length = (data.len() / 2) as u64;
                     *leader_id == self.from
-                        && *last_included_index > 0
+                        && (1..=MAX_LOG_INDEX).contains(last_included_index)
                         && *last_included_term > 0
                         && last_included_term <= term
                         && Voters::from_bits(*voters).is_some()
@@ -951,5 +960,92 @@ impl ClientResponse {
             leader_hint,
             committed_index: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod untrusted_index_tests {
+    use super::*;
+    fn envelope(body: Rpc) -> Envelope {
+        Envelope {
+            version: 1,
+            cluster_id: CLUSTER.into(),
+            from: 1,
+            to: 2,
+            rpc_id: 1,
+            body,
+        }
+    }
+    fn noop(index: LogIndex, term: Term) -> LogEntry {
+        LogEntry {
+            index,
+            term,
+            command: Command::NoOp,
+        }
+    }
+    fn append(prev_log_index: LogIndex, prev_log_term: Term, entries: Vec<LogEntry>) -> Envelope {
+        envelope(Rpc::AppendEntries {
+            term: 5,
+            leader_id: 1,
+            prev_log_index,
+            prev_log_term,
+            entries,
+            leader_commit: 0,
+        })
+    }
+
+    /// An index near u64::MAX, from a peer or from disk, is refused before any
+    /// code adds to it (2026-11-17 storage review, F1).
+    #[test]
+    fn indexes_beyond_the_limit_are_refused() {
+        let snapshot_at = |index| {
+            envelope(Rpc::InstallSnapshot {
+                term: 1,
+                leader_id: 1,
+                last_included_index: index,
+                last_included_term: 1,
+                voters: 0b1110,
+                total_len: 1,
+                total_crc: crc32c(b"x"),
+                offset: 0,
+                data: "78".into(),
+                done: true,
+            })
+        };
+        assert!(snapshot_at(MAX_LOG_INDEX).valid_for(2));
+        assert!(!snapshot_at(MAX_LOG_INDEX + 1).valid_for(2));
+        assert!(!snapshot_at(u64::MAX).valid_for(2));
+
+        assert!(append(MAX_LOG_INDEX - 1, 1, vec![noop(MAX_LOG_INDEX, 1)]).valid_for(2));
+        assert!(!append(MAX_LOG_INDEX, 1, vec![noop(MAX_LOG_INDEX + 1, 1)]).valid_for(2));
+
+        let voters = Voters::from_ids(&[1, 2, 3]).unwrap();
+        for index in [MAX_LOG_INDEX + 1, u64::MAX] {
+            let base = LogBase { index, term: 1 };
+            assert!(!Snapshot::new(base, voters, b"x".to_vec()).valid());
+            // Checked before `last_index()` adds the entry count to the base.
+            assert!(!DurableState::with_base(1, None, base, vec![]).valid());
+        }
+        let base = LogBase {
+            index: MAX_LOG_INDEX,
+            term: 1,
+        };
+        assert!(DurableState::with_base(1, None, base, vec![]).valid());
+        assert!(!DurableState::with_base(1, None, base, vec![noop(MAX_LOG_INDEX + 1, 1)]).valid());
+    }
+
+    /// The follower's handler assumes these two rules hold; only `valid_for`
+    /// checks them (2026-11-17 storage review, F8).
+    #[test]
+    fn append_entries_terms_must_not_decrease() {
+        assert!(append(3, 2, vec![noop(4, 2), noop(5, 4)]).valid_for(2));
+        assert!(
+            !append(3, 2, vec![noop(4, 4), noop(5, 3)]).valid_for(2),
+            "terms decrease inside the batch"
+        );
+        assert!(
+            !append(3, 3, vec![noop(4, 2)]).valid_for(2),
+            "an entry older than the one before it"
+        );
     }
 }

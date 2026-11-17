@@ -37,7 +37,9 @@ impl StateMachine {
     pub fn applied_index(&self) -> u64 {
         self.applied_index
     }
-    /// First executions of logical requests, including GET; duplicate log entries do not increase it.
+    /// First executions of logical requests; duplicate log entries do not increase it.
+    /// Since S3 a GET never enters the log, so only a Get entry already in an
+    /// older log is counted here.
     pub fn effect_count(&self) -> u64 {
         self.effect_count
     }
@@ -446,5 +448,27 @@ mod tests {
         assert_eq!(kv.apply(&entry(3, 2, 1, huge)).status, "INVALID_ARGUMENT");
         assert_eq!(kv.get("x"), Some("A"));
         assert_eq!(kv.session_count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod restore_bounds_tests {
+    use super::*;
+    /// The size limit is checked before parsing: valid JSON padded past it is refused.
+    #[test]
+    fn an_oversize_snapshot_is_refused_even_when_it_parses() {
+        let mut bytes =
+            br#"{"applied_index":0,"effect_count":0,"values":{},"sessions":{}}"#.to_vec();
+        bytes.resize(MAX_SNAPSHOT + 1, b' ');
+        assert!(StateMachine::restore(&bytes, 0).is_err());
+    }
+    /// A remembered request must itself be valid: here its key is 300 bytes.
+    #[test]
+    fn a_session_with_an_invalid_operation_is_refused() {
+        let key = "k".repeat(300);
+        let text = format!(
+            r#"{{"applied_index":1,"effect_count":1,"values":{{}},"sessions":{{"1":{{"sequence":1,"operation":{{"Delete":{{"key":"{key}"}}}},"response":{{"status":"OK","result":null,"leader_hint":null,"committed_index":1}}}}}}}}"#
+        );
+        assert!(StateMachine::restore(text.as_bytes(), 1).is_err());
     }
 }

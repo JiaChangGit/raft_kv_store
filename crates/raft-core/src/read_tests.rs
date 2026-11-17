@@ -302,3 +302,19 @@ fn reads_never_write_durable_state() {
     }
     assert_eq!(n.state, before);
 }
+
+/// A cluster right after bootstrap has one voter, so there is nobody whose
+/// reply could finish the read later: the read has to be answered in the
+/// step that receives it.
+#[test]
+fn a_single_voter_leader_answers_a_read_without_waiting() {
+    let mut n = Core::new(1, bootstrap_state(1)).unwrap();
+    let fx = n.step(Event::ElectionTimeout { generation: 0 });
+    complete(&mut n, fx);
+    assert_eq!(n.role, Role::Leader);
+    assert_eq!(n.commit_index, 2, "the no-op of the term is committed");
+
+    let fx = n.step(Event::Read { id: 7 });
+    let fx = complete(&mut n, fx);
+    assert_eq!(ready(&fx), vec![(7, 2)]);
+}

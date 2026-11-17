@@ -37,7 +37,8 @@ checker 對這個狀態採不確定結果分支，而不直接刪除該操作。
 
 recovery 先從已落盤的快照還原 KV/session（沒有快照則為空），再重放重新確認 committed 的後續
 entry，重建相同值與原結果。session 數等於 client 數，沒有依時間淘汰；client 數本身沒有上限。
-effect_count 是首次執行的寫入數（Put、Delete）；S3 起不含 GET。log 中既有的 Get entry（例如舊資料）仍照 S2 的規則套用。
+effect_count 是首次執行的請求數，重複的 log entry 不會增加它。S3 起 GET 不進 log，所以新的 GET 不會計入；
+log 中既有的 Get entry（例如 S3 之前寫下的資料）仍照 S2 的規則套用，也會計入一次。
 
 成員變更請求（S4，見[成員變更規格](MEMBERSHIP.md) §10）走同一個 client 連接埠：
 `{"version":1,"membership":{"Add":4}}` 或 `{"version":1,"membership":{"Remove":2}}`。回覆 OK 時 `result` 是新設定（例如 `"1,2,3,4"`），

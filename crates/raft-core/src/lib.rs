@@ -597,6 +597,9 @@ impl Core {
             round: 0,
         });
         self.start_read_round(effects);
+        // A leader that is the only voter is its own majority: no reply will
+        // ever arrive to finish this read, so it is finished here (lesson 20).
+        self.finish_reads(effects);
     }
     /// Give every read still without a readIndex one, and a fresh round.
     fn start_read_round(&mut self, effects: &mut Vec<Effect>) {

@@ -163,7 +163,7 @@ sessions: client_id -> { sequence, operation, response }
 S1 預留的五個欄位開始使用：`base_index`、`base_term`、`start_term`、`start_voted_for`、`first_sequence`。
 WAL 的初始狀態改由檔頭決定：`term = start_term`、`voted_for = start_voted_for`、log 的 base 為 `(base_index, base_term)`、
 第一筆 record 的 sequence 必須是 `first_sequence`。檔頭檢查改為驗證這些欄位的關係（`base_index` 為 0 時 `base_term` 也必須為 0、
-`base_term <= start_term`、投票為 0～3、`first_sequence >= 1`），不再要求固定值。transaction 的 `truncate_from` 必須大於 `base_index`。
+`base_term <= start_term`、投票為 0 或 1～7（S4 起；本規格撰寫時是 1～3）、`first_sequence >= 1`），不再要求固定值。transaction 的 `truncate_from` 必須大於 `base_index`。
 
 ### 7.3 重啟時快照與 WAL 的一致性
 
@@ -191,7 +191,7 @@ S 之後的 entry 仍和以前一樣，要重新得知已 commit 才套用。
 
 1. 寫 `snapshot.tmp`，`sync_all`，rename 為 `snapshot`，同步目錄。
 2. 依新狀態寫 `raft.wal.tmp`：檔頭的 base 為快照位置、`start_term`／`start_voted_for` 為目前的 term 與投票、`first_sequence` 為下一個 sequence；
-   若 base 之後還有 entry，接一筆 transaction 帶上它們。`sync_all`，rename 為 `raft.wal`，同步目錄。
+   若 base 之後還有 entry，接著寫 transaction 帶上它們；超過單筆 2 MiB 的上限時分成多筆，每筆都重述 term 與投票（測試 `large_retained_suffix_is_split_across_records`）。`sync_all`，rename 為 `raft.wal`，同步目錄。
 3. 重新開啟 WAL 檔，更新記憶體中的 durable 狀態與 sequence。
 
 任何一步失敗都 poison，節點停止服務。每一步之間都有測試用的中斷點（§11）。

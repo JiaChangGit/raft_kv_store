@@ -72,3 +72,21 @@ def test_a_leader_left_with_a_minority_does_not_answer_reads(tmp_path):
         result=check(c.history)
         (c.directory/"checker.json").write_text(json.dumps(result,indent=2))
         assert result["status"]=="PASS",(result,c.history)
+
+def test_a_single_node_cluster_answers_reads_at_once(tmp_path):
+    """Right after bootstrap the cluster has one voter. That leader is its own
+    majority, so no reply from anybody will ever finish a read: it has to
+    answer when the read arrives (lesson 20). Before the fix every GET here
+    ran into the node's three-second deadline and came back TIMEOUT_UNKNOWN."""
+    import time
+    with Cluster(tmp_path,nodes=1,proxy=False) as c:
+        assert c.status(1)["voters"]==[1]
+        assert c.invoke(request(530,1,"Put","x","alone"),node=1)["status"]=="OK"
+        # Let the write settle so that nothing but the read itself can answer it.
+        time.sleep(0.3)
+        started=time.monotonic()
+        answer=c.invoke(request(530,2,"Get","x"),node=1,timeout=5)
+        elapsed=time.monotonic()-started
+        assert answer["status"]=="OK" and answer["result"]=="alone",answer
+        assert elapsed<1.0,f"the read waited {elapsed:.2f}s"
+        assert c.status(1)["reads_waiting"]==0

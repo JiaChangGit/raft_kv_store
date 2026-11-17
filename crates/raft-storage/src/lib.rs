@@ -4,7 +4,7 @@
 //! recovery rules: docs/STORAGE_FORMAT_V2.md and docs/SNAPSHOT_COMPACTION.md.
 pub use raft_protocol::crc32c;
 use raft_protocol::{
-    CLUSTER, Delta, DurableState, LogBase, LogEntry, MAX_SNAPSHOT, NodeId, Snapshot,
+    CLUSTER, Delta, DurableState, LogBase, LogEntry, MAX_LOG_INDEX, MAX_SNAPSHOT, NodeId, Snapshot,
     adopt_snapshot, valid_node,
 };
 use serde::{Deserialize, Serialize};
@@ -136,7 +136,12 @@ fn create_directory(path: &Path) -> io::Result<()> {
     if parent != path {
         create_directory(parent)?;
     }
-    fs::create_dir(path)?;
+    // Another node or thread may create the same directory between the check
+    // above and this call (lesson 21); a directory is what we wanted.
+    match fs::create_dir(path) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
+        result => result?,
+    }
     sync_directory(parent)?;
     sync_directory(path)
 }
@@ -315,6 +320,9 @@ fn validate_delta(state: &DurableState, delta: &Delta) -> io::Result<()> {
     if delta.truncate_from <= state.base().index || delta.truncate_from > state.last_index() + 1 {
         return Err(invalid("transaction truncation index outside current log"));
     }
+    if (delta.truncate_from - 1).saturating_add(delta.append.len() as u64) > MAX_LOG_INDEX {
+        return Err(invalid("log index beyond MAX_LOG_INDEX"));
+    }
     let mut previous = state
         .term_at(delta.truncate_from - 1)
         .expect("checked: the index before the change is the base or held");
@@ -395,6 +403,7 @@ fn check_file_header(bytes: &[u8; FILE_HEADER_LEN], node_id: NodeId) -> io::Resu
         start_voted_for: word(72),
     };
     let consistent = bytes[36..40] == [0; 4]
+        && start.base_index <= MAX_LOG_INDEX
         && (start.base_index == 0) == (start.base_term == 0)
         && start.base_term <= start.start_term
         && start.first_sequence >= 1
@@ -562,7 +571,7 @@ fn create_identity(directory: &Path, node_id: NodeId) -> io::Result<()> {
 impl Wal {
     pub fn open(path: impl AsRef<Path>, node_id: NodeId) -> io::Result<Self> {
         if !valid_node(node_id) {
-            return Err(invalid("node ID must be 1, 2 or 3"));
+            return Err(invalid("node ID must be 1..=7"));
         }
         let directory = path.as_ref().to_path_buf();
         create_directory(&directory)?;

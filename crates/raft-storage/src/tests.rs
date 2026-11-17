@@ -1589,3 +1589,153 @@ fn recovery_work_grows_linearly_with_the_records() {
         "four times the records, four times the work"
     );
 }
+
+// Gaps found by the 2026-11-17 storage review: each check below could be
+// deleted from the code without any earlier test failing.
+
+/// The node persists a new term or a new vote only through `save_delta`; an
+/// empty delta that carries one of them is not "nothing to do".
+#[test]
+fn vote_only_and_term_only_deltas_reach_the_disk() {
+    let dir = TestDir::new();
+    for (term, vote) in [(4, None), (4, Some(2)), (5, Some(2))] {
+        {
+            let mut wal = Wal::open(&dir.0, 1).unwrap();
+            wal.save_delta(&Delta {
+                term,
+                voted_for: vote,
+                truncate_from: 1,
+                append: vec![],
+            })
+            .unwrap();
+        }
+        let wal = Wal::open(&dir.0, 1).unwrap();
+        assert_eq!((wal.state().term, wal.state().voted_for), (term, vote));
+    }
+}
+
+/// Checksums prove the bytes are the ones written, not that they make sense:
+/// a record whose entry has a term above the transaction's term is refused.
+#[test]
+fn a_record_with_valid_checksums_but_invalid_content_is_refused() {
+    let dir = TestDir::new();
+    {
+        let mut wal = Wal::open(&dir.0, 1).unwrap();
+        wal.save(&state(2, Some(1))).unwrap();
+    }
+    let mut bytes = fs::read(dir.wal()).unwrap();
+    let payload = br#"{"term":2,"voted_for":1,"truncate_from":1,"append":[{"index":1,"term":3,"command":"NoOp"}]}"#;
+    let mut record = record_header(2, payload.len()).to_vec();
+    record.extend_from_slice(payload);
+    record.extend_from_slice(&crc32c(&record).to_le_bytes());
+    bytes.extend_from_slice(&record);
+    fs::write(dir.wal(), &bytes).unwrap();
+    assert!(Wal::open(&dir.0, 1).is_err());
+    assert_eq!(fs::read(dir.wal()).unwrap(), bytes, "nothing was rewritten");
+}
+
+/// Snapshot header fields behind a correct header checksum: no voters, another
+/// cluster, term 0. Each is refused on its own.
+#[test]
+fn a_resealed_snapshot_header_with_bad_fields_is_refused() {
+    for (what, at, len, value) in [
+        ("no voters", 48usize, 4usize, 0u8),
+        ("another cluster", 8, 1, b'X'),
+        ("term 0", 40, 8, 0),
+    ] {
+        let dir = TestDir::new();
+        let (_, snapshot) = installed(&dir);
+        let mut bytes = encode_snapshot(&snapshot);
+        bytes[at..at + len].fill(value);
+        let crc = crc32c(&bytes[..60]);
+        bytes[60..64].copy_from_slice(&crc.to_le_bytes());
+        fs::write(dir.0.join("snapshot"), &bytes).unwrap();
+        assert!(Wal::open(&dir.0, 1).is_err(), "{what}");
+    }
+}
+
+/// After a snapshot, a delta that would rewrite compacted entries is an
+/// error, not a panic.
+#[test]
+fn a_delta_at_or_below_the_snapshot_base_is_refused() {
+    let dir = TestDir::new();
+    let (next, _) = installed(&dir);
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    for truncate_from in [next.base().index, next.base().index - 1] {
+        let delta = Delta {
+            term: next.term,
+            voted_for: next.voted_for,
+            truncate_from,
+            append: vec![],
+        };
+        assert!(wal.save_delta(&delta).is_err(), "{truncate_from}");
+    }
+}
+
+/// A transaction above the 2 MiB record limit is refused before any byte is
+/// written; otherwise the node would write a record it refuses to restart from.
+#[test]
+fn a_transaction_over_the_size_limit_is_refused_before_writing() {
+    let dir = TestDir::new();
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    wal.save(&state(1, Some(1))).unwrap();
+    let before = fs::read(dir.wal()).unwrap();
+    let value = "v".repeat(4096);
+    let append: Vec<_> = (1..=600).map(|i| entry(i, 1, &value)).collect();
+    let error = wal
+        .save_delta(&Delta {
+            term: 1,
+            voted_for: Some(1),
+            truncate_from: 1,
+            append,
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(
+        !wal.poisoned(),
+        "a refused request is not a storage failure"
+    );
+    assert_eq!(fs::read(dir.wal()).unwrap(), before);
+}
+
+/// A snapshot at an index near u64::MAX used to pass every check and then
+/// overflow in `install` ("attempt to add with overflow"); it is now refused.
+#[test]
+fn a_snapshot_beyond_the_index_limit_is_refused() {
+    let dir = TestDir::new();
+    let mut wal = Wal::open(&dir.0, 1).unwrap();
+    wal.save(&state(1, None)).unwrap();
+    for index in [MAX_LOG_INDEX + 1, u64::MAX] {
+        let base = LogBase { index, term: 1 };
+        let snapshot = Snapshot::new(base, Voters::from_ids(&[1, 2, 3]).unwrap(), b"x".to_vec());
+        assert!(!snapshot.valid(), "{index}");
+        let next = DurableState::with_base(1, None, base, vec![]);
+        assert!(wal.install(&next, &snapshot).is_err(), "{index}");
+    }
+    assert!(!wal.poisoned());
+}
+
+/// Nodes (or tests) that start at the same time under a parent directory that
+/// does not exist yet all race to create it. Until 2026-11-17 the losers got
+/// "File exists" and could not open their WAL (lesson 21); a fresh clone saw
+/// three raft-node tests fail this way on its first `cargo test`.
+#[test]
+fn opens_racing_to_create_the_same_parent_all_succeed() {
+    let dir = TestDir::new();
+    for round in 0..20 {
+        let parent = dir.0.join(format!("round-{round}")).join("shared-parent");
+        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|n| {
+                let (parent, start) = (parent.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    Wal::open(parent.join(format!("node-{n}")), 1).map(|_| ())
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+    }
+}
