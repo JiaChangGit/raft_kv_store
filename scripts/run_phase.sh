@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Final acceptance wrapper only. This does not invoke an AI or generate code.
+# Final acceptance wrapper only: it runs the acceptance checker for one phase and generates no code.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/.."
 if [[ $# != 1 ]]; then
