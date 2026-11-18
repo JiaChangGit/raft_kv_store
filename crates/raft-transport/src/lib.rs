@@ -138,6 +138,17 @@ mod tests {
         }
     }
 
+    /// A length of 0 is refused by the length check itself. Without it the
+    /// empty payload reached the caller, and the node's client listener, which
+    /// reads raw payloads, only found out when JSON parsing failed
+    /// (2026-11-17 storage review, left open in S10).
+    #[test]
+    fn a_zero_length_frame_is_refused() {
+        let error = read_payload(&mut Cursor::new([0, 0, 0, 0, b'{', b'}'])).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "frame length outside bounds");
+    }
+
     #[test]
     fn tcp_framing_handles_partial_io() {
         let mut output = Fragmented(Vec::new());

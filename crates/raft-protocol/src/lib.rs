@@ -1034,6 +1034,44 @@ mod untrusted_index_tests {
         assert!(!DurableState::with_base(1, None, base, vec![noop(MAX_LOG_INDEX + 1, 1)]).valid());
     }
 
+    /// Two rules that core happens to check again, so deleting either one from
+    /// `valid_for` used to break no test (2026-11-17 storage review, left open
+    /// in S10): a message that claims to come from the receiving node itself,
+    /// and a snapshot whose voter set is not a valid configuration.
+    #[test]
+    fn messages_from_the_receiver_itself_or_with_invalid_voters_are_refused() {
+        let mut own = append(3, 2, vec![noop(4, 2)]);
+        if let Rpc::AppendEntries { leader_id, .. } = &mut own.body {
+            *leader_id = 2;
+        }
+        own.from = 2;
+        assert!(!own.valid_for(2), "node 2 receiving a message from node 2");
+        own.to = 3;
+        assert!(
+            own.valid_for(3),
+            "the same message is fine for another node"
+        );
+
+        let snapshot = |voters| {
+            envelope(Rpc::InstallSnapshot {
+                term: 1,
+                leader_id: 1,
+                last_included_index: 5,
+                last_included_term: 1,
+                voters,
+                total_len: 1,
+                total_crc: crc32c(b"x"),
+                offset: 0,
+                data: "78".into(),
+                done: true,
+            })
+        };
+        assert!(snapshot(0b1110).valid_for(2));
+        for (what, voters) in [("no voters", 0), ("node 0", 0b1), ("node 8", 1 << 8)] {
+            assert!(!snapshot(voters).valid_for(2), "{what}");
+        }
+    }
+
     /// The follower's handler assumes these two rules hold; only `valid_for`
     /// checks them (2026-11-17 storage review, F8).
     #[test]

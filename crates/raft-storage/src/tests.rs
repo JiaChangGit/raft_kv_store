@@ -1698,6 +1698,21 @@ fn a_transaction_over_the_size_limit_is_refused_before_writing() {
     assert_eq!(fs::read(dir.wal()).unwrap(), before);
 }
 
+/// The size limit is checked from the file's metadata, before the file is
+/// read into memory. Without it a too-large file was read whole and refused
+/// later, for a different reason (2026-11-17 storage review F9, left open in
+/// S10). The file is sparse, so the test writes no data.
+#[test]
+fn a_snapshot_file_over_the_size_limit_is_refused_before_reading() {
+    let dir = TestDir::new();
+    let file = fs::File::create(dir.0.join("snapshot")).unwrap();
+    file.set_len((SNAPSHOT_HEADER_LEN + MAX_SNAPSHOT) as u64 + 1)
+        .unwrap();
+    let error = read_snapshot(&dir.0).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "snapshot file exceeds the size limit");
+}
+
 /// A snapshot at an index near u64::MAX used to pass every check and then
 /// overflow in `install` ("attempt to add with overflow"); it is now refused.
 #[test]

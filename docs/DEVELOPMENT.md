@@ -33,8 +33,9 @@
 | S6 | 11-15～16 | 補上 S5 審查找到的測試缺口（教學 16～19） | `s6-review-fixes-verified` |
 | S9 | 11-16～17 | 中英 README、架構圖、文件地圖、授權，從頭重跑完整驗收 | `s9-public-verified` |
 | S10 | 11-17 | 最後一次複查：三個缺陷、一個健壯性問題、12 段沒有測試把關的檢查、壞掉的示範與教學腳本（見下方） | `s10-final-review-verified` |
+| S12 | 11-18 | S10 留下的最後 4 段沒有測試把關的檢查補上測試（見下方） | `s12-review-gaps-verified` |
 
-S7、S8 是同一段期間的另一項研究，不屬於這個 KV store，成果不在這個儲存庫（tag 還在 Git 歷史裡）。
+S7、S8、S11 是同一段期間的另一項研究，不屬於這個 KV store，成果不在這個儲存庫（S7、S8 的 tag 還在 Git 歷史裡）。
 
 各階段的規格與實作後的補記：[WAL 格式 2](STORAGE_FORMAT_V2.md)、[快照與壓縮](SNAPSHOT_COMPACTION.md)、[ReadIndex](READ_INDEX.md)、
 [成員變更](MEMBERSHIP.md)、[效能](PERFORMANCE.md)（S6 在 §15）。V1 的紀錄是歷史文件，見[文件地圖](README.md)。
@@ -87,7 +88,7 @@ S2 是影響最大的一次重構：程式原本到處假設「log 的第幾個�
 | 只有一台 voter 時，GET 一定逾時 | 讀讀取的路徑時問「沒有 follower 時誰會呼叫回答讀取的函式」 | 修正；[教學 20](lessons/20-a-leader-alone-never-answers-reads/README.md) |
 | 全新 clone 第一次 `cargo test` 有 3 個測試失敗；同時啟動的節點可能起不來 | 執行 `scripts/clean_rebuild.py`（在新目錄從頭建置、跑全部測試） | 修正；[教學 21](lessons/21-a-fresh-clone-fails-its-first-test-run/README.md) |
 | log index 接近 u64 上限時，驗證全部放行，之後溢位 | 儲存層審查 | 新增 `MAX_LOG_INDEX`，五處驗證都檢查 |
-| 16 段檢查可以整段刪掉而沒有測試失敗 | 審查者在 30 個地方植入錯誤，各自只跑相關套件的測試 | 12 段補了測試，並登記成 mutation 案例；另外 4 段（`Envelope::valid_for` 裡重複的 voters 檢查、來自自己的訊息、長度為 0 的 frame、快照檔的大小上限）別處已再檢查一次或影響很小，沒有補 |
+| 16 段檢查可以整段刪掉而沒有測試失敗 | 審查者在 30 個地方植入錯誤，各自只跑相關套件的測試 | 12 段補了測試，並登記成 mutation 案例；另外 4 段（`Envelope::valid_for` 裡重複的 voters 檢查、來自自己的訊息、長度為 0 的 frame、快照檔的大小上限）別處已再檢查一次或影響很小，當時沒有補；S12 補上（見下一節） |
 | `HANDS_ON.md` 的一鍵示範從 S5 起就跑不完 | 照文件實際執行 | 修正，並加一個跑完整個示範的測試 |
 | 教學 06、13 的重現腳本從 S4、S5 起就失效 | 重跑全部 21 篇的重現 | 改成從固定的 tag 取程式；新增 `scripts/run_lesson_repros.sh` |
 | 帶讀文件還停在 V1（「始終三節點」「重啟後 commit index 是 0」） | 對照目前的程式重讀 | 重寫 [帶讀](LEARNING_GUIDE.md) 與 [實際操作](HANDS_ON.md) |
@@ -98,3 +99,20 @@ S5 審查留下一個「無法解釋的失敗」：某個 mutant 執行時，一
 
 從這次學到的事：**做過一次的檢查不會自己保持正確。** 示範腳本、教學的重現、乾淨環境的重建，都在某個階段之後悄悄壞掉，
 因為它們不在每次都跑的驗收裡。這次把示範加進測試，把教學的重現做成一支可以重跑的腳本。
+
+## S12：補上最後 4 段檢查的測試
+
+S10 的審查留下 4 段「整段刪掉也沒有測試失敗」的檢查。當時判斷它們別處已經再檢查一次，或影響很小，所以沒有補。
+這次把它們補上，S10 審查找到的 16 段檢查現在都有測試把關。不加功能，也沒有改任何一段檢查本身。
+
+| 檢查 | 在哪裡 | 拿掉它會怎樣 | 新的測試 |
+|---|---|---|---|
+| 訊息不能來自收件的節點自己 | `Envelope::valid_for`（raft-protocol） | core 收到後還會再擋一次，所以原本沒有測試失敗 | `messages_from_the_receiver_itself_or_with_invalid_voters_are_refused` |
+| 快照的 voters 必須是合法的成員組合 | 同上 | core 會再用 `Snapshot::valid` 檢查一次 | 同上 |
+| frame 長度不能是 0 | `read_payload`（raft-transport） | 空的內容會交給呼叫者，等到解析 JSON 時才失敗 | `a_zero_length_frame_is_refused` |
+| 快照檔不能超過大小上限 | `read_snapshot`（raft-storage） | 太大的檔案會整個讀進記憶體，之後才因為別的原因被拒絕 | `a_snapshot_file_over_the_size_limit_is_refused_before_reading` |
+
+每個測試在現在的程式上通過，把對應的檢查拿掉後就失敗。這 4 種拿掉的方式登記成 `s12_*` mutation 案例，總數從 78 個變成 82 個。
+驗收契約加了階段 17，列出這 3 個測試（第一個測試同時檢查前兩段）。
+
+快照檔的測試用稀疏檔（sparse file）：把檔案大小設成上限再多 1 byte，但不寫入任何資料，所以幾乎不占磁碟空間。

@@ -471,6 +471,20 @@
         "docs/lessons/21-a-fresh-clone-fails-its-first-test-run/answers.md"
       ],
       "notes": "No new feature. Three defects fixed: a single-voter leader never answered a read (lesson 20); WALs opened at once under a parent directory that did not exist yet raced to create it (lesson 21); log indexes near u64::MAX passed every validator and then overflowed (MAX_LOG_INDEX). The storage review planted 30 changes and 16 went unnoticed; the tests above now catch 12 of them, each registered as an s10_* mutation case. The other four (a duplicate voters check in Envelope::valid_for, a message from the node itself, a zero-length frame, the snapshot file size limit) are checked again elsewhere or matter little and are left as they were. The hands-on demo had been failing since S5 and is now run by a test. The source fingerprint now covers what Git would track (scripts/test_verify_gate.py); this changes the checker, so every phase is rerun. No earlier test's assertions changed; the replaced checker unit test test_host_configuration_is_outside_fingerprint_but_sources_are_not was never named in this contract."
+    },
+    "17": {
+      "title": "S12: tests for the four checks the S10 review left unguarded",
+      "rust_tests": [
+        "messages_from_the_receiver_itself_or_with_invalid_voters_are_refused",
+        "a_zero_length_frame_is_refused",
+        "a_snapshot_file_over_the_size_limit_is_refused_before_reading"
+      ],
+      "pytest_nodes": [],
+      "required_files": [
+        "docs/DEVELOPMENT.md",
+        "artifacts/reports/mutations.json"
+      ],
+      "notes": "No new feature and no check changed. The S10 storage review found four checks that could be deleted without any test failing: a message claiming to come from the receiving node, a snapshot whose voter set is not a valid configuration (both in Envelope::valid_for), a zero-length frame (read_payload) and the snapshot file size limit (read_snapshot). Each test above passes on the shipped code and fails with its check removed; the four removals are registered as s12_* mutation cases."
     }
   },
   "reports": {
@@ -937,6 +951,30 @@
           "s10_kv_session_operation_unchecked",
           "s10_snapshot_decode_skips_valid",
           "s10_envelope_append_unbounded"
+        ]
+      }
+    ],
+    "17": [
+      {
+        "path": "artifacts/reports/mutations.json",
+        "required_nonempty": [
+          "command",
+          "isolation"
+        ],
+        "required_positive_integer": [
+          "case_count",
+          "detected_count",
+          "control_count"
+        ],
+        "required_empty_array": [
+          "undetected"
+        ],
+        "source_fingerprint_must_match": true,
+        "required_detected_cases": [
+          "s12_envelope_from_self_allowed",
+          "s12_envelope_voters_unchecked",
+          "s12_zero_length_frame_allowed",
+          "s12_snapshot_file_size_unchecked"
         ]
       }
     ]

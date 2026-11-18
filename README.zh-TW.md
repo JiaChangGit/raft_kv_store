@@ -26,6 +26,7 @@ Raft 是一種共識演算法：讓幾台機器對「資料依什麼順序更新
 | S5～S6 | group commit、批次複製、落盤只寫變動的部分；獨立審查後的修正 | [PERFORMANCE](docs/PERFORMANCE.md) |
 | S9 | 整理文件、架構圖與授權，並從頭重跑完整驗收 | — |
 | S10 | 最後一次複查：修正三個缺陷與一個健壯性問題，為審查找到的 12 段沒有測試把關的檢查補上測試，修好壞掉的示範與教學腳本 | [開發歷程](docs/DEVELOPMENT.md) |
+| S12 | 為 S10 留下的最後 4 段檢查補上測試 | [開發歷程](docs/DEVELOPMENT.md) |
 
 每個階段為什麼這樣排、刻意不做什麼、每次審查找到什麼，寫在 [開發歷程](docs/DEVELOPMENT.md)。
 
@@ -130,14 +131,14 @@ cargo run -p raft-node -- --id 3 --config config/cluster.toml --data-dir data/no
 | 模擬 | 1,000 個種子（決定隨機事件的數字，同一個種子能重跑出完全相同的過程），每個種子 10,000 個事件；每一步都檢查不變量，也就是任何時刻都必須成立的條件，例如同一個 term 最多一個 leader |
 | 當機 | failpoint（讓 process 在指定位置自行終止的測試開關）設在寫入、同步、回覆 ACK、commit、套用、回覆 client 之間；真實 process 用 SIGKILL 終止，再以原資料目錄重啟 |
 | 網路故障 | proxy 以完整的 frame 為單位丟棄、延遲、重複、調換順序；歷史紀錄做線性一致性檢查 |
-| mutation 測試 | 78 個刻意植入的錯誤，各自在隔離的副本裡跑，每一個都必須讓某個測試失敗 |
+| mutation 測試 | 82 個刻意植入的錯誤，各自在隔離的副本裡跑，每一個都必須讓某個測試失敗 |
 | 教學的重現 | 21 篇 bug 教學的重現腳本都能執行，結論和保存的輸出相同（`bash scripts/run_lesson_repros.sh`） |
-| 驗收契約 | `acceptance/final.json` 的 16 個階段，由 `scripts/verify_gate.py` 執行。P00～P08 是最初規格的九個階段，S1～S6 與 S10 依序各加了 P10～P16；P09 沒有使用 |
+| 驗收契約 | `acceptance/final.json` 的 17 個階段，由 `scripts/verify_gate.py` 執行。P00～P08 是最初規格的九個階段，S1～S6、S10 與 S12 依序各加了 P10～P17；P09 沒有使用 |
 
 每個階段驗收通過後，會在 `artifacts/` 留下 receipt（記錄命令、結果與來源指紋的檔案）；`artifacts/` 不在版本控制內。
 `.venv/bin/python scripts/status.py` 列出每個階段最近一次的結果，以及它是否對應目前的來源。
-`bash scripts/final_acceptance.sh` 從 mutation 測試一路重跑到 P16，中斷後可以續跑，來源檔一變就停；在作者的機器上約 45 分鐘。
-tag `s10-final-review-verified` 只在每個階段都對那個 commit 的來源通過後才建立。
+`bash scripts/final_acceptance.sh` 從 mutation 測試一路重跑到 P17，中斷後可以續跑，來源檔一變就停；在作者的機器上約 45 分鐘。
+最新的 tag `s12-review-gaps-verified` 只在每個階段都對那個 commit 的來源通過後才建立。
 
 ## 沒有驗證的事
 

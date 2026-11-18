@@ -361,6 +361,19 @@ CASES=[
      "                        && prev_log_index\n                            .checked_add(entries.len() as u64)\n                            .is_some_and(|last| last <= MAX_LOG_INDEX)\n",
      "",
      "indexes_beyond_the_limit_are_refused","raft-protocol"),
+    # S12 (2026-11-18): the four checks the S10 review left unguarded.
+    ("s12_envelope_from_self_allowed","crates/raft-protocol/src/lib.rs",
+     "            && self.from != id\n","",
+     "messages_from_the_receiver_itself_or_with_invalid_voters_are_refused","raft-protocol"),
+    ("s12_envelope_voters_unchecked","crates/raft-protocol/src/lib.rs",
+     "                        && Voters::from_bits(*voters).is_some()\n","",
+     "messages_from_the_receiver_itself_or_with_invalid_voters_are_refused","raft-protocol"),
+    ("s12_zero_length_frame_allowed","crates/raft-transport/src/lib.rs",
+     "    if length == 0 || length > MAX_FRAME {","    if length > MAX_FRAME {",
+     "a_zero_length_frame_is_refused","raft-transport"),
+    ("s12_snapshot_file_size_unchecked",STORAGE,
+     "    if length > (SNAPSHOT_HEADER_LEN + MAX_SNAPSHOT) as u64 {","    if false {",
+     "a_snapshot_file_over_the_size_limit_is_refused_before_reading","raft-storage"),
 ]
 
 def classify(test,stdout,stderr):

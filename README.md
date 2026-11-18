@@ -26,6 +26,7 @@ Most documents under `docs/` are in Traditional Chinese; [docs/GLOSSARY.md](docs
 | S5–S6 | Group commit, batched replication, writing only what changed; fixes from an independent review | [PERFORMANCE](docs/PERFORMANCE.md) |
 | S9 | Documents, diagrams and a licence for publication, and a full acceptance rerun from scratch | — |
 | S10 | A final review: three defects and one robustness problem fixed, tests for 12 checks that no test guarded, a broken demo and two broken lesson scripts repaired | [DEVELOPMENT](docs/DEVELOPMENT.md) |
+| S12 | Tests for the last four unguarded checks that S10 left open | [DEVELOPMENT](docs/DEVELOPMENT.md) |
 
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) explains the order of the stages, what was deliberately left out and what each review found.
 
@@ -131,14 +132,14 @@ To replace a failed node, add the new one first, then remove the old one. Do not
 | Simulation | 1,000 seeds (a seed fixes every random choice, so a run can be repeated exactly) × 10,000 events, checking invariants, conditions that must hold at every step, such as at most one leader per term |
 | Crashes | failpoints (test switches that make a process stop itself at a chosen point) between writing, syncing, acknowledging, committing, applying and replying; real processes killed with SIGKILL and restarted on the same data |
 | Network faults | proxies that drop, delay, duplicate and reorder whole frames; histories checked for linearizability |
-| Mutation testing | 78 planted bugs, each run in an isolated copy; every one must make a test fail |
+| Mutation testing | 82 planted bugs, each run in an isolated copy; every one must make a test fail |
 | Lesson reproductions | the reproduction script of each of the 21 bug lessons still runs and reaches the saved conclusion (`bash scripts/run_lesson_repros.sh`) |
-| Acceptance contract | 16 phases in `acceptance/final.json`, run by `scripts/verify_gate.py`. P00–P08 are the nine phases of the original specification; S1–S6 and S10 added P10–P16, one each. P09 is not used |
+| Acceptance contract | 17 phases in `acceptance/final.json`, run by `scripts/verify_gate.py`. P00–P08 are the nine phases of the original specification; S1–S6, S10 and S12 added P10–P17, one each. P09 is not used |
 
 Each phase that passes leaves a receipt (a file recording the commands, the results and the source fingerprint) under `artifacts/`, which is not under version control.
 `.venv/bin/python scripts/status.py` shows the latest result of each phase and whether it matches the current source.
-`bash scripts/final_acceptance.sh` reruns everything from the mutation tests to P16; it can resume after an interruption and stops if a source file changes. It took about 45 minutes on the author's machine.
-The tag `s10-final-review-verified` is created only after every phase passed on the exact source of that commit.
+`bash scripts/final_acceptance.sh` reruns everything from the mutation tests to P17; it can resume after an interruption and stops if a source file changes. It took about 45 minutes on the author's machine.
+The latest tag, `s12-review-gaps-verified`, is created only after every phase passed on the exact source of that commit.
 
 ## What is not verified
 

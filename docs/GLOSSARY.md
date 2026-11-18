@@ -92,7 +92,7 @@
 | failpoint | 測試用的開關：讓 process 走到某個位置時自己結束，用來測「剛好在這裡當機」 | `RAFT_FAILPOINT` |
 | SIGKILL | 立刻終止 process，不給它清理的機會。用來模擬當機；它不等於斷電 | — |
 | proxy（代理） | 夾在兩個節點之間轉送訊息的小程式，可以丟棄、延遲、重複、調換訊息 | `tools/fault_proxy.py` |
-| mutation 測試 | 故意在程式裡植入一個錯誤（mutant），看測試會不會失敗。沒失敗，代表那段程式沒有測試把關 | `scripts/mutation_check.py`，78 個案例 |
+| mutation 測試 | 故意在程式裡植入一個錯誤（mutant），看測試會不會失敗。沒失敗，代表那段程式沒有測試把關 | `scripts/mutation_check.py`，82 個案例 |
 | 等價突變（equivalent mutant） | 植入的改動其實沒有改變行為，測試當然抓不到 | 教學 10 |
 | 驗收契約（acceptance contract） | 一份 JSON，列出每個階段必須通過的測試與報告規則 | `acceptance/final.json` |
 | receipt（收據） | 某個階段驗收通過後寫下的紀錄：命令、結果、來源指紋 | `artifacts/acceptance-final/` |
@@ -112,5 +112,5 @@
 | JSON、JSONL | 資料格式；JSONL 是每行一個 JSON，節點的紀錄用這種格式 |
 | Mermaid | 用文字描述圖表的語法，GitHub 會直接顯示 |
 | KV（key-value） | 以鍵查值的資料儲存方式，像一本字典 |
-| P00～P16 | 驗收契約的階段編號。P00～P08 是最初的九個階段，之後每個開發階段各加一個：S1～S6 是 P10～P15，S10 是 P16（P09 沒有使用） |
-| S0～S10 | 開發階段的編號，見 [開發歷程](DEVELOPMENT.md) |
+| P00～P17 | 驗收契約的階段編號。P00～P08 是最初的九個階段，之後每個開發階段各加一個：S1～S6 是 P10～P15，S10 是 P16，S12 是 P17（P09 沒有使用） |
+| S0～S12 | 開發階段的編號，見 [開發歷程](DEVELOPMENT.md)（S7、S8、S11 不屬於這個 KV store） |
