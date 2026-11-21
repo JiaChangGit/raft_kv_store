@@ -34,8 +34,9 @@
 | S9 | 11-16～17 | 中英 README、架構圖、文件地圖、授權，從頭重跑完整驗收 | `s9-public-verified` |
 | S10 | 11-17 | 最後一次複查：三個缺陷、一個健壯性問題、12 段沒有測試把關的檢查、壞掉的示範與教學腳本（見下方） | `s10-final-review-verified` |
 | S12 | 11-18 | S10 留下的最後 4 段沒有測試把關的檢查補上測試（見下方） | `s12-review-gaps-verified` |
+| S16 | 11-21 | GitHub Actions 上的持續整合（見下方） | `s16-ci-verified` |
 
-S7、S8、S11 是同一段期間的另一項研究，不屬於這個 KV store，成果不在這個儲存庫（S7、S8 的 tag 還在 Git 歷史裡）。
+S7、S8、S11、S13～S15 是同一段期間的另一項研究，不屬於這個 KV store，成果不在這個儲存庫（S7、S8 的 tag 還在 Git 歷史裡）。
 
 各階段的規格與實作後的補記：[WAL 格式 2](STORAGE_FORMAT_V2.md)、[快照與壓縮](SNAPSHOT_COMPACTION.md)、[ReadIndex](READ_INDEX.md)、
 [成員變更](MEMBERSHIP.md)、[效能](PERFORMANCE.md)（S6 在 §15）。V1 的紀錄是歷史文件，見[文件地圖](README.md)。
@@ -116,3 +117,12 @@ S10 的審查留下 4 段「整段刪掉也沒有測試失敗」的檢查。當�
 驗收契約加了階段 17，列出這 3 個測試（第一個測試同時檢查前兩段）。
 
 快照檔的測試用稀疏檔（sparse file）：把檔案大小設成上限再多 1 byte，但不寫入任何資料，所以幾乎不占磁碟空間。
+
+## S16：持續整合
+
+這個儲存庫公開之後，加上 GitHub Actions 的持續整合（CI）：每次 push 到 main、每個 pull request，都在一台乾淨的 Linux 機器上照 `scripts/clean_rebuild.py` 的步驟跑一遍。步驟是格式檢查、clippy、Rust 測試、建置 Python 測試要啟動的執行檔、Python 測試，最後是 client CLI 與當機重啟的示範。結果顯示在 README 最上面的徽章。
+
+CI 不跑 1,000 個種子的模擬、兩個效能量測和 82 個 mutation 案例：這些合起來要四十多分鐘，留在完整驗收（`bash scripts/final_acceptance.sh`），每次打代表通過的 tag 前都要跑。
+
+CI 和乾淨重建如果各改各的，兩邊說的就不再是同一件事。`tests/test_ci_workflow.py` 比對兩者執行的命令，任何一邊少了一步，這個測試就失敗；驗收契約的階段 18 列出這個測試。Rust 的版本由 `rust-toolchain.toml` 決定，workflow 不另外寫一份。
+

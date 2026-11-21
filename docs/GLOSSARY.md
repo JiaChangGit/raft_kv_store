@@ -112,5 +112,6 @@
 | JSON、JSONL | 資料格式；JSONL 是每行一個 JSON，節點的紀錄用這種格式 |
 | Mermaid | 用文字描述圖表的語法，GitHub 會直接顯示 |
 | KV（key-value） | 以鍵查值的資料儲存方式，像一本字典 |
-| P00～P17 | 驗收契約的階段編號。P00～P08 是最初的九個階段，之後每個開發階段各加一個：S1～S6 是 P10～P15，S10 是 P16，S12 是 P17（P09 沒有使用） |
-| S0～S12 | 開發階段的編號，見 [開發歷程](DEVELOPMENT.md)（S7、S8、S11 不屬於這個 KV store） |
+| P00～P18 | 驗收契約的階段編號。P00～P08 是最初的九個階段，之後每個開發階段各加一個：S1～S6 是 P10～P15，S10 是 P16，S12 是 P17，S16 是 P18（P09 沒有使用） |
+| S0～S16 | 開發階段的編號，見 [開發歷程](DEVELOPMENT.md)（S7、S8、S11、S13～S15 不屬於這個 KV store） |
+| CI（continuous integration，持續整合） | 每次把程式推上 GitHub，就自動在乾淨的機器上建置並跑測試，結果顯示在 README 最上面的徽章 | `.github/workflows/ci.yml` |

@@ -485,6 +485,18 @@
         "artifacts/reports/mutations.json"
       ],
       "notes": "No new feature and no check changed. The S10 storage review found four checks that could be deleted without any test failing: a message claiming to come from the receiving node, a snapshot whose voter set is not a valid configuration (both in Envelope::valid_for), a zero-length frame (read_payload) and the snapshot file size limit (read_snapshot). Each test above passes on the shipped code and fails with its check removed; the four removals are registered as s12_* mutation cases."
+    },
+    "18": {
+      "title": "S16: continuous integration runs the clean-rebuild steps",
+      "rust_tests": [],
+      "pytest_nodes": [
+        "tests/test_ci_workflow.py::test_the_ci_runs_the_same_steps_as_the_clean_rebuild"
+      ],
+      "required_files": [
+        ".github/workflows/ci.yml",
+        "docs/DEVELOPMENT.md"
+      ],
+      "notes": "No new feature and no test changed. .github/workflows/ci.yml runs on GitHub Actions the steps of scripts/clean_rebuild.py (format, clippy, Rust tests, the executables the Python tests start, the Python tests, the client demo); the test above fails if the two stop running the same commands. The simulation, benchmarks and mutation tests stay in the full acceptance."
     }
   },
   "reports": {

@@ -1,0 +1,52 @@
+# Runs on every push to main and every pull request: the same steps as
+# scripts/clean_rebuild.py (format, clippy, Rust tests, the executables the
+# Python tests start, the Python tests, the client CLI and crash/restart demo).
+# tests/test_ci_workflow.py checks that the two keep running the same commands.
+#
+# Not run here: the 1,000-seed simulation, the benchmarks and the mutation
+# tests. They belong to the full acceptance (bash scripts/final_acceptance.sh,
+# about 45 minutes), which is run before every verified tag.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: never
+      PYTHONNOUSERSITE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain from rust-toolchain.toml
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --component rustfmt,clippy
+          rustc -Vv
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Python dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --locked --workspace
+      - name: Executables the Python tests start
+        run: cargo build --locked --workspace --bins
+      - name: Python tests
+        run: python -m pytest -q tests scripts/test_verify_gate.py scripts/test_check_lessons.py scripts/test_mutation_check.py
+      - name: Client CLI and crash/restart demo
+        run: python -m tools.learning_demo --output-dir artifacts/runs/ci-demo

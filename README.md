@@ -1,5 +1,7 @@
 # Rust Raft KV Store
 
+[![CI](https://github.com/JiaChangGit/raft_kv_store/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaChangGit/raft_kv_store/actions/workflows/ci.yml)
+
 [中文版](README.zh-TW.md)
 
 A key-value store replicated with Raft, written from scratch in Rust as a learning and portfolio project.
@@ -27,6 +29,7 @@ Most documents under `docs/` are in Traditional Chinese; [docs/GLOSSARY.md](docs
 | S9 | Documents, diagrams and a licence for publication, and a full acceptance rerun from scratch | — |
 | S10 | A final review: three defects and one robustness problem fixed, tests for 12 checks that no test guarded, a broken demo and two broken lesson scripts repaired | [DEVELOPMENT](docs/DEVELOPMENT.md) |
 | S12 | Tests for the last four unguarded checks that S10 left open | [DEVELOPMENT](docs/DEVELOPMENT.md) |
+| S16 | Continuous integration on GitHub Actions, running the same steps as the clean rebuild | [DEVELOPMENT](docs/DEVELOPMENT.md) |
 
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) explains the order of the stages, what was deliberately left out and what each review found.
 
@@ -134,12 +137,13 @@ To replace a failed node, add the new one first, then remove the old one. Do not
 | Network faults | proxies that drop, delay, duplicate and reorder whole frames; histories checked for linearizability |
 | Mutation testing | 82 planted bugs, each run in an isolated copy; every one must make a test fail |
 | Lesson reproductions | the reproduction script of each of the 21 bug lessons still runs and reaches the saved conclusion (`bash scripts/run_lesson_repros.sh`) |
-| Acceptance contract | 17 phases in `acceptance/final.json`, run by `scripts/verify_gate.py`. P00–P08 are the nine phases of the original specification; S1–S6, S10 and S12 added P10–P17, one each. P09 is not used |
+| CI | every push to main and every pull request runs format, clippy, the Rust tests, the Python tests and the client demo on GitHub Actions, the same steps as `scripts/clean_rebuild.py`; the simulation, benchmarks and mutation tests stay in the full acceptance |
+| Acceptance contract | 18 phases in `acceptance/final.json`, run by `scripts/verify_gate.py`. P00–P08 are the nine phases of the original specification; S1–S6, S10, S12 and S16 added P10–P18, one each. P09 is not used |
 
 Each phase that passes leaves a receipt (a file recording the commands, the results and the source fingerprint) under `artifacts/`, which is not under version control.
 `.venv/bin/python scripts/status.py` shows the latest result of each phase and whether it matches the current source.
-`bash scripts/final_acceptance.sh` reruns everything from the mutation tests to P17; it can resume after an interruption and stops if a source file changes. It took about 45 minutes on the author's machine.
-The latest tag, `s12-review-gaps-verified`, is created only after every phase passed on the exact source of that commit.
+`bash scripts/final_acceptance.sh` reruns everything from the mutation tests to P18; it can resume after an interruption and stops if a source file changes. It took about 45 minutes on the author's machine.
+The latest tag, `s16-ci-verified`, is created only after every phase passed on the exact source of that commit.
 
 ## What is not verified
 
